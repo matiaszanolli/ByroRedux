@@ -1,0 +1,228 @@
+family	script	function	signature	global	introduced	introduced_source	source
+f4se	Actor	GetFurnitureReference	ObjectReference GetFurnitureReference()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Actor.psc
+f4se	Actor	GetWornItem	WornItem GetWornItem(int slotIndex, bool firstPerson = false)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Actor.psc
+f4se	Actor	GetWornItemMods	ObjectMod[] GetWornItemMods(int slotIndex)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Actor.psc
+f4se	Actor	IsProtected	bool IsProtected()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Actor.psc
+f4se	Actor	QueueUpdate	None QueueUpdate(bool bDoEquipment = false, int flags = 0)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Actor.psc
+f4se	ActorBase	GetBodyWeight	BodyWeight GetBodyWeight()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ActorBase.psc
+f4se	ActorBase	GetHeadParts	HeadPart[] GetHeadParts(bool bOverlays = false)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ActorBase.psc
+f4se	ActorBase	GetOutfit	Outfit GetOutfit(bool bSleepOutfit = false)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ActorBase.psc
+f4se	ActorBase	GetTemplate	ActorBase GetTemplate(bool bTopMost = true)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ActorBase.psc
+f4se	ActorBase	HasHeadPartOverlays	bool HasHeadPartOverlays()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ActorBase.psc
+f4se	ActorBase	SetBodyWeight	None SetBodyWeight(BodyWeight weight)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ActorBase.psc
+f4se	Armor	GetArmorAddons	ArmorAddon[] GetArmorAddons()	0	0.6.10	whatsnew:0.6.10	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Armor.psc
+f4se	ArmorAddon	GetAdditionalRaces	Race[] GetAdditionalRaces()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ArmorAddon.psc
+f4se	Cell	GetWaterType	WaterType GetWaterType()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Cell.psc
+f4se	Component	GetScrapItem	MiscObject GetScrapItem()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Component.psc
+f4se	Component	GetScrapScalar	GlobalVariable GetScrapScalar()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Component.psc
+f4se	Component	SetScrapItem	None SetScrapItem(MiscObject akMisc)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Component.psc
+f4se	Component	SetScrapScalar	None SetScrapScalar(GlobalVariable akGlobal)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Component.psc
+f4se	ConstructibleObject	GetConstructibleComponents	ConstructibleComponent[] GetConstructibleComponents()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ConstructibleObject.psc
+f4se	ConstructibleObject	GetCreatedCount	int GetCreatedCount()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ConstructibleObject.psc
+f4se	ConstructibleObject	GetCreatedObject	Form GetCreatedObject()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ConstructibleObject.psc
+f4se	ConstructibleObject	GetPriority	int GetPriority()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ConstructibleObject.psc
+f4se	ConstructibleObject	GetWorkbenchKeyword	Keyword GetWorkbenchKeyword()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ConstructibleObject.psc
+f4se	ConstructibleObject	SetConstructibleComponents	None SetConstructibleComponents(ConstructibleComponent[] components)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ConstructibleObject.psc
+f4se	ConstructibleObject	SetCreatedCount	None SetCreatedCount(int count)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ConstructibleObject.psc
+f4se	ConstructibleObject	SetCreatedObject	None SetCreatedObject(Form akForm)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ConstructibleObject.psc
+f4se	ConstructibleObject	SetPriority	None SetPriority(int priority)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ConstructibleObject.psc
+f4se	ConstructibleObject	SetWorkbenchKeyword	None SetWorkbenchKeyword(Keyword akKeyword)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ConstructibleObject.psc
+f4se	DefaultObject	Get	Form Get()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/DefaultObject.psc
+f4se	DefaultObject	GetDefaultObject	Form GetDefaultObject(string editorId)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/DefaultObject.psc
+f4se	DefaultObject	Set	None Set(Form newForm)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/DefaultObject.psc
+f4se	EncounterZone	GetLocation	Location GetLocation()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EncounterZone.psc
+f4se	EncounterZone	GetMaxLevel	int GetMaxLevel()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EncounterZone.psc
+f4se	EncounterZone	GetMinLevel	int GetMinLevel()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EncounterZone.psc
+f4se	EncounterZone	GetRank	int GetRank()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EncounterZone.psc
+f4se	EncounterZone	IsNeverResetable	bool IsNeverResetable()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EncounterZone.psc
+f4se	EncounterZone	IsWorkshop	bool IsWorkshop()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EncounterZone.psc
+f4se	EncounterZone	SetLocation	None SetLocation(Location akLoc)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EncounterZone.psc
+f4se	EncounterZone	SetMaxLevel	None SetMaxLevel(int level)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EncounterZone.psc
+f4se	EncounterZone	SetMinLevel	None SetMinLevel(int level)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EncounterZone.psc
+f4se	EncounterZone	SetNeverResetable	None SetNeverResetable(bool resetable)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EncounterZone.psc
+f4se	EncounterZone	SetRank	None SetRank(int rank)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EncounterZone.psc
+f4se	EncounterZone	SetWorkshop	None SetWorkshop(bool ws)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EncounterZone.psc
+f4se	EquipSlot	GetParents	EquipSlot[] GetParents()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/EquipSlot.psc
+f4se	F4SE	GetPluginVersion	int GetPluginVersion(string name)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/F4SE.psc
+f4se	F4SE	GetVersion	int GetVersion()	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/F4SE.psc
+f4se	F4SE	GetVersionBeta	int GetVersionBeta()	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/F4SE.psc
+f4se	F4SE	GetVersionMinor	int GetVersionMinor()	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/F4SE.psc
+f4se	F4SE	GetVersionRelease	int GetVersionRelease()	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/F4SE.psc
+f4se	FavoritesManager	AddTaggedForms	None AddTaggedForms(Form[] forms)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/FavoritesManager.psc
+f4se	FavoritesManager	GetFavorites	Form[] GetFavorites()	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/FavoritesManager.psc
+f4se	FavoritesManager	GetTaggedForms	Form[] GetTaggedForms()	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/FavoritesManager.psc
+f4se	FavoritesManager	IsTaggedForm	bool IsTaggedForm(Form akForm)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/FavoritesManager.psc
+f4se	FavoritesManager	RemoveTaggedForms	None RemoveTaggedForms(Form[] forms)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/FavoritesManager.psc
+f4se	FavoritesManager	SetFavorites	None SetFavorites(Form[] favorites)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/FavoritesManager.psc
+f4se	Form	AddSlotToMask	int AddSlotToMask(int slotMask)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetDescription	string GetDescription()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetEditorID	string GetEditorID()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetEnchantment	Enchantment GetEnchantment()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetEnchantmentValue	int GetEnchantmentValue()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetEquipType	EquipSlot GetEquipType()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetIconPath	string GetIconPath()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetKeywords	Keyword[] GetKeywords()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetMaskForSlot	int GetMaskForSlot(int slot)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetMessageIconPath	string GetMessageIconPath()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetName	string GetName()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetRaceForm	Race GetRaceForm()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetSlotMask	int GetSlotMask()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetWeight	float GetWeight()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	GetWorldModelPath	string GetWorldModelPath()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	HasWorldModel	bool HasWorldModel()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	RemoveSlotFromMask	int RemoveSlotFromMask(int slotMask)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	SetEnchantment	None SetEnchantment(Enchantment e)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	SetEnchantmentValue	None SetEnchantmentValue(int value)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	SetEquipType	None SetEquipType(EquipSlot type)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	SetGoldValue	None SetGoldValue(int value)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	SetIconPath	None SetIconPath(string path)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	SetMessageIconPath	None SetMessageIconPath(string path)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	SetName	None SetName(string name)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	SetRaceForm	None SetRaceForm(Race newRace)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	SetSlotMask	None SetSlotMask(int slotMask)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	SetWeight	None SetWeight(float weight)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Form	SetWorldModelPath	None SetWorldModelPath(string path)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Form.psc
+f4se	Game	GetCameraState	int GetCameraState()	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Game.psc
+f4se	Game	GetCurrentConsoleRef	ObjectReference GetCurrentConsoleRef()	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Game.psc
+f4se	Game	GetInstalledLightPlugins	PluginInfo[] GetInstalledLightPlugins()	1	0.5.0	whatsnew:0.5.0	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Game.psc
+f4se	Game	GetInstalledPlugins	PluginInfo[] GetInstalledPlugins()	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Game.psc
+f4se	Game	GetPluginDependencies	string[] GetPluginDependencies(string plugin)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Game.psc
+f4se	Game	SetGameSettingBool	None SetGameSettingBool(string setting, bool value)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Game.psc
+f4se	Game	SetGameSettingFloat	None SetGameSettingFloat(string setting, float value)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Game.psc
+f4se	Game	SetGameSettingInt	None SetGameSettingInt(string setting, int value)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Game.psc
+f4se	Game	SetGameSettingString	None SetGameSettingString(string setting, string value)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Game.psc
+f4se	Game	UpdateThirdPerson	None UpdateThirdPerson()	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Game.psc
+f4se	HeadPart	GetExtraParts	HeadPart[] GetExtraParts()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/HeadPart.psc
+f4se	HeadPart	GetType	int GetType()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/HeadPart.psc
+f4se	HeadPart	GetValidRaces	FormList GetValidRaces()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/HeadPart.psc
+f4se	HeadPart	HasExtraPart	bool HasExtraPart(HeadPart p)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/HeadPart.psc
+f4se	HeadPart	IsExtraPart	bool IsExtraPart()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/HeadPart.psc
+f4se	HeadPart	SetValidRaces	None SetValidRaces(FormList vRaces)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/HeadPart.psc
+f4se	Input	GetMappedControl	string GetMappedControl(int keycode)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Input.psc
+f4se	Input	GetMappedKey	int GetMappedKey(string control, int deviceType = 0xFF)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Input.psc
+f4se	InstanceData	GetAccuracyBonus	int GetAccuracyBonus(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetActionPointCost	float GetActionPointCost(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetAddAmmoList	LeveledItem GetAddAmmoList(Owner akOwner)	1	0.6.11	whatsnew:0.6.11	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetAmmo	Ammo GetAmmo(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetAmmoCapacity	int GetAmmoCapacity(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetArmorHealth	int GetArmorHealth(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetArmorRating	int GetArmorRating(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetAttackDamage	int GetAttackDamage(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetAttackDelay	float GetAttackDelay(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetCritChargeBonus	float GetCritChargeBonus(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetCritMultiplier	float GetCritMultiplier(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetDamageTypes	DamageTypeInfo[] GetDamageTypes(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetFlag	bool GetFlag(Owner akOwner, int flag)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetGoldValue	int GetGoldValue(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetKeywords	Keyword[] GetKeywords(Owner akOwner)	1	0.5.1	whatsnew:0.5.1	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetMaxRange	float GetMaxRange(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetMinRange	float GetMinRange(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetNumProjectiles	int GetNumProjectiles(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetOutOfRangeMultiplier	float GetOutOfRangeMultiplier(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetProjectileOverride	Projectile GetProjectileOverride(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetReach	float GetReach(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetReloadSpeed	float GetReloadSpeed(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetResist	ActorValue GetResist(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetSightedTransition	float GetSightedTransition(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetSkill	ActorValue GetSkill(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetSpeed	float GetSpeed(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetStagger	int GetStagger(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	GetWeight	float GetWeight(Owner akOwner)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetAccuracyBonus	None SetAccuracyBonus(Owner akOwner, int bonus)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetActionPointCost	None SetActionPointCost(Owner akOwner, float cost)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetAddAmmoList	None SetAddAmmoList(Owner akOwner, LeveledItem akAmmo)	1	0.6.11	whatsnew:0.6.11	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetAmmo	None SetAmmo(Owner akOwner, Ammo akAmmo)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetAmmoCapacity	None SetAmmoCapacity(Owner akOwner, int capacity)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetArmorHealth	None SetArmorHealth(Owner akOwner, int health)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetArmorRating	None SetArmorRating(Owner akOwner, int health)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetAttackDamage	None SetAttackDamage(Owner akOwner, int damage)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetAttackDelay	None SetAttackDelay(Owner akOwner, float delay)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetCritChargeBonus	None SetCritChargeBonus(Owner akOwner, float bonus)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetCritMultiplier	None SetCritMultiplier(Owner akOwner, float crit)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetDamageTypes	None SetDamageTypes(Owner akOwner, DamageTypeInfo[] dts)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetFlag	None SetFlag(Owner akOwner, int flag, bool set)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetGoldValue	None SetGoldValue(Owner akOwner, int value)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetKeywords	None SetKeywords(Owner akOwner, Keyword[] kwds)	1	0.5.1	whatsnew:0.5.1	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetMaxRange	None SetMaxRange(Owner akOwner, float maxRange)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetMinRange	None SetMinRange(Owner akOwner, float minRange)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetNumProjectiles	None SetNumProjectiles(Owner akOwner, int numProj)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetOutOfRangeMultiplier	None SetOutOfRangeMultiplier(Owner akOwner, float mult)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetProjectileOverride	None SetProjectileOverride(Owner akOwner, Projectile proj)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetReach	None SetReach(Owner akOwner, float reach)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetReloadSpeed	None SetReloadSpeed(Owner akOwner, float speed)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetResist	None SetResist(Owner akOwner, ActorValue resist)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetSightedTransition	None SetSightedTransition(Owner akOwner, float seconds)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetSkill	None SetSkill(Owner akOwner, ActorValue skill)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetSpeed	None SetSpeed(Owner akOwner, float speed)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetStagger	None SetStagger(Owner akOwner, int stagger)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	InstanceData	SetWeight	None SetWeight(Owner akOwner, float weight)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/InstanceData.psc
+f4se	Location	GetEncounterZone	EncounterZone GetEncounterZone(bool recursive = false)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Location.psc
+f4se	Location	GetParent	Location GetParent()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Location.psc
+f4se	Location	SetEncounterZone	None SetEncounterZone(EncounterZone ez)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Location.psc
+f4se	Location	SetParent	None SetParent(Location akLocation)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Location.psc
+f4se	Math	Exp	float Exp(float arg1)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Math.psc
+f4se	Math	LeftShift	int LeftShift(int value, int shiftBy)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Math.psc
+f4se	Math	Log	float Log(float arg1)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Math.psc
+f4se	Math	LogicalAnd	int LogicalAnd(int arg1, int arg2)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Math.psc
+f4se	Math	LogicalNot	int LogicalNot(int arg1)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Math.psc
+f4se	Math	LogicalOr	int LogicalOr(int arg1, int arg2)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Math.psc
+f4se	Math	LogicalXor	int LogicalXor(int arg1, int arg2)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Math.psc
+f4se	Math	RightShift	int RightShift(int value, int shiftBy)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Math.psc
+f4se	MatSwap	GetRemapData	RemapData[] GetRemapData()	0	0.6.5	whatsnew:0.6.5	ianpatt/f4se@6f6a7caa9aea:scripts/modified/MatSwap.psc
+f4se	MatSwap	SetRemapData	None SetRemapData(RemapData[] data)	0	0.6.5	whatsnew:0.6.5	ianpatt/f4se@6f6a7caa9aea:scripts/modified/MatSwap.psc
+f4se	MiscObject	GetMiscComponents	MiscComponent[] GetMiscComponents()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/MiscObject.psc
+f4se	MiscObject	SetMiscComponents	None SetMiscComponents(MiscComponent[] components)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/MiscObject.psc
+f4se	ObjectMod	GetLooseMod	MiscObject GetLooseMod()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectMod.psc
+f4se	ObjectMod	GetMaxRank	int GetMaxRank()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectMod.psc
+f4se	ObjectMod	GetPriority	int GetPriority()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectMod.psc
+f4se	ObjectMod	GetPropertyModifiers	PropertyModifier[] GetPropertyModifiers()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectMod.psc
+f4se	ObjectMod	SetMaxRank	None SetMaxRank(int rank)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectMod.psc
+f4se	ObjectMod	SetPriority	None SetPriority(int priority)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectMod.psc
+f4se	ObjectReference	ApplyMaterialSwap	MatSwap:RemapData[] ApplyMaterialSwap(MatSwap mSwap, bool renameMaterial = false)	0	0.6.5	whatsnew:0.6.5	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectReference.psc
+f4se	ObjectReference	AttachWire	ObjectReference AttachWire(ObjectReference akRef, Form spline = None)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectReference.psc
+f4se	ObjectReference	GetAllMods	ObjectMod[] GetAllMods()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectReference.psc
+f4se	ObjectReference	GetConnectedObjects	ObjectReference[] GetConnectedObjects()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectReference.psc
+f4se	ObjectReference	GetConnectPoints	ConnectPoint[] GetConnectPoints()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectReference.psc
+f4se	ObjectReference	GetDisplayName	string GetDisplayName()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectReference.psc
+f4se	ObjectReference	GetInventoryItems	Form[] GetInventoryItems()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectReference.psc
+f4se	ObjectReference	GetInventoryWeight	float GetInventoryWeight()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectReference.psc
+f4se	ObjectReference	GetMaterialSwap	MatSwap GetMaterialSwap()	0	0.6.7	whatsnew:0.6.7	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectReference.psc
+f4se	ObjectReference	Scrap	bool Scrap(ObjectReference akWorkshop)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectReference.psc
+f4se	ObjectReference	SetMaterialSwap	None SetMaterialSwap(MatSwap mSwap)	0	0.6.7	whatsnew:0.6.7	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectReference.psc
+f4se	ObjectReference	TransmitConnectedPower	bool TransmitConnectedPower()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ObjectReference.psc
+f4se	Perk	GetLevel	int GetLevel()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Perk.psc
+f4se	Perk	GetNextPerk	Perk GetNextPerk()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Perk.psc
+f4se	Perk	GetNumRanks	int GetNumRanks()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Perk.psc
+f4se	Perk	GetSWFPath	string GetSWFPath()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Perk.psc
+f4se	Perk	IsEligible	bool IsEligible(Actor akActor)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Perk.psc
+f4se	Perk	IsHidden	bool IsHidden()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Perk.psc
+f4se	Perk	IsPlayable	bool IsPlayable()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Perk.psc
+f4se	ScriptObject	RegisterForCameraState	None RegisterForCameraState()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ScriptObject.psc
+f4se	ScriptObject	RegisterForControl	None RegisterForControl(string control)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ScriptObject.psc
+f4se	ScriptObject	RegisterForExternalEvent	None RegisterForExternalEvent(string eventName, string callback)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ScriptObject.psc
+f4se	ScriptObject	RegisterForFurnitureEvent	None RegisterForFurnitureEvent(Var filter = None)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ScriptObject.psc
+f4se	ScriptObject	RegisterForGamepadButton	None RegisterForGamepadButton(int key)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ScriptObject.psc
+f4se	ScriptObject	RegisterForKey	None RegisterForKey(int key)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ScriptObject.psc
+f4se	ScriptObject	UnregisterForCameraState	None UnregisterForCameraState()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ScriptObject.psc
+f4se	ScriptObject	UnregisterForControl	None UnregisterForControl(string control)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ScriptObject.psc
+f4se	ScriptObject	UnregisterForExternalEvent	None UnregisterForExternalEvent(string eventName)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ScriptObject.psc
+f4se	ScriptObject	UnregisterForFurnitureEvent	None UnregisterForFurnitureEvent(Var filter = None)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ScriptObject.psc
+f4se	ScriptObject	UnregisterForGamepadButton	None UnregisterForGamepadButton(int key)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ScriptObject.psc
+f4se	ScriptObject	UnregisterForKey	None UnregisterForKey(int key)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/ScriptObject.psc
+f4se	UI	CloseMenu	bool CloseMenu(string menuName)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/UI.psc
+f4se	UI	Get	Var Get(string menu, string path)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/UI.psc
+f4se	UI	Invoke	Var Invoke(string menu, string path, Var[] args = None)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/UI.psc
+f4se	UI	IsMenuOpen	bool IsMenuOpen(string menu)	1	0.5.1	whatsnew:0.5.1	ianpatt/f4se@6f6a7caa9aea:scripts/modified/UI.psc
+f4se	UI	IsMenuRegistered	bool IsMenuRegistered(string menu)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/UI.psc
+f4se	UI	Load	bool Load(string menu, string sourceVar, string assetPath, ScriptObject receiver = None, string callback = "")	1	0.3.2	whatsnew:0.3.2	ianpatt/f4se@6f6a7caa9aea:scripts/modified/UI.psc
+f4se	UI	OpenMenu	bool OpenMenu(string menuName)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/UI.psc
+f4se	UI	RegisterCustomMenu	bool RegisterCustomMenu(string menuName, string menuPath, string rootPath, MenuData mData)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/UI.psc
+f4se	UI	Set	bool Set(string menu, string path, Var arg)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/UI.psc
+f4se	Utility	VarArrayToVar	Var VarArrayToVar(Var[] v)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Utility.psc
+f4se	Utility	VarToVarArray	Var[] VarToVarArray(Var v)	1	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Utility.psc
+f4se	WaterType	GetConsumeSpell	Spell GetConsumeSpell()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/WaterType.psc
+f4se	WaterType	GetContactSpell	Spell GetContactSpell()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/WaterType.psc
+f4se	WaterType	SetConsumeSpell	None SetConsumeSpell(Spell sp)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/WaterType.psc
+f4se	WaterType	SetContactSpell	None SetContactSpell(Spell sp)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/WaterType.psc
+f4se	Weapon	GetEmbeddedMod	ObjectMod GetEmbeddedMod()	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Weapon.psc
+f4se	Weapon	SetEmbeddedMod	None SetEmbeddedMod(ObjectMod mod)	0	0.1.0	first-release	ianpatt/f4se@6f6a7caa9aea:scripts/modified/Weapon.psc

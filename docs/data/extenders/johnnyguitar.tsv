@@ -1,0 +1,143 @@
+family	script	function	signature	global	introduced	introduced_source	source
+johnnyguitar	-	actorEffect	(int) actorEffect actorEffect:form	-	first-release	first-release	geckwiki:GetActorEffectType.wiki
+johnnyguitar	-	actorValue	(void) actorValue actorValue:statName	-	first-release	first-release	geckwiki:UnforceAV.wiki
+johnnyguitar	-	AddNavmeshObstacle	(void) AddNavmeshObstacle	-	4.70	wiki:originVersion	geckwiki:AddNavmeshObstacle.wiki
+johnnyguitar	-	armor	(success(0/1)) armor armor:baseform index3D:int modelID:int(1-4)	-	4.70	wiki:originVersion	geckwiki:ClearArmorAltTexture.wiki
+johnnyguitar	-	baseEffect	(int) baseEffect baseEffect:ref	-	first-release	first-release	geckwiki:GetBaseEffectAV.wiki
+johnnyguitar	-	bodyPartData	(string_var) bodyPartData bodyPartData:form typeID:int traitID:int	-	first-release	first-release	geckwiki:GetBodyPartTraitString.wiki
+johnnyguitar	-	bodyPartID	(void) bodyPartID bodyPartID:int	-	first-release	first-release	geckwiki:HighlightBodyPartAlt.wiki
+johnnyguitar	-	book	(int) book book:baseform	-	4.40	wiki:originVersion	geckwiki:GetBookFlags.wiki
+johnnyguitar	-	buttonID	(void) buttonID buttonID:int onOrOff:int	-	first-release	first-release	geckwiki:ToggleNthPipboyLight.wiki
+johnnyguitar	-	cell	(isSuccess) cell cell:baseform zone:baseform	-	4.55	wiki:originVersion	geckwiki:SetCellEncounterZone.wiki
+johnnyguitar	-	container	(form) container container:baseform whichSound:int	-	first-release	first-release	geckwiki:GetContainerSound.wiki
+johnnyguitar	-	creature	(int) creature creature:actorBase	-	first-release	first-release	geckwiki:GetCreatureCombatSkill.wiki
+johnnyguitar	-	DamageActorValueAlt	(void) DamageActorValueAlt ActorValueCode:int Value:<nowiki>int	-	first-release	first-release	geckwiki:DamageActorValueAlt.wiki
+johnnyguitar	-	DeactivateAllHighlightsAlt	(void) DeactivateAllHighlightsAlt	-	first-release	first-release	geckwiki:DeactivateAllHighlightsAlt.wiki
+johnnyguitar	-	DisableMenuArrowKeys	(void) DisableMenuArrowKeys	-	first-release	first-release	geckwiki:DisableMenuArrowKeys.wiki
+johnnyguitar	-	disableMode	(void) disableMode disableMode:bool	-	first-release	first-release	geckwiki:DisableMuzzleFlashLights.wiki
+johnnyguitar	-	disableOrEnable	(void) disableOrEnable disableOrEnable:0/1	-	first-release	first-release	geckwiki:ToggleLevelUpMenu.wiki
+johnnyguitar	-	dllName	(0/1) dllName dllName:string checkOutsideOfGameFolder:0/1	-	first-release	first-release	geckwiki:IsDLLLoaded.wiki
+johnnyguitar	-	editorID	(ref) editorID editorID:string	-	first-release	first-release	geckwiki:EditorIDToFormID.wiki
+johnnyguitar	-	effectShader	(string_var) effectShader effectShader:baseform textureID:int	-	4.20	wiki:originVersion	geckwiki:GetEffectShaderTexturePath.wiki
+johnnyguitar	-	EnableMenuArrowKeys	(void) EnableMenuArrowKeys	-	first-release	first-release	geckwiki:EnableMenuArrowKeys.wiki
+johnnyguitar	-	ExitGameAlt	(void) ExitGameAlt	-	first-release	first-release	geckwiki:ExitGameAlt.wiki
+johnnyguitar	-	explosion	(void) explosion explosion:form soundID:int(1-2) sound:form	-	first-release	first-release	geckwiki:SetExplosionSound.wiki
+johnnyguitar	-	faction	(int) faction faction:baseform	-	4.75	wiki:originVersion	geckwiki:GetFactionFlags.wiki
+johnnyguitar	-	filepath	(void) filepath filepath:string ROut:int GOut:int BOut:int width:int height:int	-	first-release	first-release	geckwiki:GetPixelFromBMP.wiki
+johnnyguitar	-	flags	(void) flags flags:bitmask	-	first-release	first-release	geckwiki:SetDisablePlayerControlsHUDVisibilityFlags.wiki
+johnnyguitar	-	ForceActorValueAlt	(void) ForceActorValueAlt ActorValueCode:int Value:int	-	first-release	first-release	geckwiki:ForceActorValueAlt.wiki
+johnnyguitar	-	form	(int) form	-	first-release	first-release	geckwiki:GetFormOverrideIndex.wiki
+johnnyguitar	-	formID	(string) formID formID:form	-	first-release	first-release	geckwiki:GetEditorID.wiki
+johnnyguitar	-	GetActorValueAlt	(int) GetActorValueAlt actorValueCode:int	-	first-release	first-release	geckwiki:GetActorValueAlt.wiki
+johnnyguitar	-	GetAvailablePerks	(array) GetAvailablePerks	-	4.10	wiki:originVersion	geckwiki:GetAvailablePerks.wiki
+johnnyguitar	-	GetBaseScale	(float) GetBaseScale	-	first-release	first-release	geckwiki:GetBaseScale.wiki
+johnnyguitar	-	GetCalculatedSpread	(float) GetCalculatedSpread	-	first-release	first-release	geckwiki:GetCalculatedSpread.wiki
+johnnyguitar	-	GetCustomMapMarker	(ref) GetCustomMapMarker	-	first-release	first-release	geckwiki:GetCustomMapMarker.wiki
+johnnyguitar	-	GetDefaultHeapSize	(float) GetDefaultHeapSize	-	first-release	first-release	geckwiki:GetDefaultHeapSize.wiki
+johnnyguitar	-	GetFactionMembers	(array:actorBase) GetFactionMembers faction:ref rank:int	-	first-release	first-release	geckwiki:GetFactionMembers.wiki
+johnnyguitar	-	GetFormRecipesAlt	(array) GetFormRecipesAlt outputItem:baseform	-	first-release	first-release	geckwiki:GetFormRecipesAlt.wiki
+johnnyguitar	-	GetLandTextureUnderFeet	(void) GetLandTextureUnderFeet	-	4.75	wiki:originVersion	geckwiki:GetLandTextureUnderFeet.wiki
+johnnyguitar	-	GetLifeState	(int) GetLifeState	-	first-release	first-release	geckwiki:GetLifeState.wiki
+johnnyguitar	-	GetLinearVelocity	(void) GetLinearVelocity nodeName:string xOut:float yOut:float zOut:float	-	first-release	first-release	geckwiki:GetLinearVelocity.wiki
+johnnyguitar	-	GetLocationName	(string_var) GetLocationName	-	4.30	wiki:originVersion	geckwiki:GetLocationName.wiki
+johnnyguitar	-	GetLocationSpecificLoadScreensOnly	(int) GetLocationSpecificLoadScreensOnly	-	4.20	wiki:originVersion	geckwiki:GetLocationSpecificLoadScreensOnly.wiki
+johnnyguitar	-	GetMoonPhase	(int) GetMoonPhase	-	4.85	wiki:originVersion	geckwiki:GetMoonPhase.wiki
+johnnyguitar	-	GetPipBoyMode	(int) GetPipBoyMode	-	first-release	first-release	geckwiki:GetPipBoyMode.wiki
+johnnyguitar	-	GetPlayingEffectShaders	(array) GetPlayingEffectShaders	-	4.40	wiki:originVersion	geckwiki:GetPlayingEffectShaders.wiki
+johnnyguitar	-	GetPrimitiveType	(1-3:int) GetPrimitiveType	-	first-release	first-release	geckwiki:GetPrimitiveType.wiki
+johnnyguitar	-	GetRaceBodyModelPath	(modelPath:string_var) GetRaceBodyModelPath race:ref modelPartID:int isFemale:int	-	first-release	first-release	geckwiki:GetRaceBodyModelPath.wiki
+johnnyguitar	-	GetRaceHeadModelPath	(modelPath:string_var) GetRaceHeadModelPath race:ref modelPartID:int isFemale:int	-	first-release	first-release	geckwiki:GetRaceHeadModelPath.wiki
+johnnyguitar	-	GetRefActivationPromptOverride	(string_var) GetRefActivationPromptOverride	-	4.30	wiki:originVersion	geckwiki:GetRefActivationPromptOverride.wiki
+johnnyguitar	-	GetRefEncounterZone	(baseform) GetRefEncounterZone	-	4.55	wiki:originVersion	geckwiki:GetRefEncounterZone.wiki
+johnnyguitar	-	GetRunSpeed	(float) GetRunSpeed	-	first-release	first-release	geckwiki:GetRunSpeed.wiki
+johnnyguitar	-	HSVtoRGB	(void) HSVtoRGB hIn:scriptVar sIn:scriptVar vIn:scriptVar rOut:scriptVar gOut:scriptVar bOut:scriptVar	-	4.20	wiki:originVersion	geckwiki:HSVtoRGB.wiki
+johnnyguitar	-	idleMarker	(array_var) idleMarker idleMarker:baseform	-	4.30	wiki:originVersion	geckwiki:GetIdleMarkerAnimations.wiki
+johnnyguitar	-	IMOD	(int) IMOD IMOD:ref	-	first-release	first-release	geckwiki:GetIMODAnimatable.wiki
+johnnyguitar	-	interfaceID	(hex) interfaceID interfaceID:int	-	4.20	wiki:originVersion	geckwiki:GetSystemColor.wiki
+johnnyguitar	-	interiorCell	(traitValue:float) interiorCell interiorCell:ref traitID:int	-	first-release	first-release	geckwiki:GetInteriorLightingTraitNumeric.wiki
+johnnyguitar	-	IsCellExpired	(int) IsCellExpired cell:form	-	first-release	first-release	geckwiki:IsCellExpired.wiki
+johnnyguitar	-	IsCellVisited	(int) IsCellVisited cell:form	-	first-release	first-release	geckwiki:IsCellVisited.wiki
+johnnyguitar	-	IsCombatMusicEnabled	(int) IsCombatMusicEnabled	-	first-release	first-release	geckwiki:IsCombatMusicEnabled.wiki
+johnnyguitar	-	IsCompassHostile	(int) IsCompassHostile	-	first-release	first-release	geckwiki:IsCompassHostile.wiki
+johnnyguitar	-	IsCrimeOrEnemy	(int) IsCrimeOrEnemy	-	4.10	wiki:originVersion	geckwiki:IsCrimeOrEnemy.wiki
+johnnyguitar	-	IsHostilesNearby	(int) IsHostilesNearby	-	first-release	first-release	geckwiki:IsHostilesNearby.wiki
+johnnyguitar	-	IsLevelUpMenuEnabled	(int) IsLevelUpMenuEnabled	-	first-release	first-release	geckwiki:IsLevelUpMenuEnabled.wiki
+johnnyguitar	-	Jump	(void) Jump	-	first-release	first-release	geckwiki:Jump.wiki
+johnnyguitar	-	lightTemplate	(cell:baseform) lightTemplate lightTemplate:form	-	first-release	first-release	geckwiki:GetLightingTemplateCell.wiki
+johnnyguitar	-	markerReforList	(void) markerReforList markerReforList:form iconPath:string	-	first-release	first-release	geckwiki:SetCustomMapMarkerIcon.wiki
+johnnyguitar	-	MD5File	(string) MD5File filepath:string	-	first-release	first-release	geckwiki:MD5File.wiki
+johnnyguitar	-	MediaSet	(traitValue:float) MediaSet MediaSet:ref traitID:int	-	first-release	first-release	geckwiki:GetMediaSetTraitNumeric.wiki
+johnnyguitar	-	ModActorValueAlt	(void) ModActorValueAlt ActorValueCode:int Value:int	-	first-release	first-release	geckwiki:ModActorValueAlt.wiki
+johnnyguitar	-	ModNthTempEffectTimeLeft	(success:0/1) ModNthTempEffectTimeLeft index:int modifier:float	-	first-release	first-release	geckwiki:ModNthTempEffectTimeLeft.wiki
+johnnyguitar	-	musicType	(float) musicType musicType:ref	-	first-release	first-release	geckwiki:GetMusicTypeDB.wiki
+johnnyguitar	-	name	(float) name name:ActorValue	-	4.20	wiki:originVersion	geckwiki:GetThresholdedActorValue.wiki
+johnnyguitar	-	newPath	(void) newPath newPath:string form:baseform isFemale:int(0/1)	-	first-release	first-release	geckwiki:SetMessageIconPath.wiki
+johnnyguitar	-	newPrompt	(void) newPrompt newPrompt:string	-	4.30	wiki:originVersion	geckwiki:SetRefActivationPromptOverride.wiki
+johnnyguitar	-	NiNode	(float) NiNode NiNode:string	-	first-release	first-release	geckwiki:Get3DDistanceFromHitToNiNode.wiki
+johnnyguitar	-	note	(void) note note:form isRead:int	-	first-release	first-release	geckwiki:SetNoteRead.wiki
+johnnyguitar	-	onOrOff	(void) onOrOff onOrOff:int(1/0)	-	first-release	first-release	geckwiki:ToggleDisableSaves.wiki
+johnnyguitar	-	patchID	(int) patchID patchID:int	-	first-release	first-release	geckwiki:GetJohnnyPatch.wiki
+johnnyguitar	-	path	(int) path path:string useDataTextures:int(0/1)	-	first-release	first-release	geckwiki:GetTextureFormat.wiki
+johnnyguitar	-	poison	(void) poison poison:baseform	-	first-release	first-release	geckwiki:ApplyWeaponPoison.wiki
+johnnyguitar	-	projectile	(void) projectile projectile:form soundID:int(1-3) sound:form	-	first-release	first-release	geckwiki:SetProjectileSound.wiki
+johnnyguitar	-	quest	(float) quest quest:form	-	first-release	first-release	geckwiki:GetQuestDelay.wiki
+johnnyguitar	-	R	(int) R R:int G:int B:int	-	4.40	wiki:originVersion	geckwiki:GetRGBColor.wiki
+johnnyguitar	-	race	(int) race race:form flagID:int(1/4)	-	first-release	first-release	geckwiki:GetRaceFlag.wiki
+johnnyguitar	-	ref1	(float) ref1 ref1:ref ref2:ref NiNode1:string NiNode2:string	-	first-release	first-release	geckwiki:Get3DDistanceBetweenNiNodes.wiki
+johnnyguitar	-	RefreshTerminalMenu	(void) RefreshTerminalMenu	-	4.50	wiki:originVersion	geckwiki:RefreshTerminalMenu.wiki
+johnnyguitar	-	region	(void) region region:ref weather:ref chance:int(0-100) global:ref	-	first-release	first-release	geckwiki:AddRegionWeather.wiki
+johnnyguitar	-	RemoveNavmeshobstacle	(void) RemoveNavmeshobstacle	-	4.70	wiki:originVersion	geckwiki:RemoveNavmeshobstacle.wiki
+johnnyguitar	-	RemovePrimitive	(success:0/1) RemovePrimitive	-	first-release	first-release	geckwiki:RemovePrimitive.wiki
+johnnyguitar	-	reputation	(success(0/1)) reputation reputation:baseform tier:int(1-4) iconPath:string	-	4.70	wiki:originVersion	geckwiki:SetCustomReputationChangeIcon.wiki
+johnnyguitar	-	RestoreActorValueAlt	(void) RestoreActorValueAlt ActorValueCode:int Value:<nowiki>int	-	first-release	first-release	geckwiki:RestoreActorValueAlt.wiki
+johnnyguitar	-	RewardKarmaAlt	(void) RewardKarmaAlt value:int	-	first-release	first-release	geckwiki:RewardKarmaAlt.wiki
+johnnyguitar	-	RGBtoHSV	(void) RGBtoHSV rIn:scriptVar gIn:scriptVar bIn:scriptVar hOut:scriptVar sOut:scriptVar vOut:scriptVar	-	4.20	wiki:originVersion	geckwiki:RGBtoHSV.wiki
+johnnyguitar	-	RollCredits	(void) RollCredits	-	4.70	wiki:originVersion	geckwiki:RollCredits.wiki
+johnnyguitar	-	sequenceID	(int) sequenceID sequenceID:int(0-7)	-	first-release	first-release	geckwiki:GetSequenceAnimGroup.wiki
+johnnyguitar	-	SetActorValueAlt	(void) SetActorValueAlt ActorValueCode:int Value:int	-	first-release	first-release	geckwiki:SetActorValueAlt.wiki
+johnnyguitar	-	SetBipedIconPathAlt	(void) SetBipedIconPathAlt NewPath:string isFemale:int form:ref	-	first-release	first-release	geckwiki:SetBipedIconPathAlt.wiki
+johnnyguitar	-	SetEquipType	(void) SetEquipType item:ref equipType:int	-	first-release	first-release	geckwiki:SetEquipType.wiki
+johnnyguitar	-	SetJohnnyOnAddPerkEventHandler	(void) SetJohnnyOnAddPerkEventHandler setORremove:1/0 handlerScript:ref flag:int perk:filter	-	first-release	first-release	geckwiki:SetJohnnyOnAddPerkEventHandler.wiki
+johnnyguitar	-	SetJohnnyOnChallengeCompleteEventHandler	(void) SetJohnnyOnChallengeCompleteEventHandler setORremove:1/0 handlerScript:ref flag:int challenge:filter	-	first-release	first-release	geckwiki:SetJohnnyOnChallengeCompleteEventHandler.wiki
+johnnyguitar	-	SetJohnnyOnCompleteQuestEventHandler	(void) SetJohnnyOnCompleteQuestEventHandler setORremove:1/0 handlerScript:ref flag:int quest:filter	-	first-release	first-release	geckwiki:SetJohnnyOnCompleteQuestEventHandler.wiki
+johnnyguitar	-	SetJohnnyOnCrosshairEventHandler	(void) SetJohnnyOnCrosshairEventHandler setORremove:1/0 handlerScript:ref flag:int form:filter formType:filter	-	first-release	first-release	geckwiki:SetJohnnyOnCrosshairEventHandler.wiki
+johnnyguitar	-	SetJohnnyOnDyingEventHandler	(void) SetJohnnyOnDyingEventHandler setORremove:1/0 handlerScript:ref flag:int actor:filter	-	first-release	first-release	geckwiki:SetJohnnyOnDyingEventHandler.wiki
+johnnyguitar	-	SetJohnnyOnFailQuestEventHandler	(void) SetJohnnyOnFailQuestEventHandler setORremove:1/0 handlerScript:ref flag:int quest:filter	-	first-release	first-release	geckwiki:SetJohnnyOnFailQuestEventHandler.wiki
+johnnyguitar	-	SetJohnnyOnLimbGoneEventHandler	(void) SetJohnnyOnLimbGoneEventHandler setORremove:1/0 handlerScript:ref flag:int actor:filter limbID:filter	-	first-release	first-release	geckwiki:SetJohnnyOnLimbGoneEventHandler.wiki
+johnnyguitar	-	SetJohnnyOnRemovePerkEventHandler	(void) SetJohnnyOnRemovePerkEventHandler setORremove:1/0 handlerScript:ref flag:int perk:filter	-	first-release	first-release	geckwiki:SetJohnnyOnRemovePerkEventHandler.wiki
+johnnyguitar	-	SetJohnnyOnSettingsUpdateEventHandler	(void) SetJohnnyOnSettingsUpdateEventHandler setORremove:1/0 handlerScript:ref flag:int	-	first-release	first-release	geckwiki:SetJohnnyOnSettingsUpdateEventHandler.wiki
+johnnyguitar	-	SetJohnnyOnStartQuestEventHandler	(void) SetJohnnyOnStartQuestEventHandler setORremove:1/0 handlerScript:ref flag:int quest:filter	-	first-release	first-release	geckwiki:SetJohnnyOnStartQuestEventHandler.wiki
+johnnyguitar	-	SetJohnnyOnStopQuestEventHandler	(void) SetJohnnyOnStopQuestEventHandler setORremove:1/0 handlerScript:ref flag:int quest:filter	-	first-release	first-release	geckwiki:SetJohnnyOnStopQuestEventHandler.wiki
+johnnyguitar	-	SetJohnnySeenDataEventHandler	(void) SetJohnnySeenDataEventHandler setORremove:1/0 handlerScript:ref flag:int cell:filter	-	first-release	first-release	geckwiki:SetJohnnySeenDataEventHandler.wiki
+johnnyguitar	-	setORremove	(void) setORremove setORremove:1/0 handlerScript:ref flag:int	-	first-release	first-release	geckwiki:SetJohnnyOnRenderUpdateEventHandler.wiki
+johnnyguitar	-	SHA1File	(string) SHA1File filepath:string	-	first-release	first-release	geckwiki:SHA1File.wiki
+johnnyguitar	-	shakeMult	(void) shakeMult shakeMult:float shakeDuration:float	-	first-release	first-release	geckwiki:SetCameraShake.wiki
+johnnyguitar	-	skipInvisible	(array) skipInvisible skipInvisible:int(0/1)	-	first-release	first-release	geckwiki:GetCompassHostiles.wiki
+johnnyguitar	-	skipInvisibleHostiles	(ref) skipInvisibleHostiles skipInvisibleHostiles:int	-	first-release	first-release	geckwiki:GetNearestCompassHostile.wiki
+johnnyguitar	-	sound	(void) sound sound:form type:int(1-4)	-	first-release	first-release	geckwiki:SetUIUpdateSound.wiki
+johnnyguitar	-	soundForm	(success:0/1) soundForm soundForm:ref source:ref	-	first-release	first-release	geckwiki:StopSoundAlt.wiki
+johnnyguitar	-	source	(array) source source:formArray sortReverse:bool	-	first-release	first-release	geckwiki:Ar SortEditor.wiki
+johnnyguitar	-	statName	(int) statName statName:string	-	4.80	wiki:originVersion	geckwiki:GetExtraMiscStat.wiki
+johnnyguitar	-	stolenItemOrContainer	(void) stolenItemOrContainer stolenItemOrContainer:refr scanInventory:int(0/1)	-	first-release	first-release	geckwiki:SendStealingAlarm.wiki
+johnnyguitar	-	stopAnimation	(void) stopAnimation stopAnimation:int	-	first-release	first-release	geckwiki:RefreshIdle.wiki
+johnnyguitar	-	StopSoundFile	(0/1) StopSoundFile	-	4.65	wiki:originVersion	geckwiki:StopSoundFile.wiki
+johnnyguitar	-	StopVATSCam	(void) StopVATSCam	-	first-release	first-release	geckwiki:StopVATSCam.wiki
+johnnyguitar	-	TabID	(void) TabID TabID:int	-	first-release	first-release	geckwiki:TogglePipBoy.wiki
+johnnyguitar	-	talkingActivator	(form) talkingActivator talkingActivator:baseform	-	first-release	first-release	geckwiki:GetTalkingActivatorActor.wiki
+johnnyguitar	-	terminal	(int) terminal terminal:form	-	first-release	first-release	geckwiki:AddTerminalMenuItem.wiki
+johnnyguitar	-	text	(void) text text:string isCompleted:int(0/1) displayMultiple:int(0/1)	-	first-release	first-release	geckwiki:QueueObjectiveText.wiki
+johnnyguitar	-	title	(void) title title:string subtitle:string soundID:string queuePriority:int justification:int titleFont:int subtitleFont:int	-	first-release	first-release	geckwiki:QueueCinematicText.wiki
+johnnyguitar	-	titleOrTier	(string_var) titleOrTier titleOrTier:int(0/1)	-	first-release	first-release	geckwiki:GetPlayerKarmaTitle.wiki
+johnnyguitar	-	toggle	(void) toggle toggle:int	-	first-release	first-release	geckwiki:ToggleCombatMusic.wiki
+johnnyguitar	-	type	(void) type type:int rOut:scriptVar gOut:scriptVar bOut:scriptVar	-	4.70	wiki:originVersion	geckwiki:GetSystemColorAlt.wiki
+johnnyguitar	-	unit	(float) unit unit:0/1/2	-	first-release	first-release	geckwiki:GetTimePlayed.wiki
+johnnyguitar	-	UpdateCrosshairPrompt	(void) UpdateCrosshairPrompt	-	4.55	wiki:originVersion	geckwiki:UpdateCrosshairPrompt.wiki
+johnnyguitar	-	v0	(float) v0 v0:float v1:float t:float	-	first-release	first-release	geckwiki:Lerp.wiki
+johnnyguitar	-	value	(float) value value:float min:float max:float	-	first-release	first-release	geckwiki:Clamp.wiki
+johnnyguitar	-	Weapon	(traitValue:ref) Weapon Weapon:ref traitID:int	-	first-release	first-release	geckwiki:GetWeapon1stPersonModel.wiki
+johnnyguitar	-	weaponForm	(weaponDPS:float) weaponForm weaponForm:ref	-	first-release	first-release	geckwiki:GetCalculatedWeaponDPS.wiki
+johnnyguitar	-	Worldspace	(string) Worldspace Worldspace:ref	-	first-release	first-release	geckwiki:GetWorldSpaceMapTexture.wiki
+johnnyguitar	-	x	(void) x x:returnVariable y:returnVariable z:returnVariable worldOrLocal:int	-	first-release	first-release	geckwiki:GetCameraTranslation.wiki
+johnnyguitar	-	x1	(float) x1 x1:float y1:float z1:float x2:float y2:float z2:float	-	first-release	first-release	geckwiki:GetVector3DDistance.wiki
+johnnyguitar	-	xOut	(int) xOut xOut:int yOut:int zOut:int xIn:float yIn:float zIn:float handleType:int reference:ref	-	first-release	first-release	geckwiki:WorldToScreen.wiki
+johnnyguitar	-	zone	(isSuccess) zone zone:baseform	-	4.55	wiki:originVersion	geckwiki:SetRefEncounterZone.wiki

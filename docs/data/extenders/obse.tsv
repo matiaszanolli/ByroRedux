@@ -1,0 +1,645 @@
+family	script	function	signature	global	introduced	introduced_source	source
+obse	-	Abs	abs [float]	-	0001	first-release	cs-uesp-wiki:Abs.wiki
+obse	-	ACos	acos [float]	-	0001	first-release	cs-uesp-wiki:ACos.wiki
+obse	-	AddEffectItem	(index:short) AddEffectItem nuEffect:chars magicItem:ref	-	0001	first-release	cs-uesp-wiki:AddEffectItem.wiki
+obse	-	AddFullEffectItem	(Due to wiki limitations, the following has been broken into two lines, but is really one.)	-	0011	whatsnew:0011	cs-uesp-wiki:AddFullEffectItem.wiki
+obse	-	AddItemNS	''container:ref.''AddItemNS item:base count:long	-	0001	first-release	cs-uesp-wiki:AddItemNS.wiki
+obse	-	AddSpellNS	''actor:ref.''AddSpellNS spell:base count:long	-	0001	first-release	cs-uesp-wiki:AddSpellNS.wiki
+obse	-	AddToLeveledList	(nothing) AddToLeveledList leveledList:ref object:ref level:short ''count:short''	-	0001	first-release	cs-uesp-wiki:AddToLeveledList.wiki
+obse	-	AHammerKey	AHammerKey key	-	0001	first-release	cs-uesp-wiki:AHammerKey.wiki
+obse	-	AppendToName	(nothing) ''reference.''AppendToName "toAppend:string" ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:AppendToName.wiki
+obse	-	ASin	asin [float]	-	0001	first-release	cs-uesp-wiki:ASin.wiki
+obse	-	ATan	atan [float]	-	0001	first-release	cs-uesp-wiki:ATan.wiki
+obse	-	ATan2	atan2 [float1] [float2]	-	0001	first-release	cs-uesp-wiki:ATan2.wiki
+obse	-	Break	(nothing) Break	-	22.5	whatsnew:22.5	cs-uesp-wiki:Break.wiki
+obse	-	CalcLeveledItem	(randomItem:ref) CalcLeveledItem leveledList:ref level:short ''useChanceNone:bool'' ''levelDiff:short''	-	0001	first-release	cs-uesp-wiki:CalcLeveledItem.wiki
+obse	-	CanCorpseCheck	(canCoprseCheck:bool) ''reference''.CanCorpseCheck ''actor:ref''	-	0001	first-release	cs-uesp-wiki:CanCorpseCheck.wiki
+obse	-	Ceil	ceil [float]	-	0001	first-release	cs-uesp-wiki:Ceil.wiki
+obse	-	ClearHotkey	(nothing) ClearHotkeyItem whichHotkey:short	-	0001	first-release	cs-uesp-wiki:ClearHotkey.wiki
+obse	-	CloneForm	[nuObjectID] CloneForm [objectID]	-	0001	first-release	cs-uesp-wiki:CloneForm.wiki
+obse	-	CompareFemaleBipedPath	(found:bool) ''reference.''CompareFemaleBipedPath toFind:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:CompareFemaleBipedPath.wiki
+obse	-	CompareFemaleGroundPath	(found:bool) ''reference.''CompareFemaleGroundPath toFind:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:CompareFemaleGroundPath.wiki
+obse	-	CompareFemaleIconPath	(found:bool) ''reference.''CompareFemaleIconPath toFind:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:CompareFemaleIconPath.wiki
+obse	-	CompareIconPath	(found:bool) ''reference.''CompareIconPath toFind:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:CompareIconPath.wiki
+obse	-	CompareMaleBipedPath	(found:bool) ''reference.''CompareMaleBipedPath toFind:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:CompareMaleBipedPath.wiki
+obse	-	CompareMaleGroundPath	(found:bool) ''reference.''CompareMaleGroundPath toFind:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:CompareMaleGroundPath.wiki
+obse	-	CompareMaleIconPath	(found:bool) ''reference.''CompareMaleIconPath toFind:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:CompareMaleIconPath.wiki
+obse	-	CompareModelPath	(found:bool) reference.CompareModelPath toFind:string objectID:ref	-	0001	first-release	cs-uesp-wiki:CompareModelPath.wiki
+obse	-	CompareName	(nameContainsString) ''reference.''CompareName "toFindInName:string" ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:CompareName.wiki
+obse	-	CompareNames	(comparison:short) ''reference''.CompareNames compareTo:ref ''compare:ref''	-	0001	first-release	cs-uesp-wiki:CompareNames.wiki
+obse	-	Con CAL	con_CAL	-	0001	first-release	cs-uesp-wiki:Con CAL.wiki
+obse	-	Con GetINISetting	con_GetINISetting "iniSettingName:Subsection::string"	-	0001	first-release	cs-uesp-wiki:Con GetINISetting.wiki
+obse	-	Con HairTint	''actor''.con_HairTint red green blue	-	0001	first-release	cs-uesp-wiki:Con HairTint.wiki
+obse	-	Con LoadGame	con_LoadGame FileName	-	0001	first-release	cs-uesp-wiki:Con LoadGame.wiki
+obse	-	Con ModWaterShader	con_ModWaterShader string float	-	0001	first-release	cs-uesp-wiki:Con ModWaterShader.wiki
+obse	-	Con PlayerSpellBook	con_PlayerSpellBook	-	0001	first-release	cs-uesp-wiki:Con PlayerSpellBook.wiki
+obse	-	Con QuitGame	con_QuitGame	-	0001	first-release	cs-uesp-wiki:Con QuitGame.wiki
+obse	-	Con RefreshINI	con_RefreshINI	-	0001	first-release	cs-uesp-wiki:Con RefreshINI.wiki
+obse	-	Con RunMemoryPass	con_RunMemoryPass Flag	-	0001	first-release	cs-uesp-wiki:Con RunMemoryPass.wiki
+obse	-	Con Save	con_Save FileName	-	0001	first-release	cs-uesp-wiki:Con Save.wiki
+obse	-	Con SaveINI	con_SaveINI	-	0001	first-release	cs-uesp-wiki:Con SaveINI.wiki
+obse	-	Con SetCameraFOV	con_SetCameraFOV Degrees	-	0001	first-release	cs-uesp-wiki:Con SetCameraFOV.wiki
+obse	-	Con SetClipDist	con_SetClipDist ClipDistance	-	0001	first-release	cs-uesp-wiki:Con SetClipDist.wiki
+obse	-	Con SetFog	con_SetFog StartDistance EndDistance	-	0001	first-release	cs-uesp-wiki:Con SetFog.wiki
+obse	-	Con SetGameSetting	con_SetGameSetting GMST value	-	0001	first-release	cs-uesp-wiki:Con SetGameSetting.wiki
+obse	-	Con SetGamma	con_SetGamma float	-	0001	first-release	cs-uesp-wiki:Con SetGamma.wiki
+obse	-	Con SetHDRParam	con_SetHDRParam EyeAdaptSpeed EmissiveHDRMult TreeDimmer GrassDimmer value5 value6	-	0001	first-release	cs-uesp-wiki:Con SetHDRParam.wiki
+obse	-	Con SetImageSpaceGlow	con_SetImageSpaceGlow int1 int2 int3 int4	-	0001	first-release	cs-uesp-wiki:Con SetImageSpaceGlow.wiki
+obse	-	Con SetINISetting	con_SetINISetting "Setting:Category" value	-	0001	first-release	cs-uesp-wiki:Con SetINISetting.wiki
+obse	-	Con SetSkyParam	con_SetSkyParam value1 value2	-	0001	first-release	cs-uesp-wiki:Con SetSkyParam.wiki
+obse	-	Con SetTargetRefraction	''actorRef''.con_SetTargetRefraction value	-	0001	first-release	cs-uesp-wiki:Con SetTargetRefraction.wiki
+obse	-	Con SetTargetRefractionFire	''actorRef''.con_SetTargetRefraction value1 value2	-	0001	first-release	cs-uesp-wiki:Con SetTargetRefractionFire.wiki
+obse	-	Con SexChange	''actorRef''.con_SexChange	-	0001	first-release	cs-uesp-wiki:Con SexChange.wiki
+obse	-	Con TCL	con_TCL	-	0001	first-release	cs-uesp-wiki:Con TCL.wiki
+obse	-	Con TFC	con_TFC	-	0001	first-release	cs-uesp-wiki:Con TFC.wiki
+obse	-	Con TGM	con_TGM	-	0001	first-release	cs-uesp-wiki:Con TGM.wiki
+obse	-	Con ToggleAI	con_ToggleAI	-	0001	first-release	cs-uesp-wiki:Con ToggleAI.wiki
+obse	-	Con ToggleCombatAI	con_ToggleCombatAI	-	0001	first-release	cs-uesp-wiki:Con ToggleCombatAI.wiki
+obse	-	Con ToggleDetection	con_ToggleDetection	-	0001	first-release	cs-uesp-wiki:Con ToggleDetection.wiki
+obse	-	Con ToggleMapMarkers	con_ToggleMapMarkers	-	0001	first-release	cs-uesp-wiki:Con ToggleMapMarkers.wiki
+obse	-	Con ToggleMenus	con_ToggleMenus	-	0001	first-release	cs-uesp-wiki:Con ToggleMenus.wiki
+obse	-	Con WaterDeepColor	con_WaterDeepColor red green blue	-	0001	first-release	cs-uesp-wiki:Con WaterDeepColor.wiki
+obse	-	Con WaterReflectionColor	con_WaterReflectionColor red green blue	-	0001	first-release	cs-uesp-wiki:Con WaterReflectionColor.wiki
+obse	-	Con WaterShallowColor	con_WaterShallowColor red green blue	-	0001	first-release	cs-uesp-wiki:Con WaterShallowColor.wiki
+obse	-	CopyAllEffectItems	(nothing) CopyAllEffectItems fromObjectID:ref toObjectId:ref	-	0011	whatsnew:0011	cs-uesp-wiki:CopyAllEffectItems.wiki
+obse	-	CopyEyes	(nothing) ''reference''.CopyEyes copyFrom:ref ''copyTo:ref''	-	0001	first-release	cs-uesp-wiki:CopyEyes.wiki
+obse	-	CopyFemaleBipedPath	(nothing) ''reference.''CopyFemaleBipedPath fromObject:ref ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:CopyFemaleBipedPath.wiki
+obse	-	CopyFemaleGroundPath	(nothing) ''reference.''CopyFemaleGroundPath fromObject:ref ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:CopyFemaleGroundPath.wiki
+obse	-	CopyFemaleIconPath	(nothing) ''reference.''CopyFemaleIconPath fromObject:ref ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:CopyFemaleIconPath.wiki
+obse	-	CopyHair	(nothing) ''reference''.CopyHair copyFrom:ref ''copyTo:ref''	-	0001	first-release	cs-uesp-wiki:CopyHair.wiki
+obse	-	CopyIconPath	(nothing) ''reference.''CopyIconPath fromObject:ref ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:CopyIconPath.wiki
+obse	-	CopyMaleBipedPath	(nothing) ''reference.''CopyMaleBipedPath fromObject:ref ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:CopyMaleBipedPath.wiki
+obse	-	CopyMaleGroundPath	(nothing) ''reference.''CopyMaleGroundPath fromObject:ref ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:CopyMaleGroundPath.wiki
+obse	-	CopyMaleIconPath	(nothing) ''reference.''CopyMaleIconPath fromObject:ref ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:CopyMaleIconPath.wiki
+obse	-	CopyModelPath	(nothing) ''reference.''CopyModelPath fromObject:ref ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:CopyModelPath.wiki
+obse	-	CopyName	(nothing) CopyName srcObjectID:ref targetObjectID:ref	-	0001	first-release	cs-uesp-wiki:CopyName.wiki
+obse	-	CopyNthEffectItem	(index:short) CopyNthEffectItem fromObjectID:ref toObjectID:ref whichEffect:short	-	0011	whatsnew:0011	cs-uesp-wiki:CopyNthEffectItem.wiki
+obse	-	CopyRace	(nothing) reference.CopyRace sourceNPC:ref	-	0021 beta	whatsnew:0021 beta	cs-uesp-wiki:CopyRace.wiki
+obse	-	Cos	cos [float]	-	0001	first-release	cs-uesp-wiki:Cos.wiki
+obse	-	Cosh	cosh [float]	-	0001	first-release	cs-uesp-wiki:Cosh.wiki
+obse	-	CreatureHasNoHead	(noHead:bool) ''reference''.CreatureHasNoHead ''creature:ref''	-	0001	first-release	cs-uesp-wiki:CreatureHasNoHead.wiki
+obse	-	CreatureHasNoLeftArm	(noLeftArm:bool) ''reference''.CreatureHasNoLeftArm ''creature:ref''	-	0001	first-release	cs-uesp-wiki:CreatureHasNoLeftArm.wiki
+obse	-	CreatureHasNoMovement	(noMovement:bool) ''reference''.CreatureHasNoMovement ''creature:ref''	-	0001	first-release	cs-uesp-wiki:CreatureHasNoMovement.wiki
+obse	-	CreatureHasNoRightArm	(noRightArm:bool) ''reference''.CreatureHasNoRightArm ''creature:ref''	-	0001	first-release	cs-uesp-wiki:CreatureHasNoRightArm.wiki
+obse	-	CreatureNoCombatInWater	(noCombat:bool) ''reference''.CreatureNoCombatInWater ''creature:ref''	-	0001	first-release	cs-uesp-wiki:CreatureNoCombatInWater.wiki
+obse	-	CreatureUsesWeaponAndShield	(weaponAndShield:bool) ''reference''.CreatureUsesWeaponAndShield ''creature:ref''	-	0001	first-release	cs-uesp-wiki:CreatureUsesWeaponAndShield.wiki
+obse	-	DeleteReference	''[reference:ref.]''DeleteReference	-	0016 beta 2	whatsnew:0016 beta 2	cs-uesp-wiki:DeleteReference.wiki
+obse	-	DisableControl	(nothing) DisableControl whichControl:short	-	0001	first-release	cs-uesp-wiki:DisableControl.wiki
+obse	-	DisableKey	(nothing) DisableKey dxScanCode:long	-	0001	first-release	cs-uesp-wiki:DisableKey.wiki
+obse	-	DisableMouse	DisableMouse	-	0001	first-release	cs-uesp-wiki:DisableMouse.wiki
+obse	-	DispatchEvent	(dispatched:bool) DispatchEvent eventName:string args:StringMap senderName:string	-	0021 beta	whatsnew:0021 beta	cs-uesp-wiki:DispatchEvent.wiki
+obse	-	EnableControl	(nothing) EnableControl whichControl:short	-	0001	first-release	cs-uesp-wiki:EnableControl.wiki
+obse	-	EnableKey	(nothing) EnableKey dxScanCode:long	-	0001	first-release	cs-uesp-wiki:EnableKey.wiki
+obse	-	EnableMouse	EnableMouse	-	0001	first-release	cs-uesp-wiki:EnableMouse.wiki
+obse	-	EquipItemNS	''actor:ref.''EquipItemNS item:base count:long	-	0001	first-release	cs-uesp-wiki:EquipItemNS.wiki
+obse	-	EquipItemSilent	''actor:ref.''EquipItemSilent item:base count:long	-	0001	first-release	cs-uesp-wiki:EquipItemSilent.wiki
+obse	-	Exp	exp [float]	-	0001	first-release	cs-uesp-wiki:Exp.wiki
+obse	-	FactionHasSpecialCombat	(hasSpecialCombat:bool) FactionHasSpecialCombat faction:ref	-	0001	first-release	cs-uesp-wiki:FactionHasSpecialCombat.wiki
+obse	-	Floor	floor [float]	-	0001	first-release	cs-uesp-wiki:Floor.wiki
+obse	-	ForEach	====For arrays====	-	0017 beta 1	whatsnew:0017 beta 1	cs-uesp-wiki:ForEach.wiki
+obse	-	GetActiveEffectCount	(count:long) reference.GetActiveEffectCount	-	0001	first-release	cs-uesp-wiki:GetActiveEffectCount.wiki
+obse	-	GetActiveMenuMode	(menuCode:short) GetActiveMenuMode	-	0001	first-release	cs-uesp-wiki:GetActiveMenuMode.wiki
+obse	-	GetActorLightAmount	(lightAmount:float) reference.GetActorLightAmout	-	22.6	whatsnew:22.6	cs-uesp-wiki:GetActorLightAmount.wiki
+obse	-	GetActorMaxLevel	(maxLevel:short) ''reference''.GetMaxLevel ''actor:ref''	-	0001	first-release	cs-uesp-wiki:GetActorMaxLevel.wiki
+obse	-	GetActorMaxSwimBreath	(breathLevel:float) reference.GetActorMaxSwimBreath	-	0021 beta 4	whatsnew:0021 beta 4	cs-uesp-wiki:GetActorMaxSwimBreath.wiki
+obse	-	GetActorMinLevel	(minLevel:short) ''reference''.GetMinLevel ''actor:ref''	-	0001	first-release	cs-uesp-wiki:GetActorMinLevel.wiki
+obse	-	GetActorSoulLevel	(soulLevel:short) ''reference''.GetActorSoulLevel ''actor:ref''	-	0001	first-release	cs-uesp-wiki:GetActorSoulLevel.wiki
+obse	-	GetActorSwimBreath	(breathLevel:float) reference.GetActorSwimBreath	-	0021 beta 4	whatsnew:0021 beta 4	cs-uesp-wiki:GetActorSwimBreath.wiki
+obse	-	GetActorValueC	(actorValue:long) reference.GetActorValueC actorValueCode:short	-	0014	whatsnew:0014	cs-uesp-wiki:GetActorValueC.wiki
+obse	-	GetAltControl	GetAltControl id	-	0015 beta 2	whatsnew:0015 beta 2	cs-uesp-wiki:GetAltControl.wiki
+obse	-	GetApparatusType	(apparatusType:short) ''reference.''GetApparatusType ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetApparatusType.wiki
+obse	-	GetArmorAR		-	0001	first-release	cs-uesp-wiki:GetArmorAR.wiki
+obse	-	GetArmorType	(armorType:short) ''reference.''GetArmorType ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetArmorType.wiki
+obse	-	GetArrowProjectileBowEnchantment	(enchantment:ref) reference.GetArrowProjectileBowEnchantment	-	0001	first-release	cs-uesp-wiki:GetArrowProjectileBowEnchantment.wiki
+obse	-	GetArrowProjectileEnchantment	(enchantment:ref) reference.GetArrowProjectileEnchantment	-	0001	first-release	cs-uesp-wiki:GetArrowProjectileEnchantment.wiki
+obse	-	GetArrowProjectilePoison	(poison:ref) reference.GetArrowProjectilePoison	-	0001	first-release	cs-uesp-wiki:GetArrowProjectilePoison.wiki
+obse	-	GetAttackDamage	(damage:long) ''reference.''GetAttackDamage ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetAttackDamage.wiki
+obse	-	GetBaseObject	[''Ref.'']GetBaseObject	-	0001	first-release	cs-uesp-wiki:GetBaseObject.wiki
+obse	-	GetBookCantBeTaken	(cantBeTaken:bool) ''reference.''GetBookCantBeTaken ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetBookCantBeTaken.wiki
+obse	-	GetBookIsScroll	(isScroll:bool) ''reference.''GetBookIsScroll ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetBookIsScroll.wiki
+obse	-	GetBookSkillTaught	(skillTaught:short) ''reference.''GetBookSkillTaught ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetBookSkillTaught.wiki
+obse	-	GetCellMusicType	(musicType:short) GetCellMusicType	-	0001	first-release	cs-uesp-wiki:GetCellMusicType.wiki
+obse	-	GetClass	(class:ref) reference.GetClass	-	0017 beta 2	whatsnew:0017 beta 2	cs-uesp-wiki:GetClass.wiki
+obse	-	GetClassAttribute	(attribute:short) ''reference''.GetClassAttribute whichAttribute:short[0..1] ''class:ref''	-	0001	first-release	cs-uesp-wiki:GetClassAttribute.wiki
+obse	-	GetClassSkill	(skill:short) ''reference.''GetClassSkill whichSkill:short[0..6] ''class:ref''	-	0001	first-release	cs-uesp-wiki:GetClassSkill.wiki
+obse	-	GetClassSpecialization	(specialization:short) ''reference.''GetClassSpecialization ''class:ref''	-	0001	first-release	cs-uesp-wiki:GetClassSpecialization.wiki
+obse	-	GetClimateHasMasser	(hasMasser:bool) GetClimateHasMasser climate:ref	-	0001	first-release	cs-uesp-wiki:GetClimateHasMasser.wiki
+obse	-	GetClimateHasSecunda	(hasSecunda:bool) GetClimateHasSecunda climate:ref	-	0001	first-release	cs-uesp-wiki:GetClimateHasSecunda.wiki
+obse	-	GetClimateMoonPhaseLength	(phaseLength:short) GetClimateMoonPhaseLength climate:ref	-	0001	first-release	cs-uesp-wiki:GetClimateMoonPhaseLength.wiki
+obse	-	GetClimateSunriseBegin	(sunriseBegin:short) GetSunriseBegin weather:ref	-	0001	first-release	cs-uesp-wiki:GetClimateSunriseBegin.wiki
+obse	-	GetClimateSunriseEnd	(sunriseEnd:short) GetSunriseEnd weather:ref	-	0001	first-release	cs-uesp-wiki:GetClimateSunriseEnd.wiki
+obse	-	GetClimateSunsetBegin	(sunsetBegin:short) GetSunsetBegin weather:ref	-	0001	first-release	cs-uesp-wiki:GetClimateSunsetBegin.wiki
+obse	-	GetClimateSunsetEnd	(sunsetEnd:short) GetSunsetEnd weather:ref	-	0001	first-release	cs-uesp-wiki:GetClimateSunsetEnd.wiki
+obse	-	GetClimateVolatility	(volatility:short) GetClimateVolatility climate:ref	-	0001	first-release	cs-uesp-wiki:GetClimateVolatility.wiki
+obse	-	GetContainerRespawns	(respawns:bool) reference.GetContainerRespawns objectID:ref	-	0001	first-release	cs-uesp-wiki:GetContainerRespawns.wiki
+obse	-	GetControl	GetControl id	-	0001	first-release	cs-uesp-wiki:GetControl.wiki
+obse	-	GetCreatureBaseScale	(scale:float) reference.GetCreatureBaseScale creature:ref	-	0001	first-release	cs-uesp-wiki:GetCreatureBaseScale.wiki
+obse	-	GetCreatureCombatSkill	(combatSkill:short) ''reference.''GetCreatureCombatSkill ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetCreatureCombatSkill.wiki
+obse	-	GetCreatureFlies	(flies:bool) ''reference''.GetCreatureFlies ''creature:ref''	-	0001	first-release	cs-uesp-wiki:GetCreatureFlies.wiki
+obse	-	GetCreatureMagicSkill	(magicSkill:short) ''reference.''GetCreatureMagicSkill ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetCreatureMagicSkill.wiki
+obse	-	GetCreatureReach	(reach:short) reference.GetCreatureReach creature:ref	-	0001	first-release	cs-uesp-wiki:GetCreatureReach.wiki
+obse	-	GetCreatureSoulLevel	(soulLevel:short) reference.GetCreatureSoulLevel creature:ref	-	0001	first-release	cs-uesp-wiki:GetCreatureSoulLevel.wiki
+obse	-	GetCreatureSoundBase	(creature:ref) ''reference''.GetCreatureSoundBase ''creature:ref''	-	0014	whatsnew:0014	cs-uesp-wiki:GetCreatureSoundBase.wiki
+obse	-	GetCreatureStealthSkill	(stealthSkill:short) ''reference.''GetCreatureStealthSkill ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetCreatureStealthSkill.wiki
+obse	-	GetCreatureSwims	(swims:bool) ''reference''.GetCreatureSwims ''creature:ref''	-	0001	first-release	cs-uesp-wiki:GetCreatureSwims.wiki
+obse	-	GetCreatureType	(creatureType:short) ''reference.''GetCreatureType ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetCreatureType.wiki
+obse	-	GetCreatureWalks	(walks:bool) ''reference''.GetCreatureWalks ''creature:ref''	-	0001	first-release	cs-uesp-wiki:GetCreatureWalks.wiki
+obse	-	GetCrosshairRef	(crosshairRef:ref) GetCrosshairRef	-	0001	first-release	cs-uesp-wiki:GetCrosshairRef.wiki
+obse	-	GetCurrentCharge	(charge:float) ''reference.''GetCurrentCharge	-	0001	first-release	cs-uesp-wiki:GetCurrentCharge.wiki
+obse	-	GetCurrentClimateID	(currentClimate:ref) GetCurrentClimateID	-	0001	first-release	cs-uesp-wiki:GetCurrentClimateID.wiki
+obse	-	GetCurrentHealth	(health:float) ''reference.''GetCurrentHealth	-	0001	first-release	cs-uesp-wiki:GetCurrentHealth.wiki
+obse	-	GetCurrentSoulLevel	(soulLevel:short) GetCurrentSoulLevel	-	0001	first-release	cs-uesp-wiki:GetCurrentSoulLevel.wiki
+obse	-	GetCurrentValue	[ref.]GetCurrentValue ValueType	-	0001	first-release	cs-uesp-wiki:GetCurrentValue.wiki
+obse	-	GetCurrentWeatherID	(currentWeather:ref) GetCurrentWeatherID	-	0001	first-release	cs-uesp-wiki:GetCurrentWeatherID.wiki
+obse	-	GetDebugSelection	(selection:ref) GetDebugSelection	-	0001	first-release	cs-uesp-wiki:GetDebugSelection.wiki
+obse	-	GetEnchantment	(enchantment:ref) ''reference.''GetEnchantment ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetEnchantment.wiki
+obse	-	GetEnchantmentCharge	(charge:long) GetEnchantmentCharge objectID:ref	-	0001	first-release	cs-uesp-wiki:GetEnchantmentCharge.wiki
+obse	-	GetEnchantmentCost	(cost:long) GetEnchantmentCost objectID:ref	-	0001	first-release	cs-uesp-wiki:GetEnchantmentCost.wiki
+obse	-	GetEnchantmentType	(enchantType:short) GetEnchantmentType objectID:ref	-	0001	first-release	cs-uesp-wiki:GetEnchantmentType.wiki
+obse	-	GetEquipmentSlot	(slot:short) ''reference.''GetEquipmentSlot ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetEquipmentSlot.wiki
+obse	-	GetEquipmentSlotMask	(objectID:ref) reference.GetEquipmentSlotMask slotMask:long value:long	-	0001	first-release	cs-uesp-wiki:GetEquipmentSlotMask.wiki
+obse	-	GetEquippedCurrentCharge	(charge:float) reference.GetEquippedCurrentCharge slot:short	-	0001	first-release	cs-uesp-wiki:GetEquippedCurrentCharge.wiki
+obse	-	GetEquippedCurrentHealth	(health:float) ''reference.''GetEquippedCurrentHealth slot:short	-	0001	first-release	cs-uesp-wiki:GetEquippedCurrentHealth.wiki
+obse	-	GetEquippedCurrentValue	GetEquippedCurrentvalue ValueType SlotID	-	0008	whatsnew:0008	cs-uesp-wiki:GetEquippedCurrentValue.wiki
+obse	-	GetEquippedObject	(objectID:ref) reference.GetEquippedObject slot:short	-	0001	first-release	cs-uesp-wiki:GetEquippedObject.wiki
+obse	-	GetEquippedObjectValue	GetEquippedObjectvalue ValueType SlotID	-	0008	whatsnew:0008	cs-uesp-wiki:GetEquippedObjectValue.wiki
+obse	-	GetEquippedWeaponPoison	(poison:ref) reference.GetEquippedWeaponPoison	-	0001	first-release	cs-uesp-wiki:GetEquippedWeaponPoison.wiki
+obse	-	GetFallTimer	(falltimer:bool) ''actor:ref.''GetFallTimer	-	0001	first-release	cs-uesp-wiki:GetFallTimer.wiki
+obse	-	GetFirstRef	(reference:ref) GetFirstRef ''type:short'' ''cellDepth:short'' ''includeInactiveRefs:short''	-	0013	whatsnew:0013	cs-uesp-wiki:GetFirstRef.wiki
+obse	-	GetFPS	(fps:float) GetFPS	-	0001	first-release	cs-uesp-wiki:GetFPS.wiki
+obse	-	GetGameLoaded	(gameLoaded:bool) GetGameLoaded	-	0020 beta 4	whatsnew:0020 beta 4	cs-uesp-wiki:GetGameLoaded.wiki
+obse	-	GetGameRestarted	(gameRestarted:bool) GetGameRestarted	-	0001	first-release	cs-uesp-wiki:GetGameRestarted.wiki
+obse	-	GetGoldValue	(goldValue:long) ''reference.''GetGoldValue ''objectID:ref''	-	0019 beta 2	whatsnew:0019 beta 2	cs-uesp-wiki:GetGoldValue.wiki
+obse	-	GetHorse	(horse:ref) ''reference''.GetHorse	-	0014	whatsnew:0014	cs-uesp-wiki:GetHorse.wiki
+obse	-	GetHotkeyItem	(item/spell:ref) GetHotkeyItem whichHotkey:short	-	0001	first-release	cs-uesp-wiki:GetHotkeyItem.wiki
+obse	-	GetIgnoresResistance	(ignores:bool) ''reference.''GetIgnoresResistance ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetIgnoresResistance.wiki
+obse	-	GetKeyPress	(dxScanCode:long) GetKeyPress whichIndex:long	-	0001	first-release	cs-uesp-wiki:GetKeyPress.wiki
+obse	-	GetLightRadius	(radius:short) ''reference''.GetLightRadius ''light:ref''	-	0001	first-release	cs-uesp-wiki:GetLightRadius.wiki
+obse	-	GetLinkedDoor	(linkedDoor:ref) reference.GetLinkedDoor	-	0001	first-release	cs-uesp-wiki:GetLinkedDoor.wiki
+obse	-	GetLuckModifiedSkill	(hasTail:bool) ''reference''.HasTail ''raceOrNPC:ref''	-	0021 beta	whatsnew:0021 beta	cs-uesp-wiki:GetLuckModifiedSkill.wiki
+obse	-	GetMagicEffectBarterFactor	(barterFactor:float) GetMagicEffectBarterFactor effect:chars	-	0001	first-release	cs-uesp-wiki:GetMagicEffectBarterFactor.wiki
+obse	-	GetMagicEffectBaseCost	(baseCost:float) GetMagicEffectBaseCost effect:chars	-	0001	first-release	cs-uesp-wiki:GetMagicEffectBaseCost.wiki
+obse	-	GetMagicEffectCode	(magicEffectCode:long) GetMagicEffectCode effect:chars	-	0001	first-release	cs-uesp-wiki:GetMagicEffectCode.wiki
+obse	-	GetMagicEffectEnchantFactor	(enchantFactor:float) GetMagicEffectEnchantFactor effect:chars	-	0001	first-release	cs-uesp-wiki:GetMagicEffectEnchantFactor.wiki
+obse	-	GetMagicEffectOtherActorValue	(actorValue:short) GetMagicEffectOtherActorValue effect:chars	-	0001	first-release	cs-uesp-wiki:GetMagicEffectOtherActorValue.wiki
+obse	-	GetMagicEffectOtherActorValueC	(actorValue:short) GetMagicEffectOtherActorValueC effect:long	-	0001	first-release	cs-uesp-wiki:GetMagicEffectOtherActorValueC.wiki
+obse	-	GetMagicEffectProjectileSpeed	(projectileSpeed:float) GetMagicEffectProjectileSpeed effect:chars	-	0001	first-release	cs-uesp-wiki:GetMagicEffectProjectileSpeed.wiki
+obse	-	GetMagicEffectSchool	(magicSchool:short) GetMagicEffectSchool effect:chars	-	0001	first-release	cs-uesp-wiki:GetMagicEffectSchool.wiki
+obse	-	GetMagicEffectUsedObject	(objectID:ref) GetMagicEffectUsedObject effect:chars	-	0001	first-release	cs-uesp-wiki:GetMagicEffectUsedObject.wiki
+obse	-	GetMagicEffectUsedObjectC	(objectID:ref) GetMagicEffectUsedObjectC effect:long	-	0001	first-release	cs-uesp-wiki:GetMagicEffectUsedObjectC.wiki
+obse	-	GetMagicItemEffectCount	(count:long) GetMagicItemEffectCount magicItem:ref	-	22.13	whatsnew:22.13	cs-uesp-wiki:GetMagicItemEffectCount.wiki
+obse	-	GetMagicItemType	(magicItemType:short) GetMagicItemType magicItem:ref	-	0001	first-release	cs-uesp-wiki:GetMagicItemType.wiki
+obse	-	GetMagicProjectileSpell	(spell/enchantment:ref) reference.GetMagicProjectileSpell	-	0015a	whatsnew:0015a	cs-uesp-wiki:GetMagicProjectileSpell.wiki
+obse	-	GetMerchantContainer	(containerReference:ref) npc.GetMerchantContainer	-	0001	first-release	cs-uesp-wiki:GetMerchantContainer.wiki
+obse	-	GetModIndex	(index:short) GetModIndex modName:string	-	0001	first-release	cs-uesp-wiki:GetModIndex.wiki
+obse	-	GetMouseButtonPress	(dxScanCode:long) GetMouseButtonPress whichIndex:long	-	0008	whatsnew:0008	cs-uesp-wiki:GetMouseButtonPress.wiki
+obse	-	GetNextRef	(reference:ref) GetNextRef	-	0013	whatsnew:0013	cs-uesp-wiki:GetNextRef.wiki
+obse	-	GetNthActiveEffectCaster	(caster:ref) reference.GetNthActiveEffectCaster whichEffect:long	-	0001	first-release	cs-uesp-wiki:GetNthActiveEffectCaster.wiki
+obse	-	GetNthActiveEffectCode	(effectCode:long) reference.GetNthActiveEffectCode whichEffect:long	-	0001	first-release	cs-uesp-wiki:GetNthActiveEffectCode.wiki
+obse	-	GetNthActiveEffectData	(data:ref) reference.GetNthActiveEffectData whichEffect:long	-	0001	first-release	cs-uesp-wiki:GetNthActiveEffectData.wiki
+obse	-	GetNthActiveEffectDuration	(duration:long)  reference.GetNthActiveEffectDuration whichEffect:long	-	0001	first-release	cs-uesp-wiki:GetNthActiveEffectDuration.wiki
+obse	-	GetNthActiveEffectMagicItem	(magicItem:ref) reference.GetNthActiveEffectMagicItem whichEffect:long	-	0001	first-release	cs-uesp-wiki:GetNthActiveEffectMagicItem.wiki
+obse	-	GetNthActiveEffectMagicItemIndex	(index:long) reference.GetNthActiveEffectMagicItemIndex whichEffect:long	-	0001	first-release	cs-uesp-wiki:GetNthActiveEffectMagicItemIndex.wiki
+obse	-	GetNthActiveEffectMagnitude	(magnitude:long)  ''reference.''GetNthActiveEffectMagnitude whichEffect:long	-	0001	first-release	cs-uesp-wiki:GetNthActiveEffectMagnitude.wiki
+obse	-	GetNthActiveEffectTimeElapsed	(timeElapsed:float) reference.GetNthActiveEffectTimeElapsed whichEffect:long	-	0001	first-release	cs-uesp-wiki:GetNthActiveEffectTimeElapsed.wiki
+obse	-	GetNthChildRef	(childRef:ref) reference.GetNthChildRef whichChild:short	-	0001	first-release	cs-uesp-wiki:GetNthChildRef.wiki
+obse	-	GetNthEffectItemActorValue	(actorValueCode:long) GetNthEffectItemActorValue magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:GetNthEffectItemActorValue.wiki
+obse	-	GetNthEffectItemArea	(area:long) GetNthEffectItemArea magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:GetNthEffectItemArea.wiki
+obse	-	GetNthEffectItemCode	(code:long) GetNthEffectItemCode magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:GetNthEffectItemCode.wiki
+obse	-	GetNthEffectItemDuration	(duration:long) GetNthEffectItemDuration magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:GetNthEffectItemDuration.wiki
+obse	-	GetNthEffectItemMagnitude	(magnitude:long) GetNthEffectItemMagnitude magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:GetNthEffectItemMagnitude.wiki
+obse	-	GetNthEffectItemRange	(range:short) GetNthEffectItemrange magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:GetNthEffectItemRange.wiki
+obse	-	GetNthEffectItemScript	(script:ref) GetNthEffectItemScript objectID:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:GetNthEffectItemScript.wiki
+obse	-	GetNthEffectItemScriptSchool	(magicSchool:short) GetNthEffectItemScriptSchool magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:GetNthEffectItemScriptSchool.wiki
+obse	-	GetNthEffectItemScriptVisualEffect	(magicEffectCode:long) GetNthEffectItemScriptVisualEffect magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:GetNthEffectItemScriptVisualEffect.wiki
+obse	-	GetNthFaction	(faction:ref) ''reference''.GetNthFaction whichFaction:short ''actor:ref''	-	0001	first-release	cs-uesp-wiki:GetNthFaction.wiki
+obse	-	GetNthFollower	(follower:ref) reference.GetNthFollower whichFollower:short	-	0001	first-release	cs-uesp-wiki:GetNthFollower.wiki
+obse	-	GetNthPlayerSpell	(spell:ref) GetNthPlayerSpell whichSpell:long	-	0001	first-release	cs-uesp-wiki:GetNthPlayerSpell.wiki
+obse	-	GetNthRaceBonusSkill	(skill:short) ''reference.''GetNthRaceBonusSkill whichSkill:short ''raceFormID:ref''	-	0001	first-release	cs-uesp-wiki:GetNthRaceBonusSkill.wiki
+obse	-	GetNthRaceSpell	(spell:ref) ''reference''.GetNthRaceSpell whichSpell:short ''race:ref''	-	0001	first-release	cs-uesp-wiki:GetNthRaceSpell.wiki
+obse	-	GetNthSpell	(count:long) reference.GetNthSpell whichSpell:long	-	0001	first-release	cs-uesp-wiki:GetNthSpell.wiki
+obse	-	GetNumChildRefs	(numChildren:short) [''ref.'']GetNumChildRefs	-	0001	first-release	cs-uesp-wiki:GetNumChildRefs.wiki
+obse	-	GetNumericINISetting	(setting:float) GetNumericINISetting "iniSettingName:SettingHeader::string"	-	0001	first-release	cs-uesp-wiki:GetNumericINISetting.wiki
+obse	-	GetNumFactions	(numFactions:short) [''ref.'']GetNumFactions ''actor:ref''	-	0001	first-release	cs-uesp-wiki:GetNumFactions.wiki
+obse	-	GetNumFollowers	(numFollowers:short) [''ref.'']GetNumFollowers	-	0001	first-release	cs-uesp-wiki:GetNumFollowers.wiki
+obse	-	GetNumItems	(numItems:short) [''ref.'']GetNumItems	-	0002	whatsnew:0002	cs-uesp-wiki:GetNumItems.wiki
+obse	-	GetNumKeysPressed	(count:long) GetNumKeysPressed	-	0001	first-release	cs-uesp-wiki:GetNumKeysPressed.wiki
+obse	-	GetNumLoadedPlugins	(loadedPluginCount:short) GetNumLoadedPlugins	-	0001	first-release	cs-uesp-wiki:GetNumLoadedPlugins.wiki
+obse	-	GetNumMouseButtonsPressed	(count:long) GetNumMouseButtonsPressed	-	0008	whatsnew:0008	cs-uesp-wiki:GetNumMouseButtonsPressed.wiki
+obse	-	GetNumRanks	(numRanks:short) GetNumRanks faction:ref	-	0014	whatsnew:0014	cs-uesp-wiki:GetNumRanks.wiki
+obse	-	GetNumRefs	(numRefs:short) GetNumRefs ''type:short'' ''cellDepth:short''	-	0013	whatsnew:0013	cs-uesp-wiki:GetNumRefs.wiki
+obse	-	GetObjectCharge	(charge:long) ''reference.''GetObjectCharge ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetObjectCharge.wiki
+obse	-	GetObjectHealth	(health:long) ''reference.''GetObjectHealth ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetObjectHealth.wiki
+obse	-	GetObjectType	(type:short) [''ref.'']GetObjectType [''ObjectID'']	-	0001	first-release	cs-uesp-wiki:GetObjectType.wiki
+obse	-	GetObjectValue	GetObjectvalue ValueType [ObjectID]	-	0001	first-release	cs-uesp-wiki:GetObjectValue.wiki
+obse	-	GetOBSEVersion	(obseVersion:long) GetOBSEVersion	-	0001	first-release	cs-uesp-wiki:GetOBSEVersion.wiki
+obse	-	GetOpenKey	(key:ref) reference.GetOpenKey	-	0001	first-release	cs-uesp-wiki:GetOpenKey.wiki
+obse	-	GetOwner	(owner:ref) reference.GetOwner	-	0001	first-release	cs-uesp-wiki:GetOwner.wiki
+obse	-	GetOwningFactionRequiredRank	(rank:short) ref.GetOwningFactionRequiredRank	-	0001	first-release	cs-uesp-wiki:GetOwningFactionRequiredRank.wiki
+obse	-	GetParentCell	(parentCell:ref) reference.GetParentCell	-	0004	whatsnew:0004	cs-uesp-wiki:GetParentCell.wiki
+obse	-	GetParentCellOwner	(owner:ref) reference.GetParentCellOwner	-	22.0	whatsnew:22.0	cs-uesp-wiki:GetParentCellOwner.wiki
+obse	-	GetParentCellWaterHeight	(waterHeight:float) reference.GetParentCellWaterHeight	-	0001	first-release	cs-uesp-wiki:GetParentCellWaterHeight.wiki
+obse	-	GetPlayerSkillUse	(skillExperience:float) GetPlayerSkillUse skill:name	-	0001	first-release	cs-uesp-wiki:GetPlayerSkillUse.wiki
+obse	-	GetPlayersLastActivatedLoadDoor	(loadDoor:ref) GetPlayersLastActivatedLoadDoor	-	0001	first-release	cs-uesp-wiki:GetPlayersLastActivatedLoadDoor.wiki
+obse	-	GetPlayersLastRiddenHorse	(horse:ref) GetPlayersLastRiddenHorse	-	0001	first-release	cs-uesp-wiki:GetPlayersLastRiddenHorse.wiki
+obse	-	GetPlayerSpell	(spell:ref) GetPlayerSpell	-	0001	first-release	cs-uesp-wiki:GetPlayerSpell.wiki
+obse	-	GetPlayerSpellCount	(count:long) GetPlayerSpellCount	-	0001	first-release	cs-uesp-wiki:GetPlayerSpellCount.wiki
+obse	-	GetPluginVersion	(version:long) GetPluginVersion pluginName:string	-	0021 beta 3	whatsnew:0021 beta 3	cs-uesp-wiki:GetPluginVersion.wiki
+obse	-	GetProjectileSource	(source:ref) reference.GetProjectileSource	-	0001	first-release	cs-uesp-wiki:GetProjectileSource.wiki
+obse	-	GetProjectileType	(projectileType:short) reference.GetProjectileType	-	0001	first-release	cs-uesp-wiki:GetProjectileType.wiki
+obse	-	GetQuality	(quality:float) [''ref.'']GetQuality ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetQuality.wiki
+obse	-	GetRace	(race:ref) ''reference''.GetRace ''npc:ref''	-	0014	whatsnew:0014	cs-uesp-wiki:GetRace.wiki
+obse	-	GetRaceAttribute	(value:short) reference.GetRaceAttribute attributeActorValue:chars raceFormID:ref isFemale:bool	-	0001	first-release	cs-uesp-wiki:GetRaceAttribute.wiki
+obse	-	GetRaceAttributeC	(value:short) reference.GetRaceAttributeC attributeActorValueCode:short raceFormID:ref isFemale:bool	-	0001	first-release	cs-uesp-wiki:GetRaceAttributeC.wiki
+obse	-	GetRaceSkillBonus	(value:short) reference.GetRaceSkillBonus skillActorValue:chars raceFormID:ref	-	0001	first-release	cs-uesp-wiki:GetRaceSkillBonus.wiki
+obse	-	GetRaceSkillBonusC	(value:short) reference.GetRaceSkillBonusC skillActorValueCode:short raceFormID:ref	-	0001	first-release	cs-uesp-wiki:GetRaceSkillBonusC.wiki
+obse	-	GetRaceSpellCount	(numSpells:short) ''reference''.GetRaceSpellCount ''race:ref''	-	0001	first-release	cs-uesp-wiki:GetRaceSpellCount.wiki
+obse	-	GetRefCount	(refCount:short) reference.GetRefCount	-	0001	first-release	cs-uesp-wiki:GetRefCount.wiki
+obse	-	GetRider	(rider:ref) reference.GetRider	-	0014	whatsnew:0014	cs-uesp-wiki:GetRider.wiki
+obse	-	GetScript	(script:refID) ''reference.''GetScript ''targetObjectID:ref''	-	0012	whatsnew:0012	cs-uesp-wiki:GetScript.wiki
+obse	-	GetScriptActiveEffectIndex	(index:long) GetScriptActiveEffectIndex	-	0001	first-release	cs-uesp-wiki:GetScriptActiveEffectIndex.wiki
+obse	-	GetSkillUseIncrement	(useRate:float) GetSkillUseIncrement skill:name ''whichAction:short''	-	0001	first-release	cs-uesp-wiki:GetSkillUseIncrement.wiki
+obse	-	GetSoulGemCapacity	(soulLevel:short) GetSoulGemCapacity objectID:ref	-	0001	first-release	cs-uesp-wiki:GetSoulGemCapacity.wiki
+obse	-	GetSoulLevel	(soulLevel:short) GetSoulLevel objectID:ref	-	0001	first-release	cs-uesp-wiki:GetSoulLevel.wiki
+obse	-	GetSourceModIndex	(index:short) ''reference''.GetSourceModIndex ''object:ref''	-	0001	first-release	cs-uesp-wiki:GetSourceModIndex.wiki
+obse	-	GetSpellCount	(count:long) reference.GetSpellCount	-	0001	first-release	cs-uesp-wiki:GetSpellCount.wiki
+obse	-	GetSpellExplodesWithNoTarget	(spellExplodesWithNoTarget:bool) GetSpellExplodesWithNoTarget spell:ref	-	0012	whatsnew:0012	cs-uesp-wiki:GetSpellExplodesWithNoTarget.wiki
+obse	-	GetSpellMagickaCost	(magickaCost:long) reference.GetSpellMagickaCost spell:ref	-	0014	whatsnew:0014	cs-uesp-wiki:GetSpellMagickaCost.wiki
+obse	-	GetSpellMasteryLevel	(masteryLevel:short) GetSpellMasteryLevel spell:ref	-	0001	first-release	cs-uesp-wiki:GetSpellMasteryLevel.wiki
+obse	-	GetSpellSchool	(magicSchool:short) GetSpellSchool spell:ref	-	0001	first-release	cs-uesp-wiki:GetSpellSchool.wiki
+obse	-	GetSpellType	(spellType:short) GetSpellType spell:ref	-	0001	first-release	cs-uesp-wiki:GetSpellType.wiki
+obse	-	GetTeleportCell	(cell:ref) reference.GetTeleportCell	-	0001	first-release	cs-uesp-wiki:GetTeleportCell.wiki
+obse	-	GetTotalActiveEffectMagnitude	(totalMag:long) reference.GetTotalActiveEffectMagnitude effectCode:chars	-	0001	first-release	cs-uesp-wiki:GetTotalActiveEffectMagnitude.wiki
+obse	-	GetTotalActiveEffectMagnitudeC	(totalMag:long) reference.GetTotalActiveEffectMagnitudeC effectCode:long	-	0001	first-release	cs-uesp-wiki:GetTotalActiveEffectMagnitudeC.wiki
+obse	-	GetTotalAEAbilityMagnitude	(totalMag:long) reference.GetTotalAEAbilityMagnitude effectCode:chars	-	0001	first-release	cs-uesp-wiki:GetTotalAEAbilityMagnitude.wiki
+obse	-	GetTotalAEAbilityMagnitudeC	(totalMag:long) reference.GetTotalAEAbilityMagnitudeC effectCode:long	-	0001	first-release	cs-uesp-wiki:GetTotalAEAbilityMagnitudeC.wiki
+obse	-	GetTotalAEAlchemyMagnitude	(totalMag:long) reference.GetTotalAEEnchantmentMagnitude effectCode:chars	-	0001	first-release	cs-uesp-wiki:GetTotalAEAlchemyMagnitude.wiki
+obse	-	GetTotalAEAlchemyMagnitudeC	(totalMag:long) reference.GetTotalAEEnchantmentMagnitudeC effectCode:long	-	0001	first-release	cs-uesp-wiki:GetTotalAEAlchemyMagnitudeC.wiki
+obse	-	GetTotalAEAllSpellsMagnitude	(totalMag:long) reference.GetTotalAEAllSpellsMagnitude effectCode:chars	-	0001	first-release	cs-uesp-wiki:GetTotalAEAllSpellsMagnitude.wiki
+obse	-	GetTotalAEAllSpellsMagnitudeC	(totalMag:long) reference.GetTotalAEAllSpellsMagnitudeC effectCode:long	-	0001	first-release	cs-uesp-wiki:GetTotalAEAllSpellsMagnitudeC.wiki
+obse	-	GetTotalAEDiseaseMagnitude	(totalMag:long) reference.GetTotalAEDiseaseMagnitude effectCode:chars	-	0001	first-release	cs-uesp-wiki:GetTotalAEDiseaseMagnitude.wiki
+obse	-	GetTotalAEDiseaseMagnitudeC	(totalMag:long) reference.GetTotalAEDiseaseMagnitudeC effectCode:long	-	0001	first-release	cs-uesp-wiki:GetTotalAEDiseaseMagnitudeC.wiki
+obse	-	GetTotalAEEnchantmentMagnitude	(totalMag:long) reference.GetTotalAEEnchantmentMagnitude effectCode:chars	-	0001	first-release	cs-uesp-wiki:GetTotalAEEnchantmentMagnitude.wiki
+obse	-	GetTotalAEEnchantmentMagnitudeC	(totalMag:long) reference.GetTotalAEEnchantmentMagnitudeC effectCode:long	-	0001	first-release	cs-uesp-wiki:GetTotalAEEnchantmentMagnitudeC.wiki
+obse	-	GetTotalAELesserPowerMagnitude	(totalMag:long) reference.GetTotalAELesserPowerMagnitude effectCode:chars	-	0001	first-release	cs-uesp-wiki:GetTotalAELesserPowerMagnitude.wiki
+obse	-	GetTotalAELesserPowerMagnitudeC	(totalMag:long) reference.GetTotalAELesserPowerMagnitudeC effectCode:long	-	0001	first-release	cs-uesp-wiki:GetTotalAELesserPowerMagnitudeC.wiki
+obse	-	GetTotalAENonAbilityMagnitude	(totalMag:long) reference.GetTotalAENonAbilityMagnitude effectCode:chars	-	0001	first-release	cs-uesp-wiki:GetTotalAENonAbilityMagnitude.wiki
+obse	-	GetTotalAENonAbilityMagnitudeC	(totalMag:long) reference.GetTotalAENonAbilityMagnitudeC effectCode:long	-	0001	first-release	cs-uesp-wiki:GetTotalAENonAbilityMagnitudeC.wiki
+obse	-	GetTotalAEPowerMagnitude	(totalMag:long) reference.GetTotalAEPowerMagnitude effectCode:chars	-	0001	first-release	cs-uesp-wiki:GetTotalAEPowerMagnitude.wiki
+obse	-	GetTotalAEPowerMagnitudeC	(totalMag:long) reference.GetTotalAEPowerMagnitudeC effectCode:long	-	0001	first-release	cs-uesp-wiki:GetTotalAEPowerMagnitudeC.wiki
+obse	-	GetTotalAESpellMagnitude	(totalMag:long) reference.GetTotalAESpellMagnitude effectCode:chars	-	0001	first-release	cs-uesp-wiki:GetTotalAESpellMagnitude.wiki
+obse	-	GetTotalAESpellMagnitudeC	(totalMag:long) reference.GetTotalAESpellMagnitudeC effectCode:long	-	0001	first-release	cs-uesp-wiki:GetTotalAESpellMagnitudeC.wiki
+obse	-	GetTravelHorse	(horse:ref) reference.GetTravelHorse	-	0001	first-release	cs-uesp-wiki:GetTravelHorse.wiki
+obse	-	GetWeaponReach	(reach:float) ''reference.''GetWeaponReach ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetWeaponReach.wiki
+obse	-	GetWeaponSpeed	(speed:float) ''reference.''GetWeaponSpeed ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetWeaponSpeed.wiki
+obse	-	GetWeaponType	(weaponType:short) reference.GetWeaponType objectID:ref	-	0001	first-release	cs-uesp-wiki:GetWeaponType.wiki
+obse	-	GetWeatherCloudSpeedLower	(speed:float) GetWeatherCloudSpeedLower weather:ref	-	0001	first-release	cs-uesp-wiki:GetWeatherCloudSpeedLower.wiki
+obse	-	GetWeatherCloudSpeedUpper	(speed:float) GetWeatherCloudSpeedUpper weather:ref	-	0001	first-release	cs-uesp-wiki:GetWeatherCloudSpeedUpper.wiki
+obse	-	GetWeatherColor	(color:short) GetWeatherColor rgb:short whichColor:short weather:ref ''whichTime:short''	-	0001	first-release	cs-uesp-wiki:GetWeatherColor.wiki
+obse	-	GetWeatherFogDayFar	(fogDistance:float) GetWeatherFogDayFar weather:ref	-	0001	first-release	cs-uesp-wiki:GetWeatherFogDayFar.wiki
+obse	-	GetWeatherFogDayNear	(fogDistance:float) GetWeatherFogDayNear weather:ref	-	0001	first-release	cs-uesp-wiki:GetWeatherFogDayNear.wiki
+obse	-	GetWeatherFogNightFar	(fogDistance:float) GetWeatherFogNightFar weather:ref	-	0001	first-release	cs-uesp-wiki:GetWeatherFogNightFar.wiki
+obse	-	GetWeatherFogNightNear	(fogDistance:float) GetWeatherFogNightNear weather:ref	-	0001	first-release	cs-uesp-wiki:GetWeatherFogNightNear.wiki
+obse	-	GetWeatherHDRValue	(hdrValue:float) GetWeatherHDRValue whichHDRValue:short weather:ref	-	0001	first-release	cs-uesp-wiki:GetWeatherHDRValue.wiki
+obse	-	GetWeatherLightningFrequency	(frequency:short) GetWeatherLightningFrequency weather:ref	-	0001	first-release	cs-uesp-wiki:GetWeatherLightningFrequency.wiki
+obse	-	GetWeatherSunDamage	(sunDamage:float) GetWeatherSunDamage weather:ref	-	0001	first-release	cs-uesp-wiki:GetWeatherSunDamage.wiki
+obse	-	GetWeatherSunGlare	(sunGlare:float) GetWeatherSunGlare weather:ref	-	0001	first-release	cs-uesp-wiki:GetWeatherSunGlare.wiki
+obse	-	GetWeatherTransDelta	(transDelta:float) GetWeatherTransDelta weather:ref	-	0001	first-release	cs-uesp-wiki:GetWeatherTransDelta.wiki
+obse	-	GetWeatherWindSpeed	(windSpeed:float) GetWeatherWindSpeed weather:ref	-	0001	first-release	cs-uesp-wiki:GetWeatherWindSpeed.wiki
+obse	-	GetWeight	(weight:float) ''reference.''GetWeight ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:GetWeight.wiki
+obse	-	GoTo	GoTo ''[labelID]''	-	0001	first-release	cs-uesp-wiki:GoTo.wiki
+obse	-	HammerKey	HammerKey key	-	0001	first-release	cs-uesp-wiki:HammerKey.wiki
+obse	-	HasBeenPickedUp	(pickedUp:bool) reference.HasBeenPickedUp	-	0014	whatsnew:0014	cs-uesp-wiki:HasBeenPickedUp.wiki
+obse	-	HasLowLevelProcessing	(hasLowProc:bool) ''reference''.HasLowLevelProcessing ''actor:ref''	-	0001	first-release	cs-uesp-wiki:HasLowLevelProcessing.wiki
+obse	-	HasModel	(hasModel:bool) ''reference''.HasModel model:string ''creature:ref''	-	0014	whatsnew:0014	cs-uesp-wiki:HasModel.wiki
+obse	-	HasName	(hasName:bool) ''reference''.HasName ''objectID:ref''	-	0014	whatsnew:0014	cs-uesp-wiki:HasName.wiki
+obse	-	HasNoPersuasion	(hasNoPers) ''reference''.HasNoPersuasion ''actor:ref''	-	0001	first-release	cs-uesp-wiki:HasNoPersuasion.wiki
+obse	-	HasSpell	(hasSpell:bool) reference.HasSpell spell:ref	-	0006	whatsnew:0006	cs-uesp-wiki:HasSpell.wiki
+obse	-	HasTail	(hasTail:bool) ''reference''.HasTail ''raceOrNPC:ref''	-	0021 beta	whatsnew:0021 beta	cs-uesp-wiki:HasTail.wiki
+obse	-	HoldKey	HoldKey key	-	0001	first-release	cs-uesp-wiki:HoldKey.wiki
+obse	-	IncrementPlayerSkillUse	(nuSkillExperience:float) IncrementPlayerSkillUse skill:name ''whichAction:short'' ''howManyTimes:float''	-	0001	first-release	cs-uesp-wiki:IncrementPlayerSkillUse.wiki
+obse	-	IsActivatable	(activatable:bool) reference.IsActivatable	-	0001	first-release	cs-uesp-wiki:IsActivatable.wiki
+obse	-	IsActivator	(isActivator:bool) ''reference.''IsActivator ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:IsActivator.wiki
+obse	-	IsActorRespawning	(respawns:bool) ''reference''.IsActorRespawning ''actor:ref''	-	0001	first-release	cs-uesp-wiki:IsActorRespawning.wiki
+obse	-	IsAlchemyItem	IsAlchemyItem [''ObjectID'']	-	0001	first-release	cs-uesp-wiki:IsAlchemyItem.wiki
+obse	-	IsAmmo	IsAmmo [''ObjectID'']	-	0018 beta 3	whatsnew:0018 beta 3	cs-uesp-wiki:IsAmmo.wiki
+obse	-	IsAnimGroupPlaying	(IsAnimGroupPlaying:bool) ''actor:ref.''IsAnimGroupPlaying animationGroup:chars	-	0001	first-release	cs-uesp-wiki:IsAnimGroupPlaying.wiki
+obse	-	IsApparatus	(isApparatus:bool) ''reference.''IsApparatus ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:IsApparatus.wiki
+obse	-	IsArmor	(IsArmor:bool) ''reference.''IsArmor ''ObjectID:ref''	-	0011	whatsnew:0011	cs-uesp-wiki:IsArmor.wiki
+obse	-	IsAttacking	(IsAttacking:bool) ''actor:ref.''IsAttacking	-	0001	first-release	cs-uesp-wiki:IsAttacking.wiki
+obse	-	IsBlocking	(isBlocking:bool) ''actor:ref.''IsBlocking	-	0001	first-release	cs-uesp-wiki:IsBlocking.wiki
+obse	-	IsBook	IsBook [''ObjectID'']	-	0011	whatsnew:0011	cs-uesp-wiki:IsBook.wiki
+obse	-	IsCasting	(IsCasting:bool) ''actor:ref.''IsCasting	-	0001	first-release	cs-uesp-wiki:IsCasting.wiki
+obse	-	IsClassAttribute	(isClassAttribute:bool) ''reference''.IsClassAttribute attribute:string ''class:ref''	-	0001	first-release	cs-uesp-wiki:IsClassAttribute.wiki
+obse	-	IsClassSkill	(isClassSkill:bool) ''reference.''IsClassSkill  skill:string ''class:ref''	-	0001	first-release	cs-uesp-wiki:IsClassSkill.wiki
+obse	-	IsClonedForm	(isCloned:bool) IsClonedForm objectID:ref	-	0001	first-release	cs-uesp-wiki:IsClonedForm.wiki
+obse	-	IsClothing	IsClothing [''ObjectID'']	-	0001	first-release	cs-uesp-wiki:IsClothing.wiki
+obse	-	IsContainer	IsContainer [''ObjectID'']	-	0011	whatsnew:0011	cs-uesp-wiki:IsContainer.wiki
+obse	-	IsControlPressed	(isPressed:bool) IsControlPressed whichControl:short	-	0001	first-release	cs-uesp-wiki:IsControlPressed.wiki
+obse	-	IsCreature	(isCreature:bool) ''reference.''IsCreature ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:IsCreature.wiki
+obse	-	IsCreatureBiped	(biped:bool) ''reference''.isCreatureBiped ''creature:ref''	-	0001	first-release	cs-uesp-wiki:IsCreatureBiped.wiki
+obse	-	IsDodging	(IsDodging:bool) ''actor:ref.''IsDodging	-	0001	first-release	cs-uesp-wiki:IsDodging.wiki
+obse	-	IsDoor	(isDoor:bool) ''reference.''IsDoor ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:IsDoor.wiki
+obse	-	IsFactionEvil	(isEvil:bool) IsFactionEvil faction:ref	-	0001	first-release	cs-uesp-wiki:IsFactionEvil.wiki
+obse	-	IsFactionHidden	(isHidden:bool) IsFactionHidden faction:ref	-	0001	first-release	cs-uesp-wiki:IsFactionHidden.wiki
+obse	-	IsFlying	(IsFlying:bool) ''creature:ref.''IsFlying	-	0001	first-release	cs-uesp-wiki:IsFlying.wiki
+obse	-	IsFood	(isFood:bool) ''reference.''IsFood ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:IsFood.wiki
+obse	-	IsFormValid	(valid:bool) IsFormValid refVar:var	-	0001	first-release	cs-uesp-wiki:IsFormValid.wiki
+obse	-	IsFurniture	(isFurniture:bool) reference.IsFurniture objectID:ref	-	0001	first-release	cs-uesp-wiki:IsFurniture.wiki
+obse	-	IsGlobalCollisionDisabled	(isDisabled:bool) IsGlobalCollisionDisabled	-	0001	first-release	cs-uesp-wiki:IsGlobalCollisionDisabled.wiki
+obse	-	IsHarvested	(isHarvested:bool) reference.IsHarvested	-	0014	whatsnew:0014	cs-uesp-wiki:IsHarvested.wiki
+obse	-	IsInAir	(IsInAir:bool) ''actor:ref.''IsInAir	-	0001	first-release	cs-uesp-wiki:IsInAir.wiki
+obse	-	IsIngredient	IsIngredient [''ObjectID'']	-	0001	first-release	cs-uesp-wiki:IsIngredient.wiki
+obse	-	IsJumping	(IsJumping:bool) ''actor:ref.''IsJumping	-	0001	first-release	cs-uesp-wiki:IsJumping.wiki
+obse	-	IsKey	IsKey [''ObjectID'']	-	0001	first-release	cs-uesp-wiki:IsKey.wiki
+obse	-	IsKeyPressed	IsKeyPressed key	-	0002	whatsnew:0002	cs-uesp-wiki:IsKeyPressed.wiki
+obse	-	IsKeyPressed2	IsKeyPressed2 key	-	0001	first-release	cs-uesp-wiki:IsKeyPressed2.wiki
+obse	-	IsKeyPressed3	(isPressed:bool) IsKeyPressed3 dxScanCode:long	-	0001	first-release	cs-uesp-wiki:IsKeyPressed3.wiki
+obse	-	IsLight	IsLight [''ObjectID'']	-	0001	first-release	cs-uesp-wiki:IsLight.wiki
+obse	-	IsLightCarriable	(isCarriable:bool) ''reference''.IsLightCarriable ''light:ref''	-	0001	first-release	cs-uesp-wiki:IsLightCarriable.wiki
+obse	-	IsLoadDoor	(isLoadDoor:bool) reference.IsLoadDoor	-	0001	first-release	cs-uesp-wiki:IsLoadDoor.wiki
+obse	-	IsMagicEffectCanRecover	(isCanRecover:bool) IsMagicEffectCanRecover effect:chars	-	0001	first-release	cs-uesp-wiki:IsMagicEffectCanRecover.wiki
+obse	-	IsMagicEffectCanRecoverC	(isCanRecover:bool) IsMagicEffectCanRecoverC effect:long	-	0001	first-release	cs-uesp-wiki:IsMagicEffectCanRecoverC.wiki
+obse	-	IsMagicEffectDetrimental	(isDetrimental:bool) IsMagicEffectDetrimental effect:chars	-	0001	first-release	cs-uesp-wiki:IsMagicEffectDetrimental.wiki
+obse	-	IsMagicEffectDetrimentalC	(isDetrimental:bool) IsMagicEffectDetrimentalC effect:long	-	0001	first-release	cs-uesp-wiki:IsMagicEffectDetrimentalC.wiki
+obse	-	IsMagicEffectForEnchanting	(isForEnchanting:bool) IsMagicEffectForEnchanting effect:chars	-	0001	first-release	cs-uesp-wiki:IsMagicEffectForEnchanting.wiki
+obse	-	IsMagicEffectForEnchantingC	(isForEnchanting:bool) IsMagicEffectForEnchantingC effect:long	-	0001	first-release	cs-uesp-wiki:IsMagicEffectForEnchantingC.wiki
+obse	-	IsMagicEffectForSpellmaking	(isForSpellMaking:bool) IsMagicEffectForSpellmaking effect:chars	-	0001	first-release	cs-uesp-wiki:IsMagicEffectForSpellmaking.wiki
+obse	-	IsMagicEffectForSpellmakingC	(isForSpellMaking:bool) IsMagicEffectForSpellmakingC effect:long	-	0001	first-release	cs-uesp-wiki:IsMagicEffectForSpellmakingC.wiki
+obse	-	IsMagicEffectHostile	(isHostile:bool) IsMagicEffectHostile effect:chars	-	0001	first-release	cs-uesp-wiki:IsMagicEffectHostile.wiki
+obse	-	IsMagicEffectMagnitudePercent	(isMagPercent:bool) IsMagicEffectMagnitudePercent effect:chars	-	0001	first-release	cs-uesp-wiki:IsMagicEffectMagnitudePercent.wiki
+obse	-	IsMagicEffectMagnitudePercentC	(isMagPercent:bool) IsMagicEffectMagnitudePercentC effect:long	-	0001	first-release	cs-uesp-wiki:IsMagicEffectMagnitudePercentC.wiki
+obse	-	IsMagicEffectOnSelfAllowed	(onSelfAllowed:bool) IsMagicEffectOnSelfAllowed effect:chars	-	0001	first-release	cs-uesp-wiki:IsMagicEffectOnSelfAllowed.wiki
+obse	-	IsMagicEffectOnSelfAllowedC	(onSelfAllowed:bool) IsMagicEffectOnSelfAllowedC effect:long	-	0001	first-release	cs-uesp-wiki:IsMagicEffectOnSelfAllowedC.wiki
+obse	-	IsMagicEffectOnTargetAllowed	(onTargetAllowed:bool) IsMagicEffectOnTargetAllowed effect:chars	-	0001	first-release	cs-uesp-wiki:IsMagicEffectOnTargetAllowed.wiki
+obse	-	IsMagicEffectOnTargetAllowedC	(onTargetAllowed:bool) IsMagicEffectOnTargetAllowedC effect:long	-	0001	first-release	cs-uesp-wiki:IsMagicEffectOnTargetAllowedC.wiki
+obse	-	IsMagicEffectOnTouchAllowed	(onTouchAllowed:bool) IsMagicEffectOnTouchAllowed effect:chars	-	0001	first-release	cs-uesp-wiki:IsMagicEffectOnTouchAllowed.wiki
+obse	-	IsMagicEffectOnTouchAllowedC	(onTouchAllowed:bool) IsMagicEffectOnTouchAllowedC effect:long	-	0001	first-release	cs-uesp-wiki:IsMagicEffectOnTouchAllowedC.wiki
+obse	-	IsMagicItemAutoCalc	(isAutocalc:bool) IsMagicItemAutoCalc magicItem:ref	-	0001	first-release	cs-uesp-wiki:IsMagicItemAutoCalc.wiki
+obse	-	IsModLoaded	(isLoaded:bool) IsModLoaded modName:string	-	0014	whatsnew:0014	cs-uesp-wiki:IsModLoaded.wiki
+obse	-	IsMovingBackward	(IsMovingBackward:bool) ''actor:ref.''IsMovingBackward	-	0001	first-release	cs-uesp-wiki:IsMovingBackward.wiki
+obse	-	IsMovingForward	(IsMovingForward:bool) ''actor:ref.''IsMovingForward	-	0001	first-release	cs-uesp-wiki:IsMovingForward.wiki
+obse	-	IsMovingLeft	(IsMovingLeft:bool) ''actor:ref.''IsMovingLeft	-	0001	first-release	cs-uesp-wiki:IsMovingLeft.wiki
+obse	-	IsMovingRight	(IsMovingRight:bool) ''actor:ref.''IsMovingRight	-	0001	first-release	cs-uesp-wiki:IsMovingRight.wiki
+obse	-	IsNthEffectItemScripted		-	0001	first-release	cs-uesp-wiki:IsNthEffectItemScripted.wiki
+obse	-	IsNthEffectItemScriptHostile	(isHostile:bool) IsNthEffectItemScriptHostile magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:IsNthEffectItemScriptHostile.wiki
+obse	-	IsOffLimits	(isOffLimits:bool) reference.IsOffLimits actor:ref	-	0014	whatsnew:0014	cs-uesp-wiki:IsOffLimits.wiki
+obse	-	IsOnGround	(IsOnGround:bool) ''actor:ref.''IsOnGround	-	0001	first-release	cs-uesp-wiki:IsOnGround.wiki
+obse	-	IsPCLevelOffset	(isLevOffset:bool) ''reference''.IsPCLevelOffset ''actor:ref''	-	0001	first-release	cs-uesp-wiki:IsPCLevelOffset.wiki
+obse	-	IsPersistent	(isPersistent:bool) reference.IsPersistent	-	0014	whatsnew:0014	cs-uesp-wiki:IsPersistent.wiki
+obse	-	IsPlayable	(isPlayable:bool) ''reference.''IsPlayable ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:IsPlayable.wiki
+obse	-	IsPluginInstalled	(isInstalled:bool) IsPluginInstalled pluginName:string	-	0001	first-release	cs-uesp-wiki:IsPluginInstalled.wiki
+obse	-	IsPoison	(isPoison:bool) ''reference.''IsPoison ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:IsPoison.wiki
+obse	-	IsPowerAttacking	(IsPowerAttacking:bool) ''actor:ref.''IsPowerAttacking	-	0001	first-release	cs-uesp-wiki:IsPowerAttacking.wiki
+obse	-	IsQuestItem	(isQuestItem:bool) ''reference.''IsQuestItem ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:IsQuestItem.wiki
+obse	-	IsRaceBonusSkill	(isBonusSkill:bool) ''reference.''IsRaceBonusSkill skillActorValue:chars ''raceFormID:ref''	-	0001	first-release	cs-uesp-wiki:IsRaceBonusSkill.wiki
+obse	-	IsRaceBonusSkillC	(isBonusSkill:bool) ''reference.''IsRaceBonusSkillC skillActorValue:short ''raceFormID:ref''	-	0001	first-release	cs-uesp-wiki:IsRaceBonusSkillC.wiki
+obse	-	IsRecoiling	(IsRecoiling:bool) ''actor:ref.''IsRecoiling	-	0001	first-release	cs-uesp-wiki:IsRecoiling.wiki
+obse	-	IsRefDeleted	IsRefDeleted ''reference:ref''	-	0017 beta 1	whatsnew:0017 beta 1	cs-uesp-wiki:IsRefDeleted.wiki
+obse	-	IsRefEssential	(isEssential:bool) reference.IsRefEssential	-	0001	first-release	cs-uesp-wiki:IsRefEssential.wiki
+obse	-	IsScripted	(isScripted:bool) ''reference.''IsScripted ''targetObjectID:ref''	-	0001	first-release	cs-uesp-wiki:IsScripted.wiki
+obse	-	IsSigilStone	(isSigilStone:bool) ''reference.''IsSigilStone ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:IsSigilStone.wiki
+obse	-	IsSoulGem	IsSoulGem [''ObjectID'']	-	0011	whatsnew:0011	cs-uesp-wiki:IsSoulGem.wiki
+obse	-	IsSpellHostile	(isHostile:bool) IsSpellHostile spell:ref	-	0001	first-release	cs-uesp-wiki:IsSpellHostile.wiki
+obse	-	IsStaggered	(IsStaggered:bool) ''actor:ref.''IsStaggered	-	0001	first-release	cs-uesp-wiki:IsStaggered.wiki
+obse	-	IsSummonable	(isSummonable:bool) ''reference''.IsSummonable ''actor:ref''	-	0001	first-release	cs-uesp-wiki:IsSummonable.wiki
+obse	-	IsThirdPerson	(isThirdPerson:bool) IsThirdPerson	-	0001	first-release	cs-uesp-wiki:IsThirdPerson.wiki
+obse	-	IsTurningLeft	(IsTurningLeft:bool) ''actor:ref.''IsTurningLeft	-	0001	first-release	cs-uesp-wiki:IsTurningLeft.wiki
+obse	-	IsTurningRight	(IsTurningRight:bool) ''actor:ref.''IsTurningRight	-	0001	first-release	cs-uesp-wiki:IsTurningRight.wiki
+obse	-	IsUnderWater	(isUnderWater:bool) reference.IsUnderWater	-	0001	first-release	cs-uesp-wiki:IsUnderWater.wiki
+obse	-	IsWeapon	IsWeapon [''ObjectID'']	-	0001	first-release	cs-uesp-wiki:IsWeapon.wiki
+obse	-	Label	Label ''[labelID]''	-	0001	first-release	cs-uesp-wiki:Label.wiki
+obse	-	LeftShift	(result:long) LeftShift value:long shiftAmount:long	-	0001	first-release	cs-uesp-wiki:LeftShift.wiki
+obse	-	Let	(nothing) Let expr := expr	-	0001	first-release	cs-uesp-wiki:Let.wiki
+obse	-	Log	log [float]	-	0010	whatsnew:0010	cs-uesp-wiki:Log.wiki
+obse	-	Log10	log10 [float]	-	0001	first-release	cs-uesp-wiki:Log10.wiki
+obse	-	LogicalAnd	(result:long) LogicalAnd arg1:long arg2:long	-	0001	first-release	cs-uesp-wiki:LogicalAnd.wiki
+obse	-	LogicalNot	(result:long) LogicalNot arg:long	-	0001	first-release	cs-uesp-wiki:LogicalNot.wiki
+obse	-	LogicalOr	(result:long) LogicalOr arg1:long arg2:long	-	0001	first-release	cs-uesp-wiki:LogicalOr.wiki
+obse	-	LogicalXor	(result:long) LogicalXor arg1:long arg2:long	-	0001	first-release	cs-uesp-wiki:LogicalXor.wiki
+obse	-	MagicEffectFXPersists	(FXPersists:bool) MagicEffectFXPersists effect:chars	-	0001	first-release	cs-uesp-wiki:MagicEffectFXPersists.wiki
+obse	-	MagicEffectFXPersistsC	(FXPersists:bool) MagicEffectFXPersistsC effect:long	-	0001	first-release	cs-uesp-wiki:MagicEffectFXPersistsC.wiki
+obse	-	MagicEffectHasNoArea	(hasNoArea:bool) MagicEffectHasNoArea effect:chars	-	0001	first-release	cs-uesp-wiki:MagicEffectHasNoArea.wiki
+obse	-	MagicEffectHasNoAreaC	(hasNoArea:bool) MagicEffectHasNoAreaC effect:long	-	0001	first-release	cs-uesp-wiki:MagicEffectHasNoAreaC.wiki
+obse	-	MagicEffectHasNoDuration	(hasNoDuration:bool) MagicEffectHasNoDuration effect:chars	-	0001	first-release	cs-uesp-wiki:MagicEffectHasNoDuration.wiki
+obse	-	MagicEffectHasNoDurationC	(hasNoDuration:bool) MagicEffectHasNoDurationC effect:long	-	0001	first-release	cs-uesp-wiki:MagicEffectHasNoDurationC.wiki
+obse	-	MagicEffectHasNoHitEffect	(hasNoHitEffect:bool) MagicEffectHasNoHitEffect effect:chars	-	0001	first-release	cs-uesp-wiki:MagicEffectHasNoHitEffect.wiki
+obse	-	MagicEffectHasNoHitEffectC	(hasNoHitEffect:bool) MagicEffectHasNoHitEffectC effect:long	-	0001	first-release	cs-uesp-wiki:MagicEffectHasNoHitEffectC.wiki
+obse	-	MagicEffectHasNoIngredient	(hasNoIngredient:bool) MagicEffectHasNoIngredient effect:chars	-	0001	first-release	cs-uesp-wiki:MagicEffectHasNoIngredient.wiki
+obse	-	MagicEffectHasNoIngredientC	(hasNoIngredient:bool) MagicEffectHasNoIngredientC effect:long	-	0001	first-release	cs-uesp-wiki:MagicEffectHasNoIngredientC.wiki
+obse	-	MagicEffectHasNoMagnitude	(hasNoMag:bool) MagicEffectHasNoMagnitude effect:chars	-	0001	first-release	cs-uesp-wiki:MagicEffectHasNoMagnitude.wiki
+obse	-	MagicEffectHasNoMagnitudeC	(hasNoMag:bool) MagicEffectHasNoMagnitudeC effect:long	-	0001	first-release	cs-uesp-wiki:MagicEffectHasNoMagnitudeC.wiki
+obse	-	MagicEffectUsesArmor	(usesArmor:bool) MagicEffectUsesArmor effect:chars	-	0001	first-release	cs-uesp-wiki:MagicEffectUsesArmor.wiki
+obse	-	MagicEffectUsesArmorC	(usesArmor:bool) MagicEffectUsesArmorC effect:long	-	0001	first-release	cs-uesp-wiki:MagicEffectUsesArmorC.wiki
+obse	-	MagicEffectUsesAttribute	(usesAttribute:bool) MagicEffectUsesAttribute effect:chars	-	0001	first-release	cs-uesp-wiki:MagicEffectUsesAttribute.wiki
+obse	-	MagicEffectUsesAttributeC	(usesAttribute:bool) MagicEffectUsesAttributeC effect:long	-	0001	first-release	cs-uesp-wiki:MagicEffectUsesAttributeC.wiki
+obse	-	MagicEffectUsesCreature	(usesCreature:bool) MagicEffectUsesCreature effect:chars	-	0001	first-release	cs-uesp-wiki:MagicEffectUsesCreature.wiki
+obse	-	MagicEffectUsesCreatureC	(usesCreature:bool) MagicEffectUsesCreatureC effect:long	-	0001	first-release	cs-uesp-wiki:MagicEffectUsesCreatureC.wiki
+obse	-	MagicEffectUsesOtherActorValue	(usesOtherActorVal:bool) MagicEffectUsesOtherActorValue effect:chars	-	0001	first-release	cs-uesp-wiki:MagicEffectUsesOtherActorValue.wiki
+obse	-	MagicEffectUsesOtherActorValueC	(usesOtherActorVal:bool) MagicEffectUsesOtherActorValueC effect:long	-	0001	first-release	cs-uesp-wiki:MagicEffectUsesOtherActorValueC.wiki
+obse	-	MagicEffectUsesSkill	(usesSkill:bool) MagicEffectUsesSkill effect:chars	-	0001	first-release	cs-uesp-wiki:MagicEffectUsesSkill.wiki
+obse	-	MagicEffectUsesSkillC	(usesSkill:bool) MagicEffectUsesSkillC effect:long	-	0001	first-release	cs-uesp-wiki:MagicEffectUsesSkillC.wiki
+obse	-	MagicEffectUsesWeapon	(usesWeapon:bool) MagicEffectUsesWeapon effect:chars	-	0001	first-release	cs-uesp-wiki:MagicEffectUsesWeapon.wiki
+obse	-	MagicEffectUsesWeaponC	(usesWeapon:bool) MagicEffectUsesWeaponC effect:long	-	0001	first-release	cs-uesp-wiki:MagicEffectUsesWeaponC.wiki
+obse	-	MagicItemHasEffect	(hasEffect:bool) MagicItemHasEffect effect:chars magicItem:ref ''actorValue:name''	-	0008	whatsnew:0008	cs-uesp-wiki:MagicItemHasEffect.wiki
+obse	-	MagicItemHasEffectCode	(hasEffect:bool) MagicItemHasEffectCode effectCode:long magicItem:ref	-	0008	whatsnew:0008	cs-uesp-wiki:MagicItemHasEffectCode.wiki
+obse	-	MagicItemHasEffectCount	(effectCount:short) MagicItemHasEffectCount effect:chars magicItem:ref	-	0001	first-release	cs-uesp-wiki:MagicItemHasEffectCount.wiki
+obse	-	MagicItemHasEffectCountCode	(effectCount:short) MagicItemHasEffectCountCode effectCode:long magicItem:ref	-	0001	first-release	cs-uesp-wiki:MagicItemHasEffectCountCode.wiki
+obse	-	MagicItemHasEffectItemScript	(hasScript:bool) MagicItemHasEffectItemScript script:ref magicItem:ref	-	0001	first-release	cs-uesp-wiki:MagicItemHasEffectItemScript.wiki
+obse	-	MenuHoldKey	(nothing) MenuHoldKey dxScanCode:long	-	0001	first-release	cs-uesp-wiki:MenuHoldKey.wiki
+obse	-	MenuReleaseKey	(nothing) MenuReleaseKey dxScanCode:long	-	0001	first-release	cs-uesp-wiki:MenuReleaseKey.wiki
+obse	-	MenuTapKey	(nothing) MenuTapKey dxScanCode:long	-	0016 beta 2	whatsnew:0016 beta 2	cs-uesp-wiki:MenuTapKey.wiki
+obse	-	MessageBoxEx	(nothing) MessageBoxEX "formatString:string" ''var1'' ''var2'' ... ''var20''	-	0001	first-release	cs-uesp-wiki:MessageBoxEx.wiki
+obse	-	MessageEx	(nothing) MessageEX formatString:string ''var1'' ''var2'' ... ''var20''	-	0021 beta	whatsnew:0021 beta	cs-uesp-wiki:MessageEx.wiki
+obse	-	ModActorValue2	ModActorValue2 ''StatName value:integer''	-	0006	whatsnew:0006	cs-uesp-wiki:ModActorValue2.wiki
+obse	-	ModActorValueC	(nothing) reference.ModActorValueC actorValueCode:short value:long	-	0014	whatsnew:0014	cs-uesp-wiki:ModActorValueC.wiki
+obse	-	ModArmorAR		-	0001	first-release	cs-uesp-wiki:ModArmorAR.wiki
+obse	-	ModAttackDamage	(nothing) ''reference.''ModAttackDamage modifyBy:float ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:ModAttackDamage.wiki
+obse	-	ModEnchantmentCharge	(nothing) ModEnchantmentCharge modifyBy:float objectID:ref	-	0001	first-release	cs-uesp-wiki:ModEnchantmentCharge.wiki
+obse	-	ModEnchantmentCost	(nothing) ModEnchantmentCost modifyBy:float objectID:ref	-	0001	first-release	cs-uesp-wiki:ModEnchantmentCost.wiki
+obse	-	ModEquippedCurrentCharge	(nothing) reference.ModEquippedCurrentCharge modifyBy:float slot:short	-	0001	first-release	cs-uesp-wiki:ModEquippedCurrentCharge.wiki
+obse	-	ModEquippedCurrentHealth	(nothing) ''reference.''ModEquippedCurrentHealth modifyBy:float slot:short	-	0001	first-release	cs-uesp-wiki:ModEquippedCurrentHealth.wiki
+obse	-	ModFemaleBipedPath	(nothing) ''reference.''ModFemaleBipedPath toReplaceAndReplaceWith:string ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:ModFemaleBipedPath.wiki
+obse	-	ModFemaleGroundPath	(nothing) ''reference.''ModFemaleGroundPath toReplaceAndReplaceWith:string ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:ModFemaleGroundPath.wiki
+obse	-	ModFemaleIconPath	(nothing) ''reference.''ModFemaleIconPath toReplaceAndReplaceWith:string ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:ModFemaleIconPath.wiki
+obse	-	ModGoldValue	(nothing) ''reference.''ModGoldValue modifyBy:float ''objectID:ref''	-	0019 beta 2	whatsnew:0019 beta 2	cs-uesp-wiki:ModGoldValue.wiki
+obse	-	ModIconPath	(nothing) ''reference.''ModIconPath toReplaceAndReplaceWith:string ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:ModIconPath.wiki
+obse	-	ModMaleBipedPath	(nothing) ''reference.''ModMaleBipedPath toReplaceAndReplaceWith:string ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:ModMaleBipedPath.wiki
+obse	-	ModMaleGroundPath	(nothing) ''reference.''ModMaleGroundPath toReplaceAndReplaceWith:string ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:ModMaleGroundPath.wiki
+obse	-	ModMaleIconPath	(nothing) ''reference.''ModMaleIconPath toReplaceAndReplaceWith:string ''toObject:ref''	-	0001	first-release	cs-uesp-wiki:ModMaleIconPath.wiki
+obse	-	ModModelPath	(nothing) reference.ModModelPath toReplaceAndReplaceWith:string toObject:ref	-	0001	first-release	cs-uesp-wiki:ModModelPath.wiki
+obse	-	ModName	(nothing) ''reference.''ModName "toReplaceAndReplaceWith:string" ''toObject:ref''	-	0011	whatsnew:0011	cs-uesp-wiki:ModName.wiki
+obse	-	ModNthActiveEffectMagnitude	(nothing) ''reference.''ModNthActiveEffectMagnitude magnitude:float whichEffect:long	-	0001	first-release	cs-uesp-wiki:ModNthActiveEffectMagnitude.wiki
+obse	-	ModNthEffectItemArea	(nothing) ModNthEffectItemArea modifyBy:float magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:ModNthEffectItemArea.wiki
+obse	-	ModNthEffectItemDuration	(nothing) ModNthEffectItemDuration modifyBy:float magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:ModNthEffectItemDuration.wiki
+obse	-	ModNthEffectItemMagnitude	(nothing) ModNthEffectItemMagnitude modifyBy:float magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:ModNthEffectItemMagnitude.wiki
+obse	-	ModNthEffectItemScriptName	(nothing) ModNthEffectItemScriptName toReplaceAndReplaceWith:string magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:ModNthEffectItemScriptName.wiki
+obse	-	ModObjectCharge	(nothing) ''reference.''ModObjectCharge modifyBy:float ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:ModObjectCharge.wiki
+obse	-	ModObjectHealth	(nothing) ''reference.''ModObjectHealth modifyBy:float ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:ModObjectHealth.wiki
+obse	-	ModQuality	(nothing) ''reference.''ModQuality modQualityBy:float ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:ModQuality.wiki
+obse	-	ModSpellMagickaCost	(nothing) ModSpellMagickaCost modifyBy:float spell:ref	-	0001	first-release	cs-uesp-wiki:ModSpellMagickaCost.wiki
+obse	-	ModWeaponReach	(nothing) ''reference.''ModWeaponReach modifyBy:float ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:ModWeaponReach.wiki
+obse	-	ModWeaponSpeed	(nothing) ''reference.''ModWeaponSpeed modifyBy:float ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:ModWeaponSpeed.wiki
+obse	-	ModWeight	(nothing) ''reference.''ModWeight modifyBy:float ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:ModWeight.wiki
+obse	-	MoveMouseX	MoveMouseX pixels	-	0001	first-release	cs-uesp-wiki:MoveMouseX.wiki
+obse	-	MoveMouseY	MoveMouseY pixels	-	0001	first-release	cs-uesp-wiki:MoveMouseY.wiki
+obse	-	NameIncludes	(nameContainsString:bool) ''reference.''NameIncludes "toFindInName:string" ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:NameIncludes.wiki
+obse	-	OnControlDown	(controlPressed:bool) OnControlDown whichControl:short	-	0001	first-release	cs-uesp-wiki:OnControlDown.wiki
+obse	-	OnKeyDown	(keyPressed:bool) OnKeyDown dxScanCode:long	-	0001	first-release	cs-uesp-wiki:OnKeyDown.wiki
+obse	-	OverrideActorSwimBreath	(nothing) reference.OverrideActorSwimBreath override:int	-	0021 beta 4	whatsnew:0021 beta 4	cs-uesp-wiki:OverrideActorSwimBreath.wiki
+obse	-	ParentCellHasWater	(hasWater:bool) reference.ParentCellHasWater	-	0001	first-release	cs-uesp-wiki:ParentCellHasWater.wiki
+obse	-	Pow	pow [base] [exponent]	-	0001	first-release	cs-uesp-wiki:Pow.wiki
+obse	-	Print	(nothing) Print string:expr	-	0021.5	whatsnew:0021.5	cs-uesp-wiki:Print.wiki
+obse	-	PrintToConsole	PrintToConsole "Message text", [var1], [var2], etc	-	0004	whatsnew:0004	cs-uesp-wiki:PrintToConsole.wiki
+obse	-	Rand	(rand:float) rand  min:float  max:float	-	0005	whatsnew:0005	cs-uesp-wiki:Rand.wiki
+obse	-	Rcos	rcos [float]	-	0001	first-release	cs-uesp-wiki:Rcos.wiki
+obse	-	RefreshControlMap	(nothing) RefreshControlMap	-	0013	whatsnew:0013	cs-uesp-wiki:RefreshControlMap.wiki
+obse	-	RefreshCurrentClimate	(nothing) RefreshCurrentClimate	-	0001	first-release	cs-uesp-wiki:RefreshCurrentClimate.wiki
+obse	-	ReleaseKey	ReleaseKey key	-	0001	first-release	cs-uesp-wiki:ReleaseKey.wiki
+obse	-	RemoveAllEffectItems	(nothing) RemoveAllEffectItems magicItem:ref	-	0001	first-release	cs-uesp-wiki:RemoveAllEffectItems.wiki
+obse	-	RemoveEnchantment	(oldEnchantment:ref) ''reference.''RemoveEnchantment ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:RemoveEnchantment.wiki
+obse	-	RemoveEquippedWeaponPoison	(oldPoison:ref) reference.RemoveEquippedWeaponPoison	-	0001	first-release	cs-uesp-wiki:RemoveEquippedWeaponPoison.wiki
+obse	-	RemoveEventHandler	(removed:bool) RemoveEventHandler eventID:string functionScript:ref filter1:pair filter2:pair	-	0019 beta 2	whatsnew:0019 beta 2	cs-uesp-wiki:RemoveEventHandler.wiki
+obse	-	RemoveFromLeveledList	(numRemoved:short) RemoveFromLeveledList leveledList:ref object:ref	-	0001	first-release	cs-uesp-wiki:RemoveFromLeveledList.wiki
+obse	-	RemoveItemNS	''container:ref.''RemoveItemNS item:base count:long	-	0001	first-release	cs-uesp-wiki:RemoveItemNS.wiki
+obse	-	RemoveNthEffectItem	(nothing) RemoveNthEffectItem magicItem:ref whichEffect:short	-	0011	whatsnew:0011	cs-uesp-wiki:RemoveNthEffectItem.wiki
+obse	-	RemoveScript	(script:refID) ''reference.''RemoveScript ''targetObjectID:ref''	-	0012	whatsnew:0012	cs-uesp-wiki:RemoveScript.wiki
+obse	-	RemoveSpellNS	''actor:ref.''RemoveSpellNS spell:base count:long	-	0001	first-release	cs-uesp-wiki:RemoveSpellNS.wiki
+obse	-	RestoreIP	RestoreIP ''[labelID]''	-	0001	first-release	cs-uesp-wiki:RestoreIP.wiki
+obse	-	RightShift	(result:long) RightShift value:long shiftAmount:long	-	0001	first-release	cs-uesp-wiki:RightShift.wiki
+obse	-	Rsin	rsin [float]	-	0001	first-release	cs-uesp-wiki:Rsin.wiki
+obse	-	RunBatchScript	(nothing) ''ref.''RunBatchScript filename:string ''runOnRef:bool''	-	0011	whatsnew:0011	cs-uesp-wiki:RunBatchScript.wiki
+obse	-	SaveIP	SaveIP ''[labelID]''	-	0001	first-release	cs-uesp-wiki:SaveIP.wiki
+obse	-	SetActiveSpell	SetActiveSpell [spell ID]	-	0004	whatsnew:0004	cs-uesp-wiki:SetActiveSpell.wiki
+obse	-	SetActorMaxSwimBreath	(nothing) reference.SetActorMaxSwimBreath newBreath:float	-	0021 beta 4	whatsnew:0021 beta 4	cs-uesp-wiki:SetActorMaxSwimBreath.wiki
+obse	-	SetActorRespawns	(nothing) ''reference''.SetActorRespawns flag:short ''actor:ref''	-	0001	first-release	cs-uesp-wiki:SetActorRespawns.wiki
+obse	-	SetActorSwimBreath	(nothing) reference.SetActorSwimBreath newBreath:float	-	0021 beta 4	whatsnew:0021 beta 4	cs-uesp-wiki:SetActorSwimBreath.wiki
+obse	-	SetActorValueC	(nothing) reference.SetActorValueC actorValueCode:short value:long	-	0014	whatsnew:0014	cs-uesp-wiki:SetActorValueC.wiki
+obse	-	SetApparatusType	(nothing) ''reference.''SetApparatusType apparatusType:short ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetApparatusType.wiki
+obse	-	SetArmorAR		-	0001	first-release	cs-uesp-wiki:SetArmorAR.wiki
+obse	-	SetArmorType	(nothing) ''reference.''SetArmorType nuArmorType:short ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetArmorType.wiki
+obse	-	SetAttackDamage	(nothing) ''reference''.SetAttackDamage nuDamage:long ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetAttackDamage.wiki
+obse	-	SetBookCantBeTaken	(nothing) ''reference.''SetBookCantBeTaken cantBeTaken:bool ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetBookCantBeTaken.wiki
+obse	-	SetBookIsScroll	(nothing) ''reference.''SetBookIsScroll isScroll:bool ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetBookIsScroll.wiki
+obse	-	SetBookSkillTaught	(nothing) ''reference.''SetBookSkillTaught skillTaught:short ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetBookSkillTaught.wiki
+obse	-	SetCanCorpseCheck	(nothing) ''reference''.SetCanCorpseCheck flag:short ''actor:ref''	-	0001	first-release	cs-uesp-wiki:SetCanCorpseCheck.wiki
+obse	-	SetCellMusicType	(nothing) SetCellMusicType cell:ref musicType:int	-	0021 beta	whatsnew:0021 beta	cs-uesp-wiki:SetCellMusicType.wiki
+obse	-	SetClimateHasMasser	(nothing) SetClimateHasMasser hasMasser:bool climate:ref	-	0001	first-release	cs-uesp-wiki:SetClimateHasMasser.wiki
+obse	-	SetClimateHasSecunda	(nothing) SetClimateHasSecunda hasSecunda:bool climate:ref	-	0001	first-release	cs-uesp-wiki:SetClimateHasSecunda.wiki
+obse	-	SetClimateMoonPhaseLength	(nothing) SetClimateMoonPhaseLength nuPhaseLength:short climate:ref	-	0001	first-release	cs-uesp-wiki:SetClimateMoonPhaseLength.wiki
+obse	-	SetClimateSunriseBegin	(nothing) SetClimateSunriseBegin time:short climate:ref	-	0001	first-release	cs-uesp-wiki:SetClimateSunriseBegin.wiki
+obse	-	SetClimateSunriseEnd	(nothing) SetClimateSunriseEnd time:short climate:ref	-	0001	first-release	cs-uesp-wiki:SetClimateSunriseEnd.wiki
+obse	-	SetClimateSunsetBegin	(nothing) SetClimateSunsetBegin time:short climate:ref	-	0001	first-release	cs-uesp-wiki:SetClimateSunsetBegin.wiki
+obse	-	SetClimateSunsetEnd	(nothing) SetClimateSunsetEnd time:short climate:ref	-	0001	first-release	cs-uesp-wiki:SetClimateSunsetEnd.wiki
+obse	-	SetClimateVolatility	(nothing) SetClimateVolatility volatility:short climate:ref	-	0001	first-release	cs-uesp-wiki:SetClimateVolatility.wiki
+obse	-	SetContainerRespawns	(nothing) reference.SetContainerRespawns respawns:bool objectID:ref	-	0001	first-release	cs-uesp-wiki:SetContainerRespawns.wiki
+obse	-	SetCurrentSoulLevel	(nothing) reference.SetCurrentSoulLevel newLevel:short	-	0001	first-release	cs-uesp-wiki:SetCurrentSoulLevel.wiki
+obse	-	SetDisableGlobalCollision	(nothing) SetDisableGlobalCollision toDisableOrNot:bool	-	0001	first-release	cs-uesp-wiki:SetDisableGlobalCollision.wiki
+obse	-	SetEnchantment	(oldEnchantment:ref) ''reference.''SetEnchantment nuEnchantment:ref ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetEnchantment.wiki
+obse	-	SetEnchantmentCharge	(nothing) SetEnchantmentCharge nuCharge:long objectID:ref	-	0001	first-release	cs-uesp-wiki:SetEnchantmentCharge.wiki
+obse	-	SetEnchantmentCost	(nothing) SetEnchantmentCost nuCost:long objectID:ref	-	0001	first-release	cs-uesp-wiki:SetEnchantmentCost.wiki
+obse	-	SetEnchantmentType	(nothing) SetEnchantmentType enchantType:short objectID:ref	-	0001	first-release	cs-uesp-wiki:SetEnchantmentType.wiki
+obse	-	SetEquipmentSlot	(nothing) ''reference.''SetEquipmentSlot slot:short ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetEquipmentSlot.wiki
+obse	-	SetEquippedCurrentCharge	(nothing) reference.SetEquippedCurrentCharge nuCharge:long slot:short	-	0001	first-release	cs-uesp-wiki:SetEquippedCurrentCharge.wiki
+obse	-	SetEquippedCurrentHealth	(nothing) ''reference.''SetEquippedCurrentHealth nuHealth:long slot:short	-	0001	first-release	cs-uesp-wiki:SetEquippedCurrentHealth.wiki
+obse	-	SetEquippedWeaponPoison	(oldPoison:ref) reference.SetEquippedWeaponPoison nuPoison:ref	-	0001	first-release	cs-uesp-wiki:SetEquippedWeaponPoison.wiki
+obse	-	SetEventHandler	(success:bool) SetEventHandler eventID:string functionScript:ref filter1:pair filter2:pair	-	0019 beta 1	whatsnew:0019 beta 1	cs-uesp-wiki:SetEventHandler.wiki
+obse	-	SetEyes	(nothing) ''reference''.SetEyes eyes:ref ''npc:ref''	-	0001	first-release	cs-uesp-wiki:SetEyes.wiki
+obse	-	SetFactionEvil	(nothing) SetFactionEvil faction:ref isEvil:short	-	0001	first-release	cs-uesp-wiki:SetFactionEvil.wiki
+obse	-	SetFactionHidden	(nothing) SetFactionHidden faction:ref isHidden:short	-	0001	first-release	cs-uesp-wiki:SetFactionHidden.wiki
+obse	-	SetFactionSpecialCombat	(hasSpecialCombat:bool) FactionHasSpecialCombat faction:ref	-	0001	first-release	cs-uesp-wiki:SetFactionSpecialCombat.wiki
+obse	-	SetFemale	(nothing) ''reference''.SetFemale flag:short ''actor:ref''	-	0001	first-release	cs-uesp-wiki:SetFemale.wiki
+obse	-	SetFemaleBipedPath	(nothing) ''reference.''SetFemaleBipedPath modelPath:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetFemaleBipedPath.wiki
+obse	-	SetFemaleGroundPath	(nothing) ''reference.''SetFemaleGroundPath modelPath:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetFemaleGroundPath.wiki
+obse	-	SetFemaleIconPath	(nothing) ''reference.''SetFemaleIconPath iconPath:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetFemaleIconPath.wiki
+obse	-	SetFunctionValue	(hasTail:bool) ''reference''.HasTail ''raceOrNPC:ref''	-	0001	first-release	cs-uesp-wiki:SetFunctionValue.wiki
+obse	-	SetGoldValue	(nothing) ''reference.''SetGoldValue nuGoldValue:long ''objectID:ref''	-	0019 beta 2	whatsnew:0019 beta 2	cs-uesp-wiki:SetGoldValue.wiki
+obse	-	SetGoldValue T	(hasTail:bool) ''reference''.HasTail ''raceOrNPC:ref''	-	0001	first-release	cs-uesp-wiki:SetGoldValue T.wiki
+obse	-	SetHair	(nothing) ''reference''.SetHair hairStyle:ref ''npc:ref''	-	0001	first-release	cs-uesp-wiki:SetHair.wiki
+obse	-	SetHarvested	(isHarvested:bool) reference.IsHarvested	-	0014	whatsnew:0014	cs-uesp-wiki:SetHarvested.wiki
+obse	-	SetHasBeenPickedUp	(nothing) reference.SetHasBeenPickedUp pickedUp:bool	-	0001	first-release	cs-uesp-wiki:SetHasBeenPickedUp.wiki
+obse	-	SetHotkeyItem	(nothing) SetHotkeyItem whichHotkey:short spell/item:ref	-	0001	first-release	cs-uesp-wiki:SetHotkeyItem.wiki
+obse	-	SetIconPath	(nothing) ''reference.''SetIconPath iconPath:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetIconPath.wiki
+obse	-	SetIgnoresResistance	(nothing) ''reference.Set''IgnoresResistance shouldIgnore:bool ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetIgnoresResistance.wiki
+obse	-	SetIsFood	(nothing) ''reference.''IsFood isFood:bool ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetIsFood.wiki
+obse	-	SetIsPlayable	(nothing) ''reference.''SetIsPlayable isPlayable:bool ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetIsPlayable.wiki
+obse	-	SetLightRadius	(nothing) ''reference''.SetLightRadius radius:short ''light:ref''	-	0001	first-release	cs-uesp-wiki:SetLightRadius.wiki
+obse	-	SetLowLevelProcessing	(nothing) ''reference''.SetLowLevelProcessing flag:short ''actor:ref''	-	0001	first-release	cs-uesp-wiki:SetLowLevelProcessing.wiki
+obse	-	SetMagicItemAutoCalc	(nothing) SetMagicItemAutoCalc isAutocalc:bool objectID:ref	-	0001	first-release	cs-uesp-wiki:SetMagicItemAutoCalc.wiki
+obse	-	SetMagicProjectileSpell	(nothing) reference.SetMagicProjectileSpell newSpell/Enchantment:ref	-	0001	first-release	cs-uesp-wiki:SetMagicProjectileSpell.wiki
+obse	-	SetMaleBipedPath	(nothing) ''reference.''SetMaleBipedPath modelPath:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetMaleBipedPath.wiki
+obse	-	SetMaleGroundPath	(nothing) ''reference.''SetMaleGroundPath modelPath:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetMaleGroundPath.wiki
+obse	-	SetMaleIconPath	(nothing) ''reference.''SetMaleIconPath iconPath:string ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetMaleIconPath.wiki
+obse	-	SetMerchantContainer	(oldContainerRef:ref) npc.SetMerchantContainer nuContainer:ref	-	0001	first-release	cs-uesp-wiki:SetMerchantContainer.wiki
+obse	-	SetModelPath	[''Ref.'']SetModelPath "path string" ''[objectID]''	-	0019 beta 1	whatsnew:0019 beta 1	cs-uesp-wiki:SetModelPath.wiki
+obse	-	SetMouseSpeedX	SetMouseSpeedX speed	-	22.6	whatsnew:22.6	cs-uesp-wiki:SetMouseSpeedX.wiki
+obse	-	SetMouseSpeedY	SetMouseSpeedX speed	-	22.6	whatsnew:22.6	cs-uesp-wiki:SetMouseSpeedY.wiki
+obse	-	SetName	(nothing) ''reference.''SetName "name:string" ''objectID:ref''	-	0018 beta 3	whatsnew:0018 beta 3	cs-uesp-wiki:SetName.wiki
+obse	-	SetNameEx	(nothing) SetNameEx formatString:string ''var1'' ''var2'' ... ''var20'' object:ref	-	0015 beta 2	whatsnew:0015 beta 2	cs-uesp-wiki:SetNameEx.wiki
+obse	-	SetNoPersuasion	(nothing) ''reference''.SetNoPersuasion flag:short ''actor:ref''	-	0001	first-release	cs-uesp-wiki:SetNoPersuasion.wiki
+obse	-	SetNthActiveEffectMagnitude	(nothing) ''reference.''SetNthActiveEffectMagnitude magnitude:float whichEffect:long	-	0001	first-release	cs-uesp-wiki:SetNthActiveEffectMagnitude.wiki
+obse	-	SetNthEffectItemActorValue	(nothing) SetNthEffectItemActorValue ActorValue:string magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:SetNthEffectItemActorValue.wiki
+obse	-	SetNthEffectItemActorValueC	(nothing) SetNthEffectItemActorValueC nuActorValue:long magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:SetNthEffectItemActorValueC.wiki
+obse	-	SetNthEffectItemArea	(nothing) SetNthEffectItemArea nuArea:long magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:SetNthEffectItemArea.wiki
+obse	-	SetNthEffectItemDuration	(nothing) SetNthEffectItemDuration nuDuration:long magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:SetNthEffectItemDuration.wiki
+obse	-	SetNthEffectItemMagnitude	(nothing) SetNthEffectItemMagnitude nuMagnitude:long magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:SetNthEffectItemMagnitude.wiki
+obse	-	SetNthEffectItemRange	(nothing) SetNthEffectItemRange nuRange:short magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:SetNthEffectItemRange.wiki
+obse	-	SetNthEffectItemScript	(nothing) SetNthEffectItemScript scriptObjectID:ref magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:SetNthEffectItemScript.wiki
+obse	-	SetNthEffectItemScriptHostile	(nothing) SetNthEffectItemScriptHostile isHostile:bool magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:SetNthEffectItemScriptHostile.wiki
+obse	-	SetNthEffectItemScriptName	(nothing) SetNthEffectItemScriptName name:string magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:SetNthEffectItemScriptName.wiki
+obse	-	SetNthEffectItemScriptSchool	(nothing) SetNthEffectItemScriptSchool magicSchool:short magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:SetNthEffectItemScriptSchool.wiki
+obse	-	SetNthEffectItemScriptVisualEffect	(nothing) SetNthEffectItemScriptVisualEffect magicEffect:chars magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:SetNthEffectItemScriptVisualEffect.wiki
+obse	-	SetNthEffectItemScriptVisualEffectC	(nothing) SetNthEffectItemScriptVisualEffectC magicEffectCode:long magicItem:ref whichEffect:short	-	0001	first-release	cs-uesp-wiki:SetNthEffectItemScriptVisualEffectC.wiki
+obse	-	SetNumericGameSetting	SetNumericGameSetting GMST value	-	0001	first-release	cs-uesp-wiki:SetNumericGameSetting.wiki
+obse	-	SetNumericINISetting	(nothing) SetNumericINISetting "iniSettingName:SettingHeader::string" value:float	-	0001	first-release	cs-uesp-wiki:SetNumericINISetting.wiki
+obse	-	SetObjectCharge	(nothing) ''refernce.''SetObjectCharge nuCharge:long ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetObjectCharge.wiki
+obse	-	SetObjectHealth	(nothing) ''reference.''SetObjectHealth nuHealth:long ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetObjectHealth.wiki
+obse	-	SetOpenKey	(nothing) reference.SetOpenKey key:ref	-	0001	first-release	cs-uesp-wiki:SetOpenKey.wiki
+obse	-	SetPCAMurderer	(nothing) SetPCAMurderer isMurderer:bool	-	0013	whatsnew:0013	cs-uesp-wiki:SetPCAMurderer.wiki
+obse	-	SetPCLevelOffset	(nothing) ''reference''.SetPCLevelOffset flag:short ''minLevel:short'' ''maxLevel:short'' ''actor:ref''	-	0001	first-release	cs-uesp-wiki:SetPCLevelOffset.wiki
+obse	-	SetPlayerProjectile	(nothing) reference.SetPlayerProjectile	-	0001	first-release	cs-uesp-wiki:SetPlayerProjectile.wiki
+obse	-	Setplayerskeletonpath	setplayerskeletonpath [ModelPath]	-	21.8	whatsnew:21.8	cs-uesp-wiki:Setplayerskeletonpath.wiki
+obse	-	SetQuality	(nothing) ''reference.''SetQuality quality:float ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetQuality.wiki
+obse	-	SetQuestItem	(nothing) ''reference.''SetQuestItem isQuestItem:bool ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetQuestItem.wiki
+obse	-	SetRefCount	(nothing) reference.SetRefCount newCount:short	-	0001	first-release	cs-uesp-wiki:SetRefCount.wiki
+obse	-	SetRefEssential	reference.SetRefEssential isEssential:bool	-	0001	first-release	cs-uesp-wiki:SetRefEssential.wiki
+obse	-	SetScaleEX	(nothing) reference.SetScaleEX scale:float	-	0001	first-release	cs-uesp-wiki:SetScaleEX.wiki
+obse	-	SetScript	(script:refID) ''reference.''SetScript scriptID:ref ''targetObjectID:ref''	-	0012	whatsnew:0012	cs-uesp-wiki:SetScript.wiki
+obse	-	SetSkillUseIncrement	(nothing) SetSkillUseIncrement nuRate:float skill:name ''whichAction:short''	-	0001	first-release	cs-uesp-wiki:SetSkillUseIncrement.wiki
+obse	-	SetSoulGemCapacity	(nothing) SetSoulGemCapacity soulLevel:short objectID:ref	-	0001	first-release	cs-uesp-wiki:SetSoulGemCapacity.wiki
+obse	-	SetSoulLevel	(nothing) SetSoulLevel soulLevel:short objectID:ref	-	0001	first-release	cs-uesp-wiki:SetSoulLevel.wiki
+obse	-	SetSpellExplodesWithNoTarget	(nothing) SetSpellExplodesWithNoTarget doesSpellExpode:bool spell:ref	-	0012	whatsnew:0012	cs-uesp-wiki:SetSpellExplodesWithNoTarget.wiki
+obse	-	SetSpellHostile	(nothing) SetSpellHostile spell:ref isHostile:bool	-	0015 beta 1	whatsnew:0015 beta 1	cs-uesp-wiki:SetSpellHostile.wiki
+obse	-	SetSpellMagickaCost	(nothing) SetSpellMagickaCost nuMagickaCost:long spell:ref	-	0001	first-release	cs-uesp-wiki:SetSpellMagickaCost.wiki
+obse	-	SetSpellMasteryLevel	(nothing) SetSpellMasteryLevel masteryLevel:short objectID:ref	-	0001	first-release	cs-uesp-wiki:SetSpellMasteryLevel.wiki
+obse	-	SetSpellType	(nothing) SetSpellType nuType:short spell:ref	-	0001	first-release	cs-uesp-wiki:SetSpellType.wiki
+obse	-	SetSummonable	(nothing) ''reference''.SetSummonable flag:short ''actor:ref''	-	0001	first-release	cs-uesp-wiki:SetSummonable.wiki
+obse	-	SetTravelHorse	(nothing) reference.SetTravelHorse horse:ref	-	0001	first-release	cs-uesp-wiki:SetTravelHorse.wiki
+obse	-	SetWeaponReach	(nothing) ''reference.''SetWeaponReach nuReach:float ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetWeaponReach.wiki
+obse	-	SetWeaponSpeed	(nothing) ''reference.''SetWeaponSpeed nuSpeed:float ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetWeaponSpeed.wiki
+obse	-	SetWeaponType	(nothing) ''reference.''SetWeaponType weaponType:short ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetWeaponType.wiki
+obse	-	SetWeatherCloudSpeedLower	(nothing) SetWeatherCloudSpeedLower speed:float weather:ref	-	0001	first-release	cs-uesp-wiki:SetWeatherCloudSpeedLower.wiki
+obse	-	SetWeatherCloudSpeedUpper	(nothing) SetWeatherCloudSpeedUpper speed:float weather:ref	-	0001	first-release	cs-uesp-wiki:SetWeatherCloudSpeedUpper.wiki
+obse	-	SetWeatherColor	(nothing) SetWeatherColor red:short green:short blue:short whichColor:short weather:ref ''whichTime:short''	-	0001	first-release	cs-uesp-wiki:SetWeatherColor.wiki
+obse	-	SetWeatherFogDayFar	(nothing) SetWeatherFogDayFar fogDistance:float weather:ref	-	0001	first-release	cs-uesp-wiki:SetWeatherFogDayFar.wiki
+obse	-	SetWeatherFogDayNear	(nothing) SetWeatherFogDayNear fogDistance:float weather:ref	-	0001	first-release	cs-uesp-wiki:SetWeatherFogDayNear.wiki
+obse	-	SetWeatherFogNightFar	(nothing) SetWeatherFogNightFar fogDistance:float weather:ref	-	0001	first-release	cs-uesp-wiki:SetWeatherFogNightFar.wiki
+obse	-	SetWeatherFogNightNear	(nothing) SetWeatherFogNightNear fogDistance:float weather:ref	-	0001	first-release	cs-uesp-wiki:SetWeatherFogNightNear.wiki
+obse	-	SetWeatherHDRValue	(oldHDRValue:float) SetWeatherHDRValue nuVal:float whichHDRValue:short weather:short	-	0001	first-release	cs-uesp-wiki:SetWeatherHDRValue.wiki
+obse	-	SetWeatherLightningFrequency	(nothing) SetWeatherLightningFrequency frequency:short weather:ref	-	0001	first-release	cs-uesp-wiki:SetWeatherLightningFrequency.wiki
+obse	-	SetWeatherSunDamage	(nothing) SetWeatherSunDamage sunDamage:float weather:ref	-	0001	first-release	cs-uesp-wiki:SetWeatherSunDamage.wiki
+obse	-	SetWeatherSunGlare	(nothing) SetWeatherSunGlare sunGlare:float weather:ref	-	0001	first-release	cs-uesp-wiki:SetWeatherSunGlare.wiki
+obse	-	SetWeatherTransDelta	(nothing) SetWeatherTransDelta transDelta:float weather:ref	-	0001	first-release	cs-uesp-wiki:SetWeatherTransDelta.wiki
+obse	-	SetWeatherWindSpeed	(nothing) SetWeatherWindSpeed speed:float weather:ref	-	0001	first-release	cs-uesp-wiki:SetWeatherWindSpeed.wiki
+obse	-	SetWeight	(nothing) ''reference.''SetWeight nuWeight:float ''objectID:ref''	-	0001	first-release	cs-uesp-wiki:SetWeight.wiki
+obse	-	Sin	sin [float]	-	0001	first-release	cs-uesp-wiki:Sin.wiki
+obse	-	Sinh	sinh [float]	-	0001	first-release	cs-uesp-wiki:Sinh.wiki
+obse	-	SquareRoot	SquareRoot [float]	-	0001	first-release	cs-uesp-wiki:SquareRoot.wiki
+obse	-	Tan	tan [float]	-	0001	first-release	cs-uesp-wiki:Tan.wiki
+obse	-	Tanh	tanh [float]	-	0001	first-release	cs-uesp-wiki:Tanh.wiki
+obse	-	TapControl	(nothing) TapControl whichControl:short	-	0001	first-release	cs-uesp-wiki:TapControl.wiki
+obse	-	TapKey	(nothing) TapKey dxScanCode:long	-	0001	first-release	cs-uesp-wiki:TapKey.wiki
+obse	-	TestExpr	(bool) TestExpr expr	-	22.2	whatsnew:22.2	cs-uesp-wiki:TestExpr.wiki
+obse	-	UnequipItemNS	''actor:ref.''UnequipItemNS item:base count:long	-	0001	first-release	cs-uesp-wiki:UnequipItemNS.wiki
+obse	-	UnequipItemSilent	''actor:ref.''UnquipItemSilent item:base count:long	-	0020 beta 2	whatsnew:0020 beta 2	cs-uesp-wiki:UnequipItemSilent.wiki
+obse	-	UnHammerKey	UnhammerKey key	-	0001	first-release	cs-uesp-wiki:UnHammerKey.wiki

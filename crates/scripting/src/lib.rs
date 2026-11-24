@@ -64,6 +64,8 @@ pub mod crime_knowledge;
 pub mod guards;
 pub mod hands;
 pub mod mcm;
+/// LMC-SCR-004 — the per-function extender catalog and its measured coverage.
+pub mod extender_catalog;
 pub mod jail;
 pub mod weather_state;
 pub mod location_keyword_data;

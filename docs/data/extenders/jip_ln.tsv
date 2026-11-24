@@ -1,0 +1,734 @@
+family	script	function	signature	global	introduced	introduced_source	source
+jip_ln	-	"componentPath<nowiki>	(int) "componentPath<nowiki>	-	first-release	first-release	geckwiki:AddTileFromTemplate.wiki
+jip_ln	-	AddAmmoEffect	(successful:0/1) AddAmmoEffect ammo:ref ammoEffect:ref	-	first-release	first-release	geckwiki:AddAmmoEffect.wiki
+jip_ln	-	AddBaseEffectListEffect	(void) AddBaseEffectListEffect actorEffect:ref baseActor:ref	-	first-release	first-release	geckwiki:AddBaseEffectListEffect.wiki
+jip_ln	-	AddDestructionStage	(stageCount:int) AddDestructionStage object:ref index:int healthPercent:int damageStage:int	-	first-release	first-release	geckwiki:AddDestructionStage.wiki
+jip_ln	-	AddItemAlt	(void) AddItemAlt item:form quantity:int condition:float equipItem:0/1 noMessage:0/1	-	first-release	first-release	geckwiki:AddItemAlt.wiki
+jip_ln	-	AddNewEffect	(effectCount:int) AddNewEffect effectForm:ref baseEffect:ref duration:int magnitude:int range:int area:int append:0/1	-	first-release	first-release	geckwiki:AddNewEffect.wiki
+jip_ln	-	AddObjectiveTarget	(void) AddObjectiveTarget quest:ref objectiveIndex:int targetRef:ref	-	first-release	first-release	geckwiki:AddObjectiveTarget.wiki
+jip_ln	-	AddPrimitive	(success:0/1) AddPrimitive shapeType:int boundX:float boundY:float boundZ:float	-	first-release	first-release	geckwiki:AddPrimitive.wiki
+jip_ln	-	AddRefMapMarker	(void) AddRefMapMarker	-	first-release	first-release	geckwiki:AddRefMapMarker.wiki
+jip_ln	-	AddScriptVariable	(added:0/1) AddScriptVariable varName:string quest:ref	-	first-release	first-release	geckwiki:AddScriptVariable.wiki
+jip_ln	-	AttachAshPileEx	(void) AttachAshPileEx activator:form	-	first-release	first-release	geckwiki:AttachAshPileEx.wiki
+jip_ln	-	AttachExtraCamera	(successful:0/1) AttachExtraCamera cameraName:string addOrRemove:1/0 parentNode:string	-	first-release	first-release	geckwiki:AttachExtraCamera.wiki
+jip_ln	-	AttachModel	(successful:0/1) AttachModel refOrForm:form addOrRemove:int targetAndFile:formattedString	-	first-release	first-release	geckwiki:AttachModel.wiki
+jip_ln	-	AttachUIComponent	(successful:0/1) AttachUIComponent targetNode:string component:formattedString	-	first-release	first-release	geckwiki:AttachUIComponent.wiki
+jip_ln	-	AttachUIXML	(successful:0/1) AttachUIXML targetNode:string filePath:string	-	first-release	first-release	geckwiki:AttachUIXML.wiki
+jip_ln	-	AuxiliaryVariableErase	(numElements:int) AuxiliaryVariableErase varName:string index:int baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableErase.wiki
+jip_ln	-	AuxiliaryVariableEraseAll	(void) AuxiliaryVariableEraseAll varClass:int baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableEraseAll.wiki
+jip_ln	-	AuxiliaryVariableGetAll	(array_var) AuxiliaryVariableGetAll varClass:int baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableGetAll.wiki
+jip_ln	-	AuxiliaryVariableGetAsArray	(values:array_var) AuxiliaryVariableGetAsArray varName:string baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableGetAsArray.wiki
+jip_ln	-	AuxiliaryVariableGetFloat	(value:float) AuxiliaryVariableGetFloat varName:string index:int baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableGetFloat.wiki
+jip_ln	-	AuxiliaryVariableGetRef	(value:ref) AuxiliaryVariableGetRef varName:string index:int baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableGetRef.wiki
+jip_ln	-	AuxiliaryVariableGetSize	(size:int) AuxiliaryVariableGetSize varName:string baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableGetSize.wiki
+jip_ln	-	AuxiliaryVariableGetString	(value:string_var) AuxiliaryVariableGetString varName:string index:int baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableGetString.wiki
+jip_ln	-	AuxiliaryVariableGetType	(type:int) AuxiliaryVariableGetType varName:string index:int baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableGetType.wiki
+jip_ln	-	AuxiliaryVariableSetFloat	(success:bool) AuxiliaryVariableSetFloat varName:string value:float index:int baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableSetFloat.wiki
+jip_ln	-	AuxiliaryVariableSetFromArray	(numElements:int) AuxiliaryVariableSetFromArray varName:string sourceArray:array_var baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableSetFromArray.wiki
+jip_ln	-	AuxiliaryVariableSetRef	(success:bool) AuxiliaryVariableSetRef varName:string value:ref index:int baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableSetRef.wiki
+jip_ln	-	AuxiliaryVariableSetString	(success:bool) AuxiliaryVariableSetString varName:string value:string index:int baseForm:ref	-	first-release	first-release	geckwiki:AuxiliaryVariableSetString.wiki
+jip_ln	-	AuxVarGetFltCond	(void) AuxVarGetFltCond	-	first-release	first-release	geckwiki:AuxVarGetFltCond.wiki
+jip_ln	-	CastImmediate	(void) CastImmediate gameEffect:ref casterRef:ref	-	first-release	first-release	geckwiki:CastImmediate.wiki
+jip_ln	-	ClearActiveQuest	(void) ClearActiveQuest	-	first-release	first-release	geckwiki:ClearActiveQuest.wiki
+jip_ln	-	ClearDeadActors	(void) ClearDeadActors	-	first-release	first-release	geckwiki:ClearDeadActors.wiki
+jip_ln	-	ClearJIPSavedData	(void) ClearJIPSavedData scriptVars:0/1 linkedRefs:0/1 auxVars:0/1/2 refMaps:0/1/2	-	first-release	first-release	geckwiki:ClearJIPSavedData.wiki
+jip_ln	-	ClearMessageQueue	(void) ClearMessageQueue	-	first-release	first-release	geckwiki:ClearMessageQueue.wiki
+jip_ln	-	ClickMenuButton	(successful:0/1) ClickMenuButton componentPath:string clickTimes:int	-	first-release	first-release	geckwiki:ClickMenuButton.wiki
+jip_ln	-	ClickMenuTile	(void) ClickMenuTile componentPath:string	-	first-release	first-release	geckwiki:ClickMenuTile.wiki
+jip_ln	-	ClimateAddWeatherType	(successful:0/1) ClimateAddWeatherType climate:ref weather:ref chance:int globalVar:ref	-	first-release	first-release	geckwiki:ClimateAddWeatherType.wiki
+jip_ln	-	ClimateRemoveWeatherType	(successful:0/1) ClimateRemoveWeatherType climate:ref weather:ref	-	first-release	first-release	geckwiki:ClimateRemoveWeatherType.wiki
+jip_ln	-	CloseActiveMenu	(void) CloseActiveMenu closeAll:0/1	-	first-release	first-release	geckwiki:CloseActiveMenu.wiki
+jip_ln	-	CreatureHasModel	(hasModel:0/1) CreatureHasModel modelPath:string baseForm:ref	-	first-release	first-release	geckwiki:CreatureHasModel.wiki
+jip_ln	-	CrippleLimb	(void) CrippleLimb limb:int source:ref	-	first-release	first-release	geckwiki:CrippleLimb.wiki
+jip_ln	-	debugMode	(void) debugMode debugMode:int	-	first-release	first-release	geckwiki:GetDebugModeState.wiki
+jip_ln	-	DisableNavMeshAlt	(void) DisableNavMeshAlt NavMesh:ref	-	first-release	first-release	geckwiki:DisableNavMeshAlt.wiki
+jip_ln	-	DismemberLimb	(void) DismemberLimb bodyPartID:int explode:1/0	-	first-release	first-release	geckwiki:DismemberLimb.wiki
+jip_ln	-	DonnerReedKuruParty	(void) DonnerReedKuruParty isEaten:0/1	-	first-release	first-release	geckwiki:DonnerReedKuruParty.wiki
+jip_ln	-	DropAlt	(void) DropAlt item/list:ref quantity:int clearOwnership:0/1	-	first-release	first-release	geckwiki:DropAlt.wiki
+jip_ln	-	DropMeAlt	(void) DropMeAlt quantity:int clearOwnership:0/1	-	first-release	first-release	geckwiki:DropMeAlt.wiki
+jip_ln	-	EnableNavMeshAlt	(void) EnableNavMeshAlt NavMesh:ref	-	first-release	first-release	geckwiki:EnableNavMeshAlt.wiki
+jip_ln	-	EquipItemAlt	(void) EquipItemAlt item:ref noUnequip:0/1 hideMessage:0/1	-	first-release	first-release	geckwiki:EquipItemAlt.wiki
+jip_ln	-	EquippedWeaponHasModType	(hasModType:0/1) EquippedWeaponHasModType modType:int	-	first-release	first-release	geckwiki:EquippedWeaponHasModType.wiki
+jip_ln	-	FaceObject	(void) FaceObject object:ref	-	first-release	first-release	geckwiki:FaceObject.wiki
+jip_ln	-	facos	(float) facos value:float	-	first-release	first-release	geckwiki:Facos.wiki
+jip_ln	-	FailQuest	(void) FailQuest quest:form	-	first-release	first-release	geckwiki:FailQuest.wiki
+jip_ln	-	FakeScriptEvent	(success:0/1) FakeScriptEvent eventName:string filterForm:ref	-	first-release	first-release	geckwiki:FakeScriptEvent.wiki
+jip_ln	-	fasin	(float) fasin value:float	-	first-release	first-release	geckwiki:Fasin.wiki
+jip_ln	-	fatan	(float) fatan value:float	-	first-release	first-release	geckwiki:Fatan.wiki
+jip_ln	-	fatan2	(float) fatan2 y:float x:float	-	first-release	first-release	geckwiki:Fatan2.wiki
+jip_ln	-	FileExists	(exists:0/1/2) FileExists filePath:string isFolder:1/0	-	first-release	first-release	geckwiki:FileExists.wiki
+jip_ln	-	ForceActorDetectionValue	(void) ForceActorDetectionValue detectionValue:int asModifier:1/0	-	first-release	first-release	geckwiki:ForceActorDetectionValue.wiki
+jip_ln	-	ForceClimate	(void) ForceClimate climate:form	-	first-release	first-release	geckwiki:ForceClimate.wiki
+jip_ln	-	FreePlayer	(void) FreePlayer	-	first-release	first-release	geckwiki:FreePlayer.wiki
+jip_ln	-	FreezeTime	(timeFrozen:0/1) FreezeTime toggle:1/0	-	first-release	first-release	geckwiki:FreezeTime.wiki
+jip_ln	-	ftan	(float) ftan angle:float	-	first-release	first-release	geckwiki:Ftan.wiki
+jip_ln	-	GetActiveEffects	(activeEffects:array_var) GetActiveEffects filter:int	-	first-release	first-release	geckwiki:GetActiveEffects.wiki
+jip_ln	-	GetActiveIMODs	(activeIMODs:array_var) GetActiveIMODs	-	first-release	first-release	geckwiki:GetActiveIMODs.wiki
+jip_ln	-	GetActiveMenuMode	(menuCode:int) GetActiveMenuMode	-	first-release	first-release	geckwiki:GetActiveMenuMode.wiki
+jip_ln	-	GetActiveObjectives	(array_var) GetActiveObjectives	-	first-release	first-release	geckwiki:GetActiveObjectives.wiki
+jip_ln	-	GetActiveUIComponentFullName	(name:string_var) GetActiveUIComponentFullName	-	first-release	first-release	geckwiki:GetActiveUIComponentFullName.wiki
+jip_ln	-	GetActiveUIComponentID	(id:int) GetActiveUIComponentID	-	first-release	first-release	geckwiki:GetActiveUIComponentID.wiki
+jip_ln	-	GetActiveUIComponentName	(name:string_var) GetActiveUIComponentName	-	first-release	first-release	geckwiki:GetActiveUIComponentName.wiki
+jip_ln	-	GetActorAlpha	(alpha:float) GetActorAlpha	-	first-release	first-release	geckwiki:GetActorAlpha.wiki
+jip_ln	-	GetActorDiveBreath	(breathSeconds:float) GetActorDiveBreath	-	first-release	first-release	geckwiki:GetActorDiveBreath.wiki
+jip_ln	-	GetActorGravityMult	(gravityMult:float) GetActorGravityMult	-	first-release	first-release	geckwiki:GetActorGravityMult.wiki
+jip_ln	-	GetActorLeveledList	(srcLvlList:form) GetActorLeveledList	-	first-release	first-release	geckwiki:GetActorLeveledList.wiki
+jip_ln	-	GetActorLevelingData	(dataValue:float) GetActorLevelingData dataType:int baseForm:ref	-	first-release	first-release	geckwiki:GetActorLevelingData.wiki
+jip_ln	-	GetActorLightAmount	(lightAmount:float) GetActorLightAmount	-	first-release	first-release	geckwiki:GetActorLightAmount.wiki
+jip_ln	-	GetActorMovementFlags	(movementFlags:int) GetActorMovementFlags	-	first-release	first-release	geckwiki:GetActorMovementFlags.wiki
+jip_ln	-	GetActorProcessingLevel	(processingLvl:int) GetActorProcessingLevel	-	first-release	first-release	geckwiki:GetActorProcessingLevel.wiki
+jip_ln	-	GetActorsByProcessingLevel	(actors:array_var) GetActorsByProcessingLevel processingLvl:int	-	first-release	first-release	geckwiki:GetActorsByProcessingLevel.wiki
+jip_ln	-	GetActorTemplate	(baseForm:ref) GetActorTemplate baseForm:ref	-	first-release	first-release	geckwiki:GetActorTemplate.wiki
+jip_ln	-	GetActorTiltAngle	(angle:float) GetActorTiltAngle axis:X/Y	-	first-release	first-release	geckwiki:GetActorTiltAngle.wiki
+jip_ln	-	GetActorUnarmedEffect	(effect:ref) GetActorUnarmedEffect baseForm:ref	-	first-release	first-release	geckwiki:GetActorUnarmedEffect.wiki
+jip_ln	-	GetActorValueModifier	(avMod:float) GetActorValueModifier actorValue:StatName typeFilter:int	-	first-release	first-release	geckwiki:GetActorValueModifier.wiki
+jip_ln	-	GetActorVelocity	(velocity:float) GetActorVelocity axis:X/Y/Z	-	first-release	first-release	geckwiki:GetActorVelocity.wiki
+jip_ln	-	GetActorVelocityAlt	(success:0/1) GetActorVelocityAlt resX:ScriptVar resY:ScriptVar resZ:ScriptVar getLocal:0/1	-	first-release	first-release	geckwiki:GetActorVelocityAlt.wiki
+jip_ln	-	GetActorVoiceType	(voiceType:ref) GetActorVoiceType baseForm:ref	-	first-release	first-release	geckwiki:GetActorVoiceType.wiki
+jip_ln	-	GetAddictionChance	(chance:float) GetAddictionChance ingestible:ref	-	first-release	first-release	geckwiki:GetAddictionChance.wiki
+jip_ln	-	GetAddictionEffect	(actorEffect:ref) GetAddictionEffect ingestible:ref	-	first-release	first-release	geckwiki:GetAddictionEffect.wiki
+jip_ln	-	GetAllItemRefs	(items:array_var) GetAllItemRefs typeCode:int noNonPlayable:0/1 noQuestItems:0/1 noEquipped:0/1	-	first-release	first-release	geckwiki:GetAllItemRefs.wiki
+jip_ln	-	GetAllItems	(items:array_var) GetAllItems typeCode:int noNonPlayable:0/1 noQuestItems:0/1 noEquipped:0/1	-	first-release	first-release	geckwiki:GetAllItems.wiki
+jip_ln	-	GetAlwaysRun	(alwaysRun:0/1) GetAlwaysRun	-	first-release	first-release	geckwiki:GetAlwaysRun.wiki
+jip_ln	-	GetAmmoEffectTraitNumeric	(traitValue:float) GetAmmoEffectTraitNumeric ammoEffect:ref traitID:int	-	first-release	first-release	geckwiki:GetAmmoEffectTraitNumeric.wiki
+jip_ln	-	GetAmmoProjectile	(projectile:ref) GetAmmoProjectile ammo:ref	-	first-release	first-release	geckwiki:GetAmmoProjectile.wiki
+jip_ln	-	GetAmmoTraitNumeric	(traitValue:float) GetAmmoTraitNumeric ammo:ref traitID:int	-	first-release	first-release	geckwiki:GetAmmoTraitNumeric.wiki
+jip_ln	-	GetAngleEx	(void) GetAngleEx resAngleX:ScriptVar resAngleY:ScriptVar resAngleZ:ScriptVar getLocal:0/1	-	first-release	first-release	geckwiki:GetAngleEx.wiki
+jip_ln	-	GetAnglesBetweenPoints	(void) GetAnglesBetweenPoints x0:float y0:float z0:float x1:float y1:float z1:float resAngX:ScriptVar resAngZ:ScriptVar	-	first-release	first-release	geckwiki:GetAnglesBetweenPoints.wiki
+jip_ln	-	GetAngularVelocity	(velocity:float) GetAngularVelocity nodeName:string axis:X/Y/Z	-	first-release	first-release	geckwiki:GetAngularVelocity.wiki
+jip_ln	-	GetAngularVelocityAlt	(success:0/1) GetAngularVelocityAlt nodeName:string resX:ScriptVar resY:ScriptVar resZ:ScriptVar getGlobal:0/1	-	first-release	first-release	geckwiki:GetAngularVelocityAlt.wiki
+jip_ln	-	GetAnimSequenceFrequency	(frequency:float) GetAnimSequenceFrequency sequenceName:string	-	first-release	first-release	geckwiki:GetAnimSequenceFrequency.wiki
+jip_ln	-	GetArmorAudioTemplate	(audioTemplate:ref) GetArmorAudioTemplate armorForm:ref	-	first-release	first-release	geckwiki:GetArmorAudioTemplate.wiki
+jip_ln	-	GetArmorEffectiveDR	(effectiveDR:float) GetArmorEffectiveDR	-	first-release	first-release	geckwiki:GetArmorEffectiveDR.wiki
+jip_ln	-	GetArmorEffectiveDT	(effectiveDT:float) GetArmorEffectiveDT	-	first-release	first-release	geckwiki:GetArmorEffectiveDT.wiki
+jip_ln	-	GetArmorRCT	(RCTPath:string_var) GetArmorRCT armor:ref	-	first-release	first-release	geckwiki:GetArmorRCT.wiki
+jip_ln	-	GetArmourPenetrated	(hitPenetrated:1/0) GetArmourPenetrated	-	first-release	first-release	geckwiki:GetArmourPenetrated.wiki
+jip_ln	-	GetAshPileSource	(pileSource:ref) GetAshPileSource	-	first-release	first-release	geckwiki:GetAshPileSource.wiki
+jip_ln	-	GetAutoMove	(autoMove:0/1) GetAutoMove	-	first-release	first-release	geckwiki:GetAutoMove.wiki
+jip_ln	-	GetBarterGoldAlt	(merchantCash:int) GetBarterGoldAlt	-	first-release	first-release	geckwiki:GetBarterGoldAlt.wiki
+jip_ln	-	GetBarterItems	(barterItemRefs:array_var) GetBarterItems getSoldItems:0/1	-	first-release	first-release	geckwiki:GetBarterItems.wiki
+jip_ln	-	GetBarterPriceMult	(priceMult:float) GetBarterPriceMult buyOrSell:0/1	-	first-release	first-release	geckwiki:GetBarterPriceMult.wiki
+jip_ln	-	GetBaseActorValueAlt	(statValue:float) GetBaseActorValueAlt actorValue:StatName baseForm:ref	-	first-release	first-release	geckwiki:GetBaseActorValueAlt.wiki
+jip_ln	-	GetBaseEffectFlag	(isFlagSet:0/1) GetBaseEffectFlag baseEffect:ref flagID:int	-	first-release	first-release	geckwiki:GetBaseEffectFlag.wiki
+jip_ln	-	GetBaseEffectScript	(script:ref) GetBaseEffectScript baseEffect:ref	-	first-release	first-release	geckwiki:GetBaseEffectScript.wiki
+jip_ln	-	GetBaseFactionRank	(factionRank:int) GetBaseFactionRank faction:ref baseActor:ref	-	first-release	first-release	geckwiki:GetBaseFactionRank.wiki
+jip_ln	-	GetBaseItems	(baseItems:array_var) GetBaseItems baseForm:form	-	first-release	first-release	geckwiki:GetBaseItems.wiki
+jip_ln	-	GetBlockTextureSet	(textures:array_var) GetBlockTextureSet blockName:string	-	first-release	first-release	geckwiki:GetBlockTextureSet.wiki
+jip_ln	-	GetBodyPartDataHasPart	(hasPart:0/1) GetBodyPartDataHasPart bodyPartData:ref partID:int	-	first-release	first-release	geckwiki:GetBodyPartDataHasPart.wiki
+jip_ln	-	GetBodyPartDataRagdoll	(ragDoll:ref) GetBodyPartDataRagdoll bodyPartData:ref	-	first-release	first-release	geckwiki:GetBodyPartDataRagdoll.wiki
+jip_ln	-	GetBodyPartDataSkeleton	(modelPath:string_var) GetBodyPartDataSkeleton bodyPartData:ref	-	first-release	first-release	geckwiki:GetBodyPartDataSkeleton.wiki
+jip_ln	-	GetBodyPartFlag	(flagValue:0/1) GetBodyPartFlag bodyPartData:ref partID:int flagID:int	-	first-release	first-release	geckwiki:GetBodyPartFlag.wiki
+jip_ln	-	GetBodyPartName	(partName:string_var) GetBodyPartName bodyPartData:ref partID:int	-	first-release	first-release	geckwiki:GetBodyPartName.wiki
+jip_ln	-	GetBodyPartReplacementModel	(modelPath:string_var) GetBodyPartReplacementModel bodyPartData:ref partID:int	-	first-release	first-release	geckwiki:GetBodyPartReplacementModel.wiki
+jip_ln	-	GetBodyPartTraitForm	(traitValue:ref) GetBodyPartTraitForm bodyPartData:ref partID:int traitID:int	-	first-release	first-release	geckwiki:GetBodyPartTraitForm.wiki
+jip_ln	-	GetBodyPartTraitNumeric	(traitValue:float) GetBodyPartTraitNumeric bodyPartData:ref partID:int traitID:int	-	first-release	first-release	geckwiki:GetBodyPartTraitNumeric.wiki
+jip_ln	-	GetBufferedCells	(buffCells:array_var) GetBufferedCells getInteriors:0/1	-	first-release	first-release	geckwiki:GetBufferedCells.wiki
+jip_ln	-	GetCalculatedWeaponDamage	(weaponDamage:float) GetCalculatedWeaponDamage weaponForm:ref	-	first-release	first-release	geckwiki:GetCalculatedWeaponDamage.wiki
+jip_ln	-	GetCellBuffered	(buffered:0/1) GetCellBuffered cell:ref	-	first-release	first-release	geckwiki:GetCellBuffered.wiki
+jip_ln	-	GetCellClimate	(climate:ref) GetCellClimate cell:ref	-	first-release	first-release	geckwiki:GetCellClimate.wiki
+jip_ln	-	GetCellFlag	(isFlagSet:0/1) GetCellFlag cell:ref flagID:int	-	first-release	first-release	geckwiki:GetCellFlag.wiki
+jip_ln	-	GetCellImageSpace	(imageSpace:ref) GetCellImageSpace cell:ref	-	first-release	first-release	geckwiki:GetCellImageSpace.wiki
+jip_ln	-	GetCellLightingTemplate	(lightingTemplate:ref) GetCellLightingTemplate cell:ref	-	first-release	first-release	geckwiki:GetCellLightingTemplate.wiki
+jip_ln	-	GetCellNoiseTexture	(texturePath:string_var) GetCellNoiseTexture cell:ref	-	first-release	first-release	geckwiki:GetCellNoiseTexture.wiki
+jip_ln	-	GetChildBlocks	(blockNames:array_var) GetChildBlocks parentNode:string pcModel:1/2	-	first-release	first-release	geckwiki:GetChildBlocks.wiki
+jip_ln	-	GetClassFlag	(flagValue:0/1) GetClassFlag class:ref flagID:int	-	first-release	first-release	geckwiki:GetClassFlag.wiki
+jip_ln	-	GetClassTraitNumeric	(traitValue:int) GetClassTraitNumeric class:ref traitID:int	-	first-release	first-release	geckwiki:GetClassTraitNumeric.wiki
+jip_ln	-	GetClimateNightSkyModel	(modelPath:string_var) GetClimateNightSkyModel climate:ref	-	first-release	first-release	geckwiki:GetClimateNightSkyModel.wiki
+jip_ln	-	GetClimateNthWeatherChance	(chance:int) GetClimateNthWeatherChance climate:ref weatherIndex:int	-	first-release	first-release	geckwiki:GetClimateNthWeatherChance.wiki
+jip_ln	-	GetClimateNthWeatherGlobal	(globalVar:ref) GetClimateNthWeatherGlobal climate:ref weatherIndex:int	-	first-release	first-release	geckwiki:GetClimateNthWeatherGlobal.wiki
+jip_ln	-	GetClimateNthWeatherType	(weather:ref) GetClimateNthWeatherType climate:ref weatherIndex:int	-	first-release	first-release	geckwiki:GetClimateNthWeatherType.wiki
+jip_ln	-	GetClimateNumWeatherTypes	(weatherTypes:int) GetClimateNumWeatherTypes climate:ref	-	first-release	first-release	geckwiki:GetClimateNumWeatherTypes.wiki
+jip_ln	-	GetClimateSunGlareTexture	(texturePath:string_var) GetClimateSunGlareTexture climate:ref	-	first-release	first-release	geckwiki:GetClimateSunGlareTexture.wiki
+jip_ln	-	GetClimateSunTexture	(texturePath:string_var) GetClimateSunTexture climate:ref	-	first-release	first-release	geckwiki:GetClimateSunTexture.wiki
+jip_ln	-	GetClimateTraitNumeric	(traitValue:int) GetClimateTraitNumeric climate:ref traitID:int	-	first-release	first-release	geckwiki:GetClimateTraitNumeric.wiki
+jip_ln	-	GetCollisionObjLayerType	(layerType:int) GetCollisionObjLayerType nodeName:string	-	first-release	first-release	geckwiki:GetCollisionObjLayerType.wiki
+jip_ln	-	GetCollisionObjProperty	(propertyValue:float) GetCollisionObjProperty nodeName:string propertyID:int	-	first-release	first-release	geckwiki:GetCollisionObjProperty.wiki
+jip_ln	-	GetCombatAllies	(allies:array_var) GetCombatAllies	-	first-release	first-release	geckwiki:GetCombatAllies.wiki
+jip_ln	-	GetCombatDisabled	(combatDisabled:0/1) GetCombatDisabled	-	first-release	first-release	geckwiki:GetCombatDisabled.wiki
+jip_ln	-	GetCombatStyleFlag	(flagValue:0/1) GetCombatStyleFlag combatStyle:ref flagID:int	-	first-release	first-release	geckwiki:GetCombatStyleFlag.wiki
+jip_ln	-	GetCombatStyleTraitNumeric	(traitValue:float) GetCombatStyleTraitNumeric combatStyle:ref traitID:int	-	first-release	first-release	geckwiki:GetCombatStyleTraitNumeric.wiki
+jip_ln	-	GetCombatTargets	(targets:array_var) GetCombatTargets	-	first-release	first-release	geckwiki:GetCombatTargets.wiki
+jip_ln	-	GetContactRefs	(array_var) GetContactRefs	-	first-release	first-release	geckwiki:GetContactRefs.wiki
+jip_ln	-	GetContainerRespawns	(respawns:0/1) GetContainerRespawns baseForm:ref	-	first-release	first-release	geckwiki:GetContainerRespawns.wiki
+jip_ln	-	GetCreatureDamage	(damage:int) GetCreatureDamage baseForm:ref	-	first-release	first-release	geckwiki:GetCreatureDamage.wiki
+jip_ln	-	GetCreatureModels	(modelPaths:array_var) GetCreatureModels baseForm:ref	-	first-release	first-release	geckwiki:GetCreatureModels.wiki
+jip_ln	-	GetCreatureReach	(reach:int) GetCreatureReach creature:baseForm	-	first-release	first-release	geckwiki:GetCreatureReach.wiki
+jip_ln	-	GetCreatureSoundsTemplate	(soundsTemplate:form) GetCreatureSoundsTemplate baseCreature:form	-	first-release	first-release	geckwiki:GetCreatureSoundsTemplate.wiki
+jip_ln	-	GetCreatureWeaponList	(weaponList:ref) GetCreatureWeaponList baseActor:form	-	first-release	first-release	geckwiki:GetCreatureWeaponList.wiki
+jip_ln	-	GetCrosshairRefEx	(crosshairRef:ref) GetCrosshairRefEx	-	first-release	first-release	geckwiki:GetCrosshairRefEx.wiki
+jip_ln	-	GetCrosshairWater	(waterType:BaseForm) GetCrosshairWater	-	first-release	first-release	geckwiki:GetCrosshairWater.wiki
+jip_ln	-	GetCurrentAmmo	(ammo:ref) GetCurrentAmmo	-	first-release	first-release	geckwiki:GetCurrentAmmo.wiki
+jip_ln	-	GetCurrentAmmoRounds	(ammoRounds:int) GetCurrentAmmoRounds	-	first-release	first-release	geckwiki:GetCurrentAmmoRounds.wiki
+jip_ln	-	GetCurrentClimate	(climate:ref) GetCurrentClimate	-	first-release	first-release	geckwiki:GetCurrentClimate.wiki
+jip_ln	-	GetCurrentStablePackage	(package:ref) GetCurrentStablePackage	-	first-release	first-release	geckwiki:GetCurrentStablePackage.wiki
+jip_ln	-	GetCurrentWeather	(weather:ref) GetCurrentWeather	-	first-release	first-release	geckwiki:GetCurrentWeather.wiki
+jip_ln	-	GetCursorPos	(pos:float) GetCursorPos axis:X/Y	-	first-release	first-release	geckwiki:GetCursorPos.wiki
+jip_ln	-	GetDeadZoneLS	(deadZone:float) GetDeadZoneLS	-	first-release	first-release	geckwiki:GetDeadZoneLS.wiki
+jip_ln	-	GetDeadZoneRS	(deadZone:float) GetDeadZoneRS	-	first-release	first-release	geckwiki:GetDeadZoneRS.wiki
+jip_ln	-	GetDeathItem	(deathItem:form) GetDeathItem baseActor:form	-	first-release	first-release	geckwiki:GetDeathItem.wiki
+jip_ln	-	GetDelayElapsed	(seconds:float) GetDelayElapsed quest:ref	-	first-release	first-release	geckwiki:GetDelayElapsed.wiki
+jip_ln	-	GetDestructionDataHealth	(health:int) GetDestructionDataHealth object:ref	-	first-release	first-release	geckwiki:GetDestructionDataHealth.wiki
+jip_ln	-	GetDestructionDataNumStages	(stages:int) GetDestructionDataNumStages object:ref	-	first-release	first-release	geckwiki:GetDestructionDataNumStages.wiki
+jip_ln	-	GetDestructionDataTargetable	(targetable:0/1) GetDestructionDataTargetable object:ref	-	first-release	first-release	geckwiki:GetDestructionDataTargetable.wiki
+jip_ln	-	GetDetectedActors	(detectedActors:array_var) GetDetectedActors	-	first-release	first-release	geckwiki:GetDetectedActors.wiki
+jip_ln	-	GetDetectingActors	(detectingActors:array_var) GetDetectingActors	-	first-release	first-release	geckwiki:GetDetectingActors.wiki
+jip_ln	-	GetDetectionValue	(detectionValue:int) GetDetectionValue targetActor:ref	-	first-release	first-release	geckwiki:GetDetectionValue.wiki
+jip_ln	-	GetDetonationTimer	(detonationTime:float) GetDetonationTimer	-	first-release	first-release	geckwiki:GetDetonationTimer.wiki
+jip_ln	-	GetDroppedRefs	(droppedRefs:array_var) GetDroppedRefs	-	first-release	first-release	geckwiki:GetDroppedRefs.wiki
+jip_ln	-	GetEffectFlag	(isFlagSet:0/1) GetEffectFlag effectForm:ref flagID:int	-	first-release	first-release	geckwiki:GetEffectFlag.wiki
+jip_ln	-	GetEnableChildren	(array_var) GetEnableChildren	-	first-release	first-release	geckwiki:GetEnableChildren.wiki
+jip_ln	-	GetEncumbranceRate	(float) GetEncumbranceRate	-	first-release	first-release	geckwiki:GetEncumbranceRate.wiki
+jip_ln	-	GetEnemyHealthTarget	(actor:ref) GetEnemyHealthTarget	-	first-release	first-release	geckwiki:GetEnemyHealthTarget.wiki
+jip_ln	-	GetEquippedEx	(item:form) GetEquippedEx itemList:form	-	first-release	first-release	geckwiki:GetEquippedEx.wiki
+jip_ln	-	GetEquippedItemRef	(itemRef:ref) GetEquippedItemRef equipSlotID:int	-	first-release	first-release	geckwiki:GetEquippedItemRef.wiki
+jip_ln	-	GetEquippedWeaponPoison	(ingestible:form) GetEquippedWeaponPoison	-	first-release	first-release	geckwiki:GetEquippedWeaponPoison.wiki
+jip_ln	-	GetExcludedCombatActions	(excludeMask:int) GetExcludedCombatActions	-	first-release	first-release	geckwiki:GetExcludedCombatActions.wiki
+jip_ln	-	GetExplosionFlag	(flagValue:0/1) GetExplosionFlag explosion:ref flagID:int	-	first-release	first-release	geckwiki:GetExplosionFlag.wiki
+jip_ln	-	GetExplosionTraitForm	(traitForm:ref) GetExplosionTraitForm explosion:ref traitID:int	-	first-release	first-release	geckwiki:GetExplosionTraitForm.wiki
+jip_ln	-	GetExplosionTraitNumeric	(traitValue:float) GetExplosionTraitNumeric explosion:ref traitID:int	-	first-release	first-release	geckwiki:GetExplosionTraitNumeric.wiki
+jip_ln	-	GetExteriorCell	(cell:ref) GetExteriorCell worldspace:ref coordX:int coordY:int	-	first-release	first-release	geckwiki:GetExteriorCell.wiki
+jip_ln	-	GetFactionReputationType	(reputation:ref) GetFactionReputationType faction:ref	-	first-release	first-release	geckwiki:GetFactionReputationType.wiki
+jip_ln	-	GetFactions	(factions:array_var) GetFactions baseActor:form	-	first-release	first-release	geckwiki:GetFactions.wiki
+jip_ln	-	GetFallTimeElapsed	(fallTimeElapsed:float) GetFallTimeElapsed	-	first-release	first-release	geckwiki:GetFallTimeElapsed.wiki
+jip_ln	-	GetFallTimeRemaining	(fallTimeRemaining:float) GetFallTimeRemaining	-	first-release	first-release	geckwiki:GetFallTimeRemaining.wiki
+jip_ln	-	GetFollowers	(array_var) GetFollowers	-	first-release	first-release	geckwiki:GetFollowers.wiki
+jip_ln	-	GetFontFile	(filePath:string_var) GetFontFile fontType:int	-	first-release	first-release	geckwiki:GetFontFile.wiki
+jip_ln	-	GetFormDescription	(description:string_var) GetFormDescription baseForm:ref	-	first-release	first-release	geckwiki:GetFormDescription.wiki
+jip_ln	-	GetGameDaysPassed	(daysPassed:float) GetGameDaysPassed year:int month:int day:int	-	first-release	first-release	geckwiki:GetGameDaysPassed.wiki
+jip_ln	-	GetGameDifficulty	(difficulty:int) GetGameDifficulty	-	first-release	first-release	geckwiki:GetGameDifficulty.wiki
+jip_ln	-	GetGameSettings	(array) GetGameSettings gmstType:int	-	first-release	first-release	geckwiki:GetGameSettings.wiki
+jip_ln	-	GetGameVolume	(volumeLevel:float) GetGameVolume volumeType:int	-	first-release	first-release	geckwiki:GetGameVolume.wiki
+jip_ln	-	GetGlobalRef	(reference) GetGlobalRef global:ref	-	first-release	first-release	geckwiki:GetGlobalRef.wiki
+jip_ln	-	GetGlobalVariable	(value:float) GetGlobalVariable global:ref	-	first-release	first-release	geckwiki:GetGlobalVariable.wiki
+jip_ln	-	GetGrassModel	(modelPath:string_var) GetGrassModel grass:ref	-	first-release	first-release	geckwiki:GetGrassModel.wiki
+jip_ln	-	GetGrassTraitNumeric	(traitValue:float) GetGrassTraitNumeric grass:ref traitID:int	-	first-release	first-release	geckwiki:GetGrassTraitNumeric.wiki
+jip_ln	-	GetGroundMaterial	(materialID:int) GetGroundMaterial	-	first-release	first-release	geckwiki:GetGroundMaterial.wiki
+jip_ln	-	GetHardcoreStageEffect	(sicknessEff:form) GetHardcoreStageEffect hcStage:form	-	first-release	first-release	geckwiki:GetHardcoreStageEffect.wiki
+jip_ln	-	GetHardcoreStageThreshold	(threshold:int) GetHardcoreStageThreshold hcStage:form	-	first-release	first-release	geckwiki:GetHardcoreStageThreshold.wiki
+jip_ln	-	GetHardcoreTracking	(hcTracking:0/1) GetHardcoreTracking	-	first-release	first-release	geckwiki:GetHardcoreTracking.wiki
+jip_ln	-	GetHasContact	(hasContact:0/1) GetHasContact objectRefOrList:ref	-	first-release	first-release	geckwiki:GetHasContact.wiki
+jip_ln	-	GetHasContactBase	(hasContact:0/1) GetHasContactBase baseFormOrList:ref	-	first-release	first-release	geckwiki:GetHasContactBase.wiki
+jip_ln	-	GetHasContactType	(hasContact:0/1) GetHasContactType typeID:int	-	first-release	first-release	geckwiki:GetHasContactType.wiki
+jip_ln	-	GetHasPhantom	(hasPhantom:0/1) GetHasPhantom	-	first-release	first-release	geckwiki:GetHasPhantom.wiki
+jip_ln	-	GetHit3DData	(hit3DData:array_var) GetHit3DData dataType:int	-	first-release	first-release	geckwiki:GetHit3DData.wiki
+jip_ln	-	GetHitAttacker	(attacker:ref) GetHitAttacker	-	first-release	first-release	geckwiki:GetHitAttacker.wiki
+jip_ln	-	GetHitBaseWeaponDamage	(baseWpnDmg:float) GetHitBaseWeaponDamage	-	first-release	first-release	geckwiki:GetHitBaseWeaponDamage.wiki
+jip_ln	-	GetHitExtendedFlag	(flagSet:0/1) GetHitExtendedFlag flagID:int	-	first-release	first-release	geckwiki:GetHitExtendedFlag.wiki
+jip_ln	-	GetHitFatigueDamage	(fatigueDmg:float) GetHitFatigueDamage	-	first-release	first-release	geckwiki:GetHitFatigueDamage.wiki
+jip_ln	-	GetHitHealthDamage	(healthDmg:float) GetHitHealthDamage	-	first-release	first-release	geckwiki:GetHitHealthDamage.wiki
+jip_ln	-	GetHitLimbDamage	(limbDmg:float) GetHitLimbDamage	-	first-release	first-release	geckwiki:GetHitLimbDamage.wiki
+jip_ln	-	GetHitProjectile	(projectile/Explosion:ref) GetHitProjectile	-	first-release	first-release	geckwiki:GetHitProjectile.wiki
+jip_ln	-	GetHitWeapon	(weapon:ref) GetHitWeapon	-	first-release	first-release	geckwiki:GetHitWeapon.wiki
+jip_ln	-	GetHotkeyItemRef	(itemRef:ref) GetHotkeyItemRef hotkey:int	-	first-release	first-release	geckwiki:GetHotkeyItemRef.wiki
+jip_ln	-	GetIdleLoopTimes	(loopTimes:int) GetIdleLoopTimes idleAnim:ref getMax:0/1	-	first-release	first-release	geckwiki:GetIdleLoopTimes.wiki
+jip_ln	-	GetImageSpaceModTrait	(traitValue:float) GetImageSpaceModTrait imageSpaceMod:ref traitID:int	-	first-release	first-release	geckwiki:GetImageSpaceModTrait.wiki
+jip_ln	-	GetImageSpaceTrait	(traitValue:float) GetImageSpaceTrait imageSpace:ref traitID:int	-	first-release	first-release	geckwiki:GetImageSpaceTrait.wiki
+jip_ln	-	GetImpactDataModel	(modelPath:string_var) GetImpactDataModel impactData:ref	-	first-release	first-release	geckwiki:GetImpactDataModel.wiki
+jip_ln	-	GetImpactDataSet	(impactSet:ref) GetImpactDataSet weapon:form	-	first-release	first-release	geckwiki:GetImpactDataSet.wiki
+jip_ln	-	GetImpactDataSetForm	(impactData:form) GetImpactDataSetForm impactDataSet:form materialType:int	-	first-release	first-release	geckwiki:GetImpactDataSetForm.wiki
+jip_ln	-	GetImpactDataTrait	(traitValue:float/ref) GetImpactDataTrait impactData:ref traitID:int	-	first-release	first-release	geckwiki:GetImpactDataTrait.wiki
+jip_ln	-	GetImpactMaterialType	(materialType:int) GetImpactMaterialType baseActor:form	-	first-release	first-release	geckwiki:GetImpactMaterialType.wiki
+jip_ln	-	GetInFactionList	(inFaction:0/1) GetInFactionList factionList:FormList	-	first-release	first-release	geckwiki:GetInFactionList.wiki
+jip_ln	-	GetInteractionDisabled	(disabled:0/1) GetInteractionDisabled baseForm:ref	-	first-release	first-release	geckwiki:GetInteractionDisabled.wiki
+jip_ln	-	GetInteractionDisabledType	(disabled:0/1) GetInteractionDisabledType typeCode:int	-	first-release	first-release	geckwiki:GetInteractionDisabledType.wiki
+jip_ln	-	GetInterruptPackage	(package:ref) GetInterruptPackage	-	first-release	first-release	geckwiki:GetInterruptPackage.wiki
+jip_ln	-	GetIsImmobile	(GetIsImmobile:0/1) GetIsImmobile object:baseform	-	first-release	first-release	geckwiki:GetIsImmobile.wiki
+jip_ln	-	GetIsItem	(isItem:0/1) GetIsItem baseForm:ref	-	first-release	first-release	geckwiki:GetIsItem.wiki
+jip_ln	-	GetIsLAA	(isLAA:0/1/2) GetIsLAA	-	first-release	first-release	geckwiki:GetIsLAA.wiki
+jip_ln	-	GetIsPoison	(isPoison:0/1) GetIsPoison ingestible:ref	-	first-release	first-release	geckwiki:GetIsPoison.wiki
+jip_ln	-	GetIsPoisoned	(poisoned:0/1) GetIsPoisoned	-	first-release	first-release	geckwiki:GetIsPoisoned.wiki
+jip_ln	-	GetIsRagdolled	(ragdolled:0/1) GetIsRagdolled	-	first-release	first-release	geckwiki:GetIsRagdolled.wiki
+jip_ln	-	GetItemRefCurrentHealth	(health:float) GetItemRefCurrentHealth	-	first-release	first-release	geckwiki:GetItemRefCurrentHealth.wiki
+jip_ln	-	GetKiller	(killer:ref) GetKiller	-	first-release	first-release	geckwiki:GetKiller.wiki
+jip_ln	-	GetKillXP	(killXP:float) GetKillXP	-	first-release	first-release	geckwiki:GetKillXP.wiki
+jip_ln	-	GetLandTextureNthGrass	(grass:ref) GetLandTextureNthGrass landTexture:ref grassIndex:int	-	first-release	first-release	geckwiki:GetLandTextureNthGrass.wiki
+jip_ln	-	GetLandTextureNumGrasses	(grasses:int) GetLandTextureNumGrasses landTexture:ref	-	first-release	first-release	geckwiki:GetLandTextureNumGrasses.wiki
+jip_ln	-	GetLandTextureTextureSet	(textureSet:ref) GetLandTextureTextureSet landTexture:ref	-	first-release	first-release	geckwiki:GetLandTextureTextureSet.wiki
+jip_ln	-	GetLandTextureTraitNumeric	(traitValue:int) GetLandTextureTraitNumeric landTexture:ref traitID:int	-	first-release	first-release	geckwiki:GetLandTextureTraitNumeric.wiki
+jip_ln	-	GetLeveledActorBase	(baseForm:ref) GetLeveledActorBase	-	first-release	first-release	geckwiki:GetLeveledActorBase.wiki
+jip_ln	-	GetLightAmountAtPoint	(lightAmount:float) GetLightAmountAtPoint posX:float posY:float posZ:float	-	first-release	first-release	geckwiki:GetLightAmountAtPoint.wiki
+jip_ln	-	GetLightFlag	(flagValue:0/1) GetLightFlag light:ref flagID:int	-	first-release	first-release	geckwiki:GetLightFlag.wiki
+jip_ln	-	GetLightTraitNumeric	(traitValue:float) GetLightTraitNumeric light:ref traitID:int	-	first-release	first-release	geckwiki:GetLightTraitNumeric.wiki
+jip_ln	-	GetLinearVelocityAlt	(success:0/1) GetLinearVelocityAlt nodeName:string resX:ScriptVar resY:ScriptVar resZ:ScriptVar getLocal:0/1	-	first-release	first-release	geckwiki:GetLinearVelocityAlt.wiki
+jip_ln	-	GetLinkedChildren	(array_var) GetLinkedChildren	-	first-release	first-release	geckwiki:GetLinkedChildren.wiki
+jip_ln	-	GetLoadOrderChanged	(loadOrderChanged:0/1) GetLoadOrderChanged	-	first-release	first-release	geckwiki:GetLoadOrderChanged.wiki
+jip_ln	-	GetLocalGravity	(gravity:float) GetLocalGravity axis:X/Y/Z	-	first-release	first-release	geckwiki:GetLocalGravity.wiki
+jip_ln	-	GetMaterialPropertyValue	(propValue:float) GetMaterialPropertyValue nifBlockName:string valueID:int	-	first-release	first-release	geckwiki:GetMaterialPropertyValue.wiki
+jip_ln	-	GetMaxOf	(maximal:float) GetMaxOf value1:float value2:float value3:float value4:float value5:float	-	first-release	first-release	geckwiki:GetMaxOf.wiki
+jip_ln	-	GetMenuItemFilter	(filterCode:int) GetMenuItemFilter menuCode:int useMenuTarget:0/1	-	first-release	first-release	geckwiki:GetMenuItemFilter.wiki
+jip_ln	-	GetMenuTargetRef	(menuTarget:ref) GetMenuTargetRef menuCode:int	-	first-release	first-release	geckwiki:GetMenuTargetRef.wiki
+jip_ln	-	GetMessageDisabled	(messageDisabled:0/1) GetMessageDisabled message:ref	-	first-release	first-release	geckwiki:GetMessageDisabled.wiki
+jip_ln	-	GetMessageFlags	(flagState:int) GetMessageFlags message:ref	-	first-release	first-release	geckwiki:GetMessageFlags.wiki
+jip_ln	-	GetMineArmed	(isArmed:bool) GetMineArmed	-	first-release	first-release	geckwiki:GetMineArmed.wiki
+jip_ln	-	GetMinOf	(minimal:float) GetMinOf value1:float value2:float value3:float value4:float value5:float	-	first-release	first-release	geckwiki:GetMinOf.wiki
+jip_ln	-	GetMoonTexture	(texturePath:string_var) GetMoonTexture moonType:int	-	first-release	first-release	geckwiki:GetMoonTexture.wiki
+jip_ln	-	GetNifBlockFlag	(flagSet:0/1) GetNifBlockFlag blockName:string flagID:int pcModel:1/2	-	first-release	first-release	geckwiki:GetNifBlockFlag.wiki
+jip_ln	-	GetNifBlockParentNodes	(parentNames:array_var) GetNifBlockParentNodes blockName:string pcModel:1/2	-	first-release	first-release	geckwiki:GetNifBlockParentNodes.wiki
+jip_ln	-	GetNifBlockRotation	(rotation:array_var) GetNifBlockRotation blockName:string whichRotation:int pcModel:1/2	-	first-release	first-release	geckwiki:GetNifBlockRotation.wiki
+jip_ln	-	GetNifBlockRotationAlt	(success:0/1) GetNifBlockRotationAlt blockName:string resX:ScriptVar resY:ScriptVar resZ:ScriptVar whichRotation:int pcModel:1/2	-	first-release	first-release	geckwiki:GetNifBlockRotationAlt.wiki
+jip_ln	-	GetNifBlockScale	(scale:float) GetNifBlockScale blockName:string pcModel:1/2	-	first-release	first-release	geckwiki:GetNifBlockScale.wiki
+jip_ln	-	GetNifBlockTranslation	(translation:array_var) GetNifBlockTranslation blockName:string getWorld:0/1 pcModel:1/2	-	first-release	first-release	geckwiki:GetNifBlockTranslation.wiki
+jip_ln	-	GetNifBlockTranslationAlt	(success:0/1) GetNifBlockTranslationAlt blockName:string resX:ScriptVar resY:ScriptVar resZ:ScriptVar getWorld:0/1 pcModel:1/2	-	first-release	first-release	geckwiki:GetNifBlockTranslationAlt.wiki
+jip_ln	-	GetNoteRead	(noteRead:0/1) GetNoteRead note:form	-	first-release	first-release	geckwiki:GetNoteRead.wiki
+jip_ln	-	GetNoUnequip	(noUnequip:0/1) GetNoUnequip	-	first-release	first-release	geckwiki:GetNoUnequip.wiki
+jip_ln	-	GetNthActorEffect	(actorEffect:ref) GetNthActorEffect effectIndex:int baseForm:ref	-	first-release	first-release	geckwiki:GetNthActorEffect.wiki
+jip_ln	-	GetNthAmmoEffect	(ammoEffect:ref) GetNthAmmoEffect ammo:ref effectIndex:int	-	first-release	first-release	geckwiki:GetNthAmmoEffect.wiki
+jip_ln	-	GetNthDestructionStageDebris	(debris:ref) GetNthDestructionStageDebris object:ref stageIndex:int	-	first-release	first-release	geckwiki:GetNthDestructionStageDebris.wiki
+jip_ln	-	GetNthDestructionStageExplosion	(explosion:ref) GetNthDestructionStageExplosion object:ref stageIndex:int	-	first-release	first-release	geckwiki:GetNthDestructionStageExplosion.wiki
+jip_ln	-	GetNthDestructionStageReplacement	(modelPath:string_var) GetNthDestructionStageReplacement object:ref stageIndex:int	-	first-release	first-release	geckwiki:GetNthDestructionStageReplacement.wiki
+jip_ln	-	GetNthDestructionStageTrait	(traitValue:int) GetNthDestructionStageTrait object:ref stageIndex:int traitID:int	-	first-release	first-release	geckwiki:GetNthDestructionStageTrait.wiki
+jip_ln	-	GetNthEffectBase	(baseEffect:ref) GetNthEffectBase effectForm:ref effectIndex:int	-	first-release	first-release	geckwiki:GetNthEffectBase.wiki
+jip_ln	-	GetNthEffectTraitNumeric	(traitValue:int) GetNthEffectTraitNumeric effectForm:ref effectIndex:int traitID:int	-	first-release	first-release	geckwiki:GetNthEffectTraitNumeric.wiki
+jip_ln	-	GetNumActorEffects	(effects:int) GetNumActorEffects baseForm:ref	-	first-release	first-release	geckwiki:GetNumActorEffects.wiki
+jip_ln	-	GetNumAmmoEffects	(effects:int) GetNumAmmoEffects ammo:ref	-	first-release	first-release	geckwiki:GetNumAmmoEffects.wiki
+jip_ln	-	GetNumEffects	(effects:int) GetNumEffects effectForm:ref	-	first-release	first-release	geckwiki:GetNumEffects.wiki
+jip_ln	-	GetNVSEVersionFull	(fullVersion:float) GetNVSEVersionFull	-	first-release	first-release	geckwiki:GetNVSEVersionFull.wiki
+jip_ln	-	GetObjectDimensions	(dimension:float) GetObjectDimensions axis:X/Y/Z baseForm:ref	-	first-release	first-release	geckwiki:GetObjectDimensions.wiki
+jip_ln	-	GetObjectiveHasTarget	(hasTarget:1/0) GetObjectiveHasTarget quest:ref objectiveIndex:int targetRef:ref	-	first-release	first-release	geckwiki:GetObjectiveHasTarget.wiki
+jip_ln	-	GetObjectiveTargets	(objTargets:array_var) GetObjectiveTargets quest:ref objectiveIndex:int	-	first-release	first-release	geckwiki:GetObjectiveTargets.wiki
+jip_ln	-	GetObjectiveText	(objText:string_var) GetObjectiveText quest:ref objectiveIndex:int	-	first-release	first-release	geckwiki:GetObjectiveText.wiki
+jip_ln	-	GetObjectUnderFeet	(objUnderFeet:ref) GetObjectUnderFeet	-	first-release	first-release	geckwiki:GetObjectUnderFeet.wiki
+jip_ln	-	GetObjectVelocity	(velocity:float) GetObjectVelocity axis:X/Y/Z	-	first-release	first-release	geckwiki:GetObjectVelocity.wiki
+jip_ln	-	GetOptionalPatch	(patchEnabled:0/1) GetOptionalPatch patchName:string	-	first-release	first-release	geckwiki:GetOptionalPatch.wiki
+jip_ln	-	GetOwnerOfCell	(cellOwner:baseForm) GetOwnerOfCell cell:baseForm	-	first-release	first-release	geckwiki:GetOwnerOfCell.wiki
+jip_ln	-	GetPackageFlag	(flagValue:0/1) GetPackageFlag package:ref flagID:int	-	first-release	first-release	geckwiki:GetPackageFlag.wiki
+jip_ln	-	GetPCDetectionState	(detectionState:int) GetPCDetectionState	-	first-release	first-release	geckwiki:GetPCDetectionState.wiki
+jip_ln	-	GetPCFastTravelled	(fastTravelled:0/1) GetPCFastTravelled	-	first-release	first-release	geckwiki:GetPCFastTravelled.wiki
+jip_ln	-	GetPCLastExteriorDoor	(lastExtDoor:ref) GetPCLastExteriorDoor	-	first-release	first-release	geckwiki:GetPCLastExteriorDoor.wiki
+jip_ln	-	GetPCMovedCell	(movedCell:0/1) GetPCMovedCell	-	first-release	first-release	geckwiki:GetPCMovedCell.wiki
+jip_ln	-	GetPCUsingIronSights	(usingIS:0/1) GetPCUsingIronSights	-	first-release	first-release	geckwiki:GetPCUsingIronSights.wiki
+jip_ln	-	GetPCUsingScope	(usingScope:0/1) GetPCUsingScope	-	first-release	first-release	geckwiki:GetPCUsingScope.wiki
+jip_ln	-	GetPerkFlag	(isFlagSet:0/1) GetPerkFlag perk:ref flagID:int	-	first-release	first-release	geckwiki:GetPerkFlag.wiki
+jip_ln	-	GetPerkModifier	(perkModifier:float) GetPerkModifier entryFunction:int baseValue:float form1:ref form2:ref	-	first-release	first-release	geckwiki:GetPerkModifier.wiki
+jip_ln	-	GetPipboyRadio	(radioRef:ref) GetPipboyRadio	-	first-release	first-release	geckwiki:GetPipboyRadio.wiki
+jip_ln	-	GetPlayedIdle	(idleAnim:ref) GetPlayedIdle	-	first-release	first-release	geckwiki:GetPlayedIdle.wiki
+jip_ln	-	GetPlayerPerks	(pcPerks:array_var) GetPlayerPerks	-	first-release	first-release	geckwiki:GetPlayerPerks.wiki
+jip_ln	-	GetPluginHeaderVersion	(float) GetPluginHeaderVersion PluginName:string	-	first-release	first-release	geckwiki:GetPluginHeaderVersion.wiki
+jip_ln	-	GetPosEx	(void) GetPosEx resPosX:ScriptVar resPosY:ScriptVar resPosZ:ScriptVar	-	first-release	first-release	geckwiki:GetPosEx.wiki
+jip_ln	-	GetPrimitiveBound	(bound:float) GetPrimitiveBound axis:X/Y/Z	-	first-release	first-release	geckwiki:GetPrimitiveBound.wiki
+jip_ln	-	GetProjectileExplosion	(explosion:ref) GetProjectileExplosion projectile:ref	-	first-release	first-release	geckwiki:GetProjectileExplosion.wiki
+jip_ln	-	GetProjectileFlag	(flagValue:0/1) GetProjectileFlag projectile:ref flagID:int	-	first-release	first-release	geckwiki:GetProjectileFlag.wiki
+jip_ln	-	GetProjectileMuzzleFlash	(string) GetProjectileMuzzleFlash Projectile:form	-	first-release	first-release	geckwiki:GetProjectileMuzzleFlash.wiki
+jip_ln	-	GetProjectileRefDamage	(damage:float) GetProjectileRefDamage	-	first-release	first-release	geckwiki:GetProjectileRefDamage.wiki
+jip_ln	-	GetProjectileRefDistanceTraveled	(distance:float) GetProjectileRefDistanceTraveled	-	first-release	first-release	geckwiki:GetProjectileRefDistanceTraveled.wiki
+jip_ln	-	GetProjectileRefImpactMaterial	(materialType:int) GetProjectileRefImpactMaterial	-	first-release	first-release	geckwiki:GetProjectileRefImpactMaterial.wiki
+jip_ln	-	GetProjectileRefImpactRef	(impactObj:ref) GetProjectileRefImpactRef	-	first-release	first-release	geckwiki:GetProjectileRefImpactRef.wiki
+jip_ln	-	GetProjectileRefLifeTime	(lifeTime:float) GetProjectileRefLifeTime	-	first-release	first-release	geckwiki:GetProjectileRefLifeTime.wiki
+jip_ln	-	GetProjectileRefSource	(source:ref) GetProjectileRefSource	-	first-release	first-release	geckwiki:GetProjectileRefSource.wiki
+jip_ln	-	GetProjectileRefSpeedMult	(speedMult:float) GetProjectileRefSpeedMult	-	first-release	first-release	geckwiki:GetProjectileRefSpeedMult.wiki
+jip_ln	-	GetProjectileRefWeapon	(weapon:baseForm) GetProjectileRefWeapon	-	first-release	first-release	geckwiki:GetProjectileRefWeapon.wiki
+jip_ln	-	GetProjectileTraitNumeric	(traitValue:float) GetProjectileTraitNumeric projectile:ref traitID:int	-	first-release	first-release	geckwiki:GetProjectileTraitNumeric.wiki
+jip_ln	-	GetQuestFlag	(flagValue:0/1) GetQuestFlag quest:form flagID:int	-	first-release	first-release	geckwiki:GetQuestFlag.wiki
+jip_ln	-	GetRadiationLevelAlt	(radLevel:float) GetRadiationLevelAlt	-	first-release	first-release	geckwiki:GetRadiationLevelAlt.wiki
+jip_ln	-	GetRandomInRange	(randNum:int) GetRandomInRange min:int max:int	-	first-release	first-release	geckwiki:GetRandomInRange.wiki
+jip_ln	-	GetRecipeMenuCategory	(recipeCategory:ref) GetRecipeMenuCategory	-	first-release	first-release	geckwiki:GetRecipeMenuCategory.wiki
+jip_ln	-	GetRecipeMenuSelection	(recipe:ref) GetRecipeMenuSelection	-	first-release	first-release	geckwiki:GetRecipeMenuSelection.wiki
+jip_ln	-	GetRefType	(refType:int) GetRefType	-	first-release	first-release	geckwiki:GetRefType.wiki
+jip_ln	-	GetReticleNode	(nodeName:string_var) GetReticleNode maxRange:float	-	first-release	first-release	geckwiki:GetReticleNode.wiki
+jip_ln	-	GetReticlePos	(coords:array_var) GetReticlePos	-	first-release	first-release	geckwiki:GetReticlePos.wiki
+jip_ln	-	GetReticlePosAlt	(validPos:0/1) GetReticlePosAlt resPosX:ScriptVar resPosY:ScriptVar resPosZ:ScriptVar	-	first-release	first-release	geckwiki:GetReticlePosAlt.wiki
+jip_ln	-	GetReticleRange	(range:float) GetReticleRange	-	first-release	first-release	geckwiki:GetReticleRange.wiki
+jip_ln	-	GetRigidBodyMass	(bodyMass:float) GetRigidBodyMass	-	first-release	first-release	geckwiki:GetRigidBodyMass.wiki
+jip_ln	-	GetScriptDisabled	(disabled:0/1) GetScriptDisabled script:ref	-	first-release	first-release	geckwiki:GetScriptDisabled.wiki
+jip_ln	-	GetScriptEventDisabled	(disabled:0/1) GetScriptEventDisabled anyForm:ref eventName:string	-	first-release	first-release	geckwiki:GetScriptEventDisabled.wiki
+jip_ln	-	GetSelectedItemRef	(selectedItem:ref) GetSelectedItemRef	-	first-release	first-release	geckwiki:GetSelectedItemRef.wiki
+jip_ln	-	GetSessionTime	(float) GetSessionTime	-	first-release	first-release	geckwiki:GetSessionTime.wiki
+jip_ln	-	GetSkeletonModel	(modelPath:string_var) GetSkeletonModel actorBase:form	-	first-release	first-release	geckwiki:GetSkeletonModel.wiki
+jip_ln	-	GetSoundFlag	(flagValue:0/1) GetSoundFlag sound:ref flagID:int	-	first-release	first-release	geckwiki:GetSoundFlag.wiki
+jip_ln	-	GetSoundPlayers	(soundPlayers:array_var) GetSoundPlayers sound:ref	-	first-release	first-release	geckwiki:GetSoundPlayers.wiki
+jip_ln	-	GetSoundSourceFile	(filePath:string_var) GetSoundSourceFile sound:ref	-	first-release	first-release	geckwiki:GetSoundSourceFile.wiki
+jip_ln	-	GetSoundTraitNumeric	(traitValue:float) GetSoundTraitNumeric sound:ref traitID:int	-	first-release	first-release	geckwiki:GetSoundTraitNumeric.wiki
+jip_ln	-	GetStringUIDimensions	(void) GetStringUIDimensions text:string fontID:int wrapWidth:float resWidth:ScriptVar resHeight:ScriptVar resNumLines:ScriptVar	-	first-release	first-release	geckwiki:GetStringUIDimensions.wiki
+jip_ln	-	GetTargetUnreachable	(unreachable:0/1) GetTargetUnreachable	-	first-release	first-release	geckwiki:GetTargetUnreachable.wiki
+jip_ln	-	GetTeammates	(teammates:array_var) GetTeammates	-	first-release	first-release	geckwiki:GetTeammates.wiki
+jip_ln	-	GetTeleportDoor	(linkedDoor:refr) GetTeleportDoor	-	first-release	first-release	geckwiki:GetTeleportDoor.wiki
+jip_ln	-	GetTempEffects	(tempEffects:array_var) GetTempEffects	-	first-release	first-release	geckwiki:GetTempEffects.wiki
+jip_ln	-	GetTerrainHeight	(height:float) GetTerrainHeight xCoord:float yCoord:float	-	first-release	first-release	geckwiki:GetTerrainHeight.wiki
+jip_ln	-	GetTextureSetFlag	(flagValue:0/1) GetTextureSetFlag textureSet:ref flagID:int	-	first-release	first-release	geckwiki:GetTextureSetFlag.wiki
+jip_ln	-	GetTextureSetTexture	(texturePath:string_var) GetTextureSetTexture textureSet:ref mapID:int	-	first-release	first-release	geckwiki:GetTextureSetTexture.wiki
+jip_ln	-	GetTextureSetTraitNumeric	(traitValue:float) GetTextureSetTraitNumeric textureSet:ref traitID:int	-	first-release	first-release	geckwiki:GetTextureSetTraitNumeric.wiki
+jip_ln	-	GetUIString	(string_var) GetUIString componentPath:string	-	first-release	first-release	geckwiki:GetUIString.wiki
+jip_ln	-	GetValueAlt	(value:int) GetValueAlt baseForm:ref	-	first-release	first-release	geckwiki:GetValueAlt.wiki
+jip_ln	-	GetVATSTargets	(VATSTargets:array_var) GetVATSTargets	-	first-release	first-release	geckwiki:GetVATSTargets.wiki
+jip_ln	-	GetWaterImmersionPerc	(immersionPerc:float) GetWaterImmersionPerc	-	first-release	first-release	geckwiki:GetWaterImmersionPerc.wiki
+jip_ln	-	GetWaterNoiseTexture	(texturePath:string_var) GetWaterNoiseTexture waterType:ref	-	first-release	first-release	geckwiki:GetWaterNoiseTexture.wiki
+jip_ln	-	GetWaterSound	(sound:ref) GetWaterSound waterType:ref	-	first-release	first-release	geckwiki:GetWaterSound.wiki
+jip_ln	-	GetWaterTrait	(traitValue:float) GetWaterTrait waterType:ref traitID:int	-	first-release	first-release	geckwiki:GetWaterTrait.wiki
+jip_ln	-	GetWeaponDetectionSoundLevel	(soundLevel:int) GetWeaponDetectionSoundLevel weapon:ref	-	first-release	first-release	geckwiki:GetWeaponDetectionSoundLevel.wiki
+jip_ln	-	GetWeaponModel	(modelPath:string_var) GetWeaponModel weapon:form modBitmask:int	-	first-release	first-release	geckwiki:GetWeaponModel.wiki
+jip_ln	-	GetWeaponModReloadAnim	(reloadAnim:int) GetWeaponModReloadAnim weapon:ref	-	first-release	first-release	geckwiki:GetWeaponModReloadAnim.wiki
+jip_ln	-	GetWeaponOnHitSetting	(onHitSetting:int) GetWeaponOnHitSetting weapon:form	-	first-release	first-release	geckwiki:GetWeaponOnHitSetting.wiki
+jip_ln	-	GetWeaponRefModFlags	(modFlags:int) GetWeaponRefModFlags	-	first-release	first-release	geckwiki:GetWeaponRefModFlags.wiki
+jip_ln	-	GetWeaponSemiAutoFireDelay	(fireDelay:float) GetWeaponSemiAutoFireDelay weapon:form getMax:0/1	-	first-release	first-release	geckwiki:GetWeaponSemiAutoFireDelay.wiki
+jip_ln	-	GetWeaponShellCasingModel	(modelPath:string_var) GetWeaponShellCasingModel weapon:ref	-	first-release	first-release	geckwiki:GetWeaponShellCasingModel.wiki
+jip_ln	-	GetWeaponSound	(sound:ref) GetWeaponSound weapon:ref soundID:int	-	first-release	first-release	geckwiki:GetWeaponSound.wiki
+jip_ln	-	GetWeatherImageSpaceMod	(imageSpaceMod:ref) GetWeatherImageSpaceMod weather:ref timeID:int	-	first-release	first-release	geckwiki:GetWeatherImageSpaceMod.wiki
+jip_ln	-	GetWeatherPrecipitationModel	(modelPath:string_var) GetWeatherPrecipitationModel weather:ref	-	first-release	first-release	geckwiki:GetWeatherPrecipitationModel.wiki
+jip_ln	-	GetWeatherRGBColor	(color:int) GetWeatherRGBColor weather:ref typeID:int timeID:int cloudLayer:int	-	first-release	first-release	geckwiki:GetWeatherRGBColor.wiki
+jip_ln	-	GetWeatherTexture	(texturePath:string_var) GetWeatherTexture weather:ref layerIndex:int	-	first-release	first-release	geckwiki:GetWeatherTexture.wiki
+jip_ln	-	GetWeatherTraitNumeric	(traitValue:float) GetWeatherTraitNumeric weather:ref traitID:int	-	first-release	first-release	geckwiki:GetWeatherTraitNumeric.wiki
+jip_ln	-	GetWindDirection	(windAngle:float) GetWindDirection	-	first-release	first-release	geckwiki:GetWindDirection.wiki
+jip_ln	-	GetWorldspaceClimate	(climate:ref) GetWorldspaceClimate worldSpace:ref	-	first-release	first-release	geckwiki:GetWorldspaceClimate.wiki
+jip_ln	-	GetWorldspaceFlag	(flagValue:0/1) GetWorldspaceFlag worldspace:ref flagID:int	-	first-release	first-release	geckwiki:GetWorldspaceFlag.wiki
+jip_ln	-	GetWorldspaceImagespace	(imageSpace:ref) GetWorldspaceImagespace worldSpace:ref	-	first-release	first-release	geckwiki:GetWorldspaceImagespace.wiki
+jip_ln	-	GetWorldspaceNoiseTexture	(texturePath:string_var) GetWorldspaceNoiseTexture worldSpace:ref	-	first-release	first-release	geckwiki:GetWorldspaceNoiseTexture.wiki
+jip_ln	-	GetWorldspaceWaterType	(waterType:ref) GetWorldspaceWaterType worldSpace:ref	-	first-release	first-release	geckwiki:GetWorldspaceWaterType.wiki
+jip_ln	-	HasEffectShader	(instanceCount:int) HasEffectShader effectShader:ref	-	first-release	first-release	geckwiki:HasEffectShader.wiki
+jip_ln	-	HasPrimitive	(hasPrimitive:0/1) HasPrimitive	-	first-release	first-release	geckwiki:HasPrimitive.wiki
+jip_ln	-	HasScriptBlock	(success:0/1) HasScriptBlock eventID:int baseObject:ref	-	first-release	first-release	geckwiki:HasScriptBlock.wiki
+jip_ln	-	HasVariableAdded	(hasVariable:0/1) HasVariableAdded varName:string quest:ref	-	first-release	first-release	geckwiki:HasVariableAdded.wiki
+jip_ln	-	HoldControl	(void) HoldControl ctrlID:int	-	first-release	first-release	geckwiki:HoldControl.wiki
+jip_ln	-	HolsterWeapon	(void) HolsterWeapon	-	first-release	first-release	geckwiki:HolsterWeapon.wiki
+jip_ln	-	InjectUIComponent	(successful:0/1) InjectUIComponent componentPath:string component:formattedString	-	first-release	first-release	geckwiki:InjectUIComponent.wiki
+jip_ln	-	InjectUIXML	(successful:0/1) InjectUIXML componentPath:string filePath:string	-	first-release	first-release	geckwiki:InjectUIXML.wiki
+jip_ln	-	InsertNode	(successful:0/1) InsertNode refOrForm:form addOrRemove:int targetAndName:formattedString	-	first-release	first-release	geckwiki:InsertNode.wiki
+jip_ln	-	IsAnimPlayingEx	(animPlaying:0/1) IsAnimPlayingEx category:int subType:int variationFlags:int	-	first-release	first-release	geckwiki:IsAnimPlayingEx.wiki
+jip_ln	-	IsArmorAddon	(armorAddon:0/1) IsArmorAddon BaseItem:form	-	first-release	first-release	geckwiki:IsArmorAddon.wiki
+jip_ln	-	IsAttacking	(isAttacking:0/1) IsAttacking	-	first-release	first-release	geckwiki:IsAttacking.wiki
+jip_ln	-	IsComponentLoaded	(loaded:0/1) IsComponentLoaded componentPath:string	-	first-release	first-release	geckwiki:IsComponentLoaded.wiki
+jip_ln	-	IsEquippedWeaponScoped	(scoped:0/1/2) IsEquippedWeaponScoped	-	first-release	first-release	geckwiki:IsEquippedWeaponScoped.wiki
+jip_ln	-	IsEquippedWeaponSilenced	(silenced:0/1/2) IsEquippedWeaponSilenced	-	first-release	first-release	geckwiki:IsEquippedWeaponSilenced.wiki
+jip_ln	-	IsFleeing	(isFleeing:0/1) IsFleeing	-	first-release	first-release	geckwiki:IsFleeing.wiki
+jip_ln	-	IsGrabbable	(grabbable:0/1) IsGrabbable	-	first-release	first-release	geckwiki:IsGrabbable.wiki
+jip_ln	-	IsIdlePlayingEx	(idlePlaying:1/0) IsIdlePlayingEx idleAnim:ref	-	first-release	first-release	geckwiki:IsIdlePlayingEx.wiki
+jip_ln	-	IsInAir	(inAir:0/1) IsInAir	-	first-release	first-release	geckwiki:IsInAir.wiki
+jip_ln	-	IsInCharGen	(inCharGen:1/0) IsInCharGen	-	first-release	first-release	geckwiki:IsInCharGen.wiki
+jip_ln	-	IsInCombatWith	(inCombat:0/1) IsInCombatWith target:ref	-	first-release	first-release	geckwiki:IsInCombatWith.wiki
+jip_ln	-	IsInKillCam	(inKillCam:0/1) IsInKillCam	-	first-release	first-release	geckwiki:IsInKillCam.wiki
+jip_ln	-	IsInWater	(inWater:0/1) IsInWater	-	first-release	first-release	geckwiki:IsInWater.wiki
+jip_ln	-	IsMobile	(isMobile:0/1) IsMobile	-	first-release	first-release	geckwiki:IsMobile.wiki
+jip_ln	-	IsMusicPlaying	(musicState:int) IsMusicPlaying musicType:form	-	first-release	first-release	geckwiki:IsMusicPlaying.wiki
+jip_ln	-	IsPCInCombat	(int) IsPCInCombat	-	first-release	first-release	geckwiki:IsPCInCombat.wiki
+jip_ln	-	IsScriptWaiting	(isWaiting:1/0) IsScriptWaiting quest:ref	-	first-release	first-release	geckwiki:IsScriptWaiting.wiki
+jip_ln	-	IsSoundPlaying	(soundPlaying:0/1) IsSoundPlaying sound:ref objectRef:ref	-	first-release	first-release	geckwiki:IsSoundPlaying.wiki
+jip_ln	-	IsSpellTargetAlt	(spellTarget:0/1) IsSpellTargetAlt effectForm:ref	-	first-release	first-release	geckwiki:IsSpellTargetAlt.wiki
+jip_ln	-	IsSpellTargetList	(spellTarget:0/1) IsSpellTargetList effectList:FormList	-	first-release	first-release	geckwiki:IsSpellTargetList.wiki
+jip_ln	-	IsStickDisabled	(stickDisabled:0/1) IsStickDisabled rightStick:0/1	-	first-release	first-release	geckwiki:IsStickDisabled.wiki
+jip_ln	-	LandTextureAddGrass	(successful:0/1) LandTextureAddGrass landTexture:ref grass:ref	-	first-release	first-release	geckwiki:LandTextureAddGrass.wiki
+jip_ln	-	LandTextureRemoveGrass	(successful:0/1) LandTextureRemoveGrass landTexture:ref grass:ref	-	first-release	first-release	geckwiki:LandTextureRemoveGrass.wiki
+jip_ln	-	LeveledListHasFormDeep	(inList:0/1) LeveledListHasFormDeep leveledList:form baseForm:form	-	first-release	first-release	geckwiki:LeveledListHasFormDeep.wiki
+jip_ln	-	MarkActivatorAshPile	(void) MarkActivatorAshPile activator/list:form	-	first-release	first-release	geckwiki:MarkActivatorAshPile.wiki
+jip_ln	-	MessageBoxExAlt	(void) MessageBoxExAlt callbackScript:ref msgStrings:formattedString	-	first-release	first-release	geckwiki:MessageBoxExAlt.wiki
+jip_ln	-	MessageExAlt	(void) MessageExAlt displayTime:float messageText:formattedString	-	first-release	first-release	geckwiki:MessageExAlt.wiki
+jip_ln	-	ModBaseActorValue	(void) ModBaseActorValue actorValue:statName modifier:float actorBase:form	-	first-release	first-release	geckwiki:ModBaseActorValue.wiki
+jip_ln	-	ModelHasBlock	(hasBlock:0/1) ModelHasBlock object:form blockName:formattedString	-	first-release	first-release	geckwiki:ModelHasBlock.wiki
+jip_ln	-	ModLogPrint	(void) ModLogPrint indent:int textLine:formattedString	-	first-release	first-release	geckwiki:ModLogPrint.wiki
+jip_ln	-	MoveAwayFrom	(void) MoveAwayFrom target:ref maxDistance:float flags:int	-	first-release	first-release	geckwiki:MoveAwayFrom.wiki
+jip_ln	-	MoveToCell	(success:0/1) MoveToCell cellOrWorldspace:ref posX:float posY:float posZ:float	-	first-release	first-release	geckwiki:MoveToCell.wiki
+jip_ln	-	MoveToContainer	(void) MoveToContainer container:ref clearOwner:0/1	-	first-release	first-release	geckwiki:MoveToContainer.wiki
+jip_ln	-	MoveToEditorPosition	(success:0/1) MoveToEditorPosition resetRotation:0/1	-	first-release	first-release	geckwiki:MoveToEditorPosition.wiki
+jip_ln	-	MoveToFadeDelay	(void) MoveToFadeDelay MarkerID:ref time:float	-	first-release	first-release	geckwiki:MoveToFadeDelay.wiki
+jip_ln	-	MoveToNode	(success:0/1) MoveToNode target:ref nodeName:string offsetX:float offsetY:float offsetZ:float	-	first-release	first-release	geckwiki:MoveToNode.wiki
+jip_ln	-	MoveToReticle	(success:0/1) MoveToReticle maxRange:float offsetX:float offsetY:float offsetZ:float	-	first-release	first-release	geckwiki:MoveToReticle.wiki
+jip_ln	-	PickFromList	(form) PickFromList list:form SearchStartPos:int SearchHowMany:int	-	first-release	first-release	geckwiki:PickFromList.wiki
+jip_ln	-	PlaceAtCell	(placedObj:ref) PlaceAtCell baseObject:form count:int cellOrWorld:form posX:float posY:float posZ:float	-	first-release	first-release	geckwiki:PlaceAtCell.wiki
+jip_ln	-	PlayAnimSequence	(successful:0/1) PlayAnimSequence sequenceName:string nodeName:string	-	first-release	first-release	geckwiki:PlayAnimSequence.wiki
+jip_ln	-	PlayIdleEx	(void) PlayIdleEx idleAnim:ref	-	first-release	first-release	geckwiki:PlayIdleEx.wiki
+jip_ln	-	PlaySound3DNode	(void) PlaySound3DNode gameSound:form nodeName:string	-	first-release	first-release	geckwiki:PlaySound3DNode.wiki
+jip_ln	-	ProjectExtraCamera	(successful:0/1) ProjectExtraCamera cameraName:string targetGeometry:string FoV:float pixelSize:int grayscale:0/1	-	first-release	first-release	geckwiki:ProjectExtraCamera.wiki
+jip_ln	-	PushActorAwayAlt	(void) PushActorAwayAlt force:int posXmod:float posYmod:float posZmod:float	-	first-release	first-release	geckwiki:PushActorAwayAlt.wiki
+jip_ln	-	PushActorNoRagdoll	(void) PushActorNoRagdoll force:int directionAng:float originRef:ref	-	first-release	first-release	geckwiki:PushActorNoRagdoll.wiki
+jip_ln	-	PushObject	(void) PushObject posXmod:float posYmod:float posZmod:float force:float originRef:ref	-	first-release	first-release	geckwiki:PushObject.wiki
+jip_ln	-	quest	(array_var) quest quest:form ShowCompletedObjectives:bool	-	first-release	first-release	geckwiki:GetQuestObjectives.wiki
+jip_ln	-	ReadArrayFromFile	(array_var) ReadArrayFromFile filePath:string transpose:1/0	-	first-release	first-release	geckwiki:ReadArrayFromFile.wiki
+jip_ln	-	ReadStringFromFile	(string_var) ReadStringFromFile filePath:string startAtLine:int lineCount:int	-	first-release	first-release	geckwiki:ReadStringFromFile.wiki
+jip_ln	-	RefHasMapMarker	(hasMarker:0/1) RefHasMapMarker	-	first-release	first-release	geckwiki:RefHasMapMarker.wiki
+jip_ln	-	RefMapArrayDestroy	(void) RefMapArrayDestroy arrName:string	-	first-release	first-release	geckwiki:RefMapArrayDestroy.wiki
+jip_ln	-	RefMapArrayErase	(arraySize:int) RefMapArrayErase arrName:string baseForm:ref	-	first-release	first-release	geckwiki:RefMapArrayErase.wiki
+jip_ln	-	RefMapArrayGetAll	(array_var) RefMapArrayGetAll refMapClass:int	-	first-release	first-release	geckwiki:RefMapArrayGetAll.wiki
+jip_ln	-	RefMapArrayGetFirst	(array_var) RefMapArrayGetFirst arrName:string	-	first-release	first-release	geckwiki:RefMapArrayGetFirst.wiki
+jip_ln	-	RefMapArrayGetFloat	(value:float) RefMapArrayGetFloat arrName:string baseForm:ref	-	first-release	first-release	geckwiki:RefMapArrayGetFloat.wiki
+jip_ln	-	RefMapArrayGetKeys	(keys:array_var) RefMapArrayGetKeys arrName:string	-	first-release	first-release	geckwiki:RefMapArrayGetKeys.wiki
+jip_ln	-	RefMapArrayGetNext	(array_var) RefMapArrayGetNext arrName:string	-	first-release	first-release	geckwiki:RefMapArrayGetNext.wiki
+jip_ln	-	RefMapArrayGetRef	(value:ref) RefMapArrayGetRef arrName:string baseForm:ref	-	first-release	first-release	geckwiki:RefMapArrayGetRef.wiki
+jip_ln	-	RefMapArrayGetSize	(size:int) RefMapArrayGetSize arrName:string	-	first-release	first-release	geckwiki:RefMapArrayGetSize.wiki
+jip_ln	-	RefMapArrayGetString	(value:string_var) RefMapArrayGetString arrName:string baseForm:ref	-	first-release	first-release	geckwiki:RefMapArrayGetString.wiki
+jip_ln	-	RefMapArrayGetType	(type:int) RefMapArrayGetType arrName:string baseForm:ref	-	first-release	first-release	geckwiki:RefMapArrayGetType.wiki
+jip_ln	-	RefMapArraySetFloat	(void) RefMapArraySetFloat arrName:string value:float baseForm:ref	-	first-release	first-release	geckwiki:RefMapArraySetFloat.wiki
+jip_ln	-	RefMapArraySetRef	(void) RefMapArraySetRef arrName:string value:ref baseForm:ref	-	first-release	first-release	geckwiki:RefMapArraySetRef.wiki
+jip_ln	-	RefMapArraySetString	(void) RefMapArraySetString arrName:string value:string baseForm:ref	-	first-release	first-release	geckwiki:RefMapArraySetString.wiki
+jip_ln	-	RefMapArrayValidate	(arraySize:int) RefMapArrayValidate arrName:string	-	first-release	first-release	geckwiki:RefMapArrayValidate.wiki
+jip_ln	-	RefreshCurrentClimate	(void) RefreshCurrentClimate	-	first-release	first-release	geckwiki:RefreshCurrentClimate.wiki
+jip_ln	-	RefreshItemsList	(void) RefreshItemsList	-	first-release	first-release	geckwiki:RefreshItemsList.wiki
+jip_ln	-	RefToString	(string_var) RefToString anyForm:ref	-	first-release	first-release	geckwiki:RefToString.wiki
+jip_ln	-	ReleaseControl	(void) ReleaseControl ctrlID:int	-	first-release	first-release	geckwiki:ReleaseControl.wiki
+jip_ln	-	ReloadEquippedModels	(void) ReloadEquippedModels equipSlot:int	-	first-release	first-release	geckwiki:ReloadEquippedModels.wiki
+jip_ln	-	RemoveAllAddedVariables	(void) RemoveAllAddedVariables quest:ref	-	first-release	first-release	geckwiki:RemoveAllAddedVariables.wiki
+jip_ln	-	RemoveAllPerks	(void) RemoveAllPerks forTeammates:1/0	-	first-release	first-release	geckwiki:RemoveAllPerks.wiki
+jip_ln	-	RemoveAmmoEffect	(successful:0/1) RemoveAmmoEffect ammo:ref ammoEffect:ref	-	first-release	first-release	geckwiki:RemoveAmmoEffect.wiki
+jip_ln	-	RemoveBaseEffectListEffect	(void) RemoveBaseEffectListEffect actorEffect:ref baseActor:ref	-	first-release	first-release	geckwiki:RemoveBaseEffectListEffect.wiki
+jip_ln	-	RemoveDestructionStage	(stageCount:int) RemoveDestructionStage object:ref index:int	-	first-release	first-release	geckwiki:RemoveDestructionStage.wiki
+jip_ln	-	RemoveItemTarget	(void) RemoveItemTarget item/list:ref target:ref quantity:int clearOwnership:0/1	-	first-release	first-release	geckwiki:RemoveItemTarget.wiki
+jip_ln	-	RemoveMeIRAlt	(void) RemoveMeIRAlt quantity:int clearOwnership:0/1 targetRef:ref	-	first-release	first-release	geckwiki:RemoveMeIRAlt.wiki
+jip_ln	-	RemoveNifBlock	(successful:0/1) RemoveNifBlock blockName:string pcModel:1/2	-	first-release	first-release	geckwiki:RemoveNifBlock.wiki
+jip_ln	-	RemoveNthEffect	(effectCount:int) RemoveNthEffect effectForm:ref index:int	-	first-release	first-release	geckwiki:RemoveNthEffect.wiki
+jip_ln	-	RemoveNthTempEffect	(success:0/1) RemoveNthTempEffect index:int	-	first-release	first-release	geckwiki:RemoveNthTempEffect.wiki
+jip_ln	-	RemoveObjectiveTarget	(void) RemoveObjectiveTarget quest:ref objectiveIndex:int targetRef:ref	-	first-release	first-release	geckwiki:RemoveObjectiveTarget.wiki
+jip_ln	-	RemoveRefMapMarker	(void) RemoveRefMapMarker	-	first-release	first-release	geckwiki:RemoveRefMapMarker.wiki
+jip_ln	-	RemoveScriptVariable	(removed:0/1) RemoveScriptVariable varName:string quest:ref	-	first-release	first-release	geckwiki:RemoveScriptVariable.wiki
+jip_ln	-	RenameNifBlock	(successful:0/1) RenameNifBlock blockName:string newName:string pcModel:1/2	-	first-release	first-release	geckwiki:RenameNifBlock.wiki
+jip_ln	-	ResetFallTime	(void) ResetFallTime	-	first-release	first-release	geckwiki:ResetFallTime.wiki
+jip_ln	-	RewardXPExact	(void) RewardXPExact xpAmount:int	-	first-release	first-release	geckwiki:RewardXPExact.wiki
+jip_ln	-	RotateAroundPoint	(void) RotateAroundPoint pointX:float pointY:float pointZ:float angleX:float angleY:float angleZ:float	-	first-release	first-release	geckwiki:RotateAroundPoint.wiki
+jip_ln	-	RunBatchScript	(success:0/1) RunBatchScript filePath:string	-	first-release	first-release	geckwiki:RunBatchScript.wiki
+jip_ln	-	RunScriptSnippet	(void) RunScriptSnippet delayTime:int scriptSource:formattedString	-	first-release	first-release	geckwiki:RunScriptSnippet.wiki
+jip_ln	-	ScriptWait	(void) ScriptWait waitTime:int	-	first-release	first-release	geckwiki:ScriptWait.wiki
+jip_ln	-	SetActorDiveBreath	(breathSeconds:float) SetActorDiveBreath breathSeconds:float	-	first-release	first-release	geckwiki:SetActorDiveBreath.wiki
+jip_ln	-	SetActorGravityMult	(void) SetActorGravityMult gravityMult:float	-	first-release	first-release	geckwiki:SetActorGravityMult.wiki
+jip_ln	-	SetActorLevelingData	(dataValue:float) SetActorLevelingData dataType:int newValue:float baseForm:ref	-	first-release	first-release	geckwiki:SetActorLevelingData.wiki
+jip_ln	-	SetActorTiltAngle	(void) SetActorTiltAngle axis:X/Y angle:float	-	first-release	first-release	geckwiki:SetActorTiltAngle.wiki
+jip_ln	-	SetActorUnarmedEffect	(success:0/1) SetActorUnarmedEffect newEffect:ref baseForm:ref	-	first-release	first-release	geckwiki:SetActorUnarmedEffect.wiki
+jip_ln	-	SetActorVelocity	(void) SetActorVelocity axis:X/Y/Z velocity:float	-	first-release	first-release	geckwiki:SetActorVelocity.wiki
+jip_ln	-	SetActorVoiceType	(voiceType:ref) SetActorVoiceType newVoice:ref baseForm:ref	-	first-release	first-release	geckwiki:SetActorVoiceType.wiki
+jip_ln	-	SetAddictionChance	(chance:float) SetAddictionChance ingestible:ref newChance:float	-	first-release	first-release	geckwiki:SetAddictionChance.wiki
+jip_ln	-	SetAddictionEffect	(actorEffect:ref) SetAddictionEffect ingestible:ref newEffect:ref	-	first-release	first-release	geckwiki:SetAddictionEffect.wiki
+jip_ln	-	SetAmmoEffectTraitNumeric	(traitValue:float) SetAmmoEffectTraitNumeric ammoEffect:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetAmmoEffectTraitNumeric.wiki
+jip_ln	-	SetAmmoProjectile	(projectile:ref) SetAmmoProjectile ammo:ref newProjectile:ref	-	first-release	first-release	geckwiki:SetAmmoProjectile.wiki
+jip_ln	-	SetAmmoTraitNumeric	(traitValue:float) SetAmmoTraitNumeric ammo:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetAmmoTraitNumeric.wiki
+jip_ln	-	SetAngleEx	(void) SetAngleEx angleX:float angleY:float angleZ:float method:int	-	first-release	first-release	geckwiki:SetAngleEx.wiki
+jip_ln	-	SetAngularVelocity	(void) SetAngularVelocity nodeName:string axis:X/Y/Z velocity:float	-	first-release	first-release	geckwiki:SetAngularVelocity.wiki
+jip_ln	-	SetAngularVelocityEx	(success:0/1) SetAngularVelocityEx nodeName:string velocityX:float velocityY:float velocityZ:float setGlobal:0/1	-	first-release	first-release	geckwiki:SetAngularVelocityEx.wiki
+jip_ln	-	SetAnimSequenceFrequency	(void) SetAnimSequenceFrequency sequenceName:string frequency:float	-	first-release	first-release	geckwiki:SetAnimSequenceFrequency.wiki
+jip_ln	-	SetArmorAudioTemplate	(void) SetArmorAudioTemplate armorForm:ref audioTemplate:ref	-	first-release	first-release	geckwiki:SetArmorAudioTemplate.wiki
+jip_ln	-	SetArmorClass	(void) SetArmorClass armor:form class:int	-	first-release	first-release	geckwiki:SetArmorClass.wiki
+jip_ln	-	SetArmorConditionPenalty	(multiplier:float) SetArmorConditionPenalty multiplier:float	-	first-release	first-release	geckwiki:SetArmorConditionPenalty.wiki
+jip_ln	-	SetArmorRCT	(void) SetArmorRCT armor:ref RCTPath:string	-	first-release	first-release	geckwiki:SetArmorRCT.wiki
+jip_ln	-	SetBarterPriceMult	(void) SetBarterPriceMult buyOrSell:0/1 priceMult:float	-	first-release	first-release	geckwiki:SetBarterPriceMult.wiki
+jip_ln	-	SetBaseEffectFlag	(isFlagSet:0/1) SetBaseEffectFlag baseEffect:ref flagID:int flagSet:0/1	-	first-release	first-release	geckwiki:SetBaseEffectFlag.wiki
+jip_ln	-	SetBaseEffectScript	(void) SetBaseEffectScript baseEffect:ref script:ref	-	first-release	first-release	geckwiki:SetBaseEffectScript.wiki
+jip_ln	-	SetBaseFactionRank	(void) SetBaseFactionRank faction:ref rank:int baseActor:ref	-	first-release	first-release	geckwiki:SetBaseFactionRank.wiki
+jip_ln	-	SetBipedModelPathAlt	(void) SetBipedModelPathAlt armor:ref modelSlot:int filePath:formattedString	-	first-release	first-release	geckwiki:SetBipedModelPathAlt.wiki
+jip_ln	-	SetBodyPartData	(void) SetBodyPartData creature:form bodyPartData:form	-	first-release	first-release	geckwiki:SetBodyPartData.wiki
+jip_ln	-	SetBodyPartDataRagdoll	(ragDoll:ref) SetBodyPartDataRagdoll bodyPartData:ref newRagDoll:ref	-	first-release	first-release	geckwiki:SetBodyPartDataRagdoll.wiki
+jip_ln	-	SetBodyPartDataSkeleton	(void) SetBodyPartDataSkeleton bodyPartData:ref modelPath:string	-	first-release	first-release	geckwiki:SetBodyPartDataSkeleton.wiki
+jip_ln	-	SetBodyPartFlag	(flagValue:0/1) SetBodyPartFlag bodyPartData:ref partID:int flagID:int newValue:0/1	-	first-release	first-release	geckwiki:SetBodyPartFlag.wiki
+jip_ln	-	SetBodyPartName	(void) SetBodyPartName bodyPartData:ref partID:int newName:string	-	first-release	first-release	geckwiki:SetBodyPartName.wiki
+jip_ln	-	SetBodyPartReplacementModel	(void) SetBodyPartReplacementModel bodyPartData:ref partID:int modelPath:string	-	first-release	first-release	geckwiki:SetBodyPartReplacementModel.wiki
+jip_ln	-	SetBodyPartTraitForm	(traitValue:ref) SetBodyPartTraitForm bodyPartData:ref partID:int traitID:int newValue:ref	-	first-release	first-release	geckwiki:SetBodyPartTraitForm.wiki
+jip_ln	-	SetBodyPartTraitNumeric	(traitValue:float) SetBodyPartTraitNumeric bodyPartData:ref partID:int traitID:int newValue:float	-	first-release	first-release	geckwiki:SetBodyPartTraitNumeric.wiki
+jip_ln	-	SetCellClimate	(void) SetCellClimate cell:ref climate:ref	-	first-release	first-release	geckwiki:SetCellClimate.wiki
+jip_ln	-	SetCellFlag	(void) SetCellFlag cell:ref flagID:int doSet:0/1	-	first-release	first-release	geckwiki:SetCellFlag.wiki
+jip_ln	-	SetCellLightingTemplate	(void) SetCellLightingTemplate cell:ref lightingTemplate:ref	-	first-release	first-release	geckwiki:SetCellLightingTemplate.wiki
+jip_ln	-	SetCellNoiseTexture	(void) SetCellNoiseTexture cell:ref texturePath:string	-	first-release	first-release	geckwiki:SetCellNoiseTexture.wiki
+jip_ln	-	SetCellWaterForm	(void) SetCellWaterForm cell:ref waterForm:ref	-	first-release	first-release	geckwiki:SetCellWaterForm.wiki
+jip_ln	-	SetClassFlag	(flagValue:0/1) SetClassFlag class:ref flagID:int newValue:0/1	-	first-release	first-release	geckwiki:SetClassFlag.wiki
+jip_ln	-	SetClassTraitNumeric	(traitValue:int) SetClassTraitNumeric class:ref traitID:int newValue:int	-	first-release	first-release	geckwiki:SetClassTraitNumeric.wiki
+jip_ln	-	SetClimateNightSkyModel	(void) SetClimateNightSkyModel climate:ref modelPath:string	-	first-release	first-release	geckwiki:SetClimateNightSkyModel.wiki
+jip_ln	-	SetClimateSunGlareTexture	(void) SetClimateSunGlareTexture climate:ref texturePath:string	-	first-release	first-release	geckwiki:SetClimateSunGlareTexture.wiki
+jip_ln	-	SetClimateSunTexture	(void) SetClimateSunTexture climate:ref texturePath:string	-	first-release	first-release	geckwiki:SetClimateSunTexture.wiki
+jip_ln	-	SetClimateTraitNumeric	(traitValue:int) SetClimateTraitNumeric climate:ref traitID:int newValue:int	-	first-release	first-release	geckwiki:SetClimateTraitNumeric.wiki
+jip_ln	-	SetCollisionObjLayerType	(void) SetCollisionObjLayerType nodeName:string layerType:int	-	first-release	first-release	geckwiki:SetCollisionObjLayerType.wiki
+jip_ln	-	SetCollisionObjProperty	(void) SetCollisionObjProperty nodeName:string propertyID:int newValue:float	-	first-release	first-release	geckwiki:SetCollisionObjProperty.wiki
+jip_ln	-	SetCombatDisabled	(combatDisabled:0/1) SetCombatDisabled combatDisabled:0/1	-	first-release	first-release	geckwiki:SetCombatDisabled.wiki
+jip_ln	-	SetCombatStyleFlag	(flagValue:0/1) SetCombatStyleFlag combatStyle:ref flagID:int newValue:0/1	-	first-release	first-release	geckwiki:SetCombatStyleFlag.wiki
+jip_ln	-	SetCombatStyleTraitNumeric	(traitValue:float) SetCombatStyleTraitNumeric combatStyle:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetCombatStyleTraitNumeric.wiki
+jip_ln	-	SetConditionDamagePenalty	(void) SetConditionDamagePenalty multiplier:float	-	first-release	first-release	geckwiki:SetConditionDamagePenalty.wiki
+jip_ln	-	SetContainerRespawns	(respawns:0/1) SetContainerRespawns respawns:0/1 baseForm:ref	-	first-release	first-release	geckwiki:SetContainerRespawns.wiki
+jip_ln	-	SetCreatureDamage	(damage:int) SetCreatureDamage damage:int baseForm:ref	-	first-release	first-release	geckwiki:SetCreatureDamage.wiki
+jip_ln	-	SetCreatureSoundsTemplate	(void) SetCreatureSoundsTemplate baseCreature:form soundsTemplate:form	-	first-release	first-release	geckwiki:SetCreatureSoundsTemplate.wiki
+jip_ln	-	SetCRESkeletonModel	(void) SetCRESkeletonModel creature:form modelPath:string	-	first-release	first-release	geckwiki:SetCRESkeletonModel.wiki
+jip_ln	-	SetCurrentAmmoRounds	(void) SetCurrentAmmoRounds ammoRounds:int	-	first-release	first-release	geckwiki:SetCurrentAmmoRounds.wiki
+jip_ln	-	SetCurrentClimate	(climate:ref) SetCurrentClimate newClimate:ref	-	first-release	first-release	geckwiki:SetCurrentClimate.wiki
+jip_ln	-	SetCursorPos	(void) SetCursorPos coordX:float coordY:float	-	first-release	first-release	geckwiki:SetCursorPos.wiki
+jip_ln	-	SetDeadZoneLS	(void) SetDeadZoneLS deadZone:float	-	first-release	first-release	geckwiki:SetDeadZoneLS.wiki
+jip_ln	-	SetDeadZoneRS	(void) SetDeadZoneRS deadZone:float	-	first-release	first-release	geckwiki:SetDeadZoneRS.wiki
+jip_ln	-	SetDeathItem	(void) SetDeathItem itemID:form baseActor:form	-	first-release	first-release	geckwiki:SetDeathItem.wiki
+jip_ln	-	SetDelayElapsed	(seconds:float) SetDelayElapsed quest:ref seconds:float	-	first-release	first-release	geckwiki:SetDelayElapsed.wiki
+jip_ln	-	SetDestructionDataHealth	(health:int) SetDestructionDataHealth object:ref newValue:int	-	first-release	first-release	geckwiki:SetDestructionDataHealth.wiki
+jip_ln	-	SetDestructionDataTargetable	(targetable:0/1) SetDestructionDataTargetable object:ref targetable:0/1	-	first-release	first-release	geckwiki:SetDestructionDataTargetable.wiki
+jip_ln	-	SetDetonationTimer	(void) SetDetonationTimer newTime:float	-	first-release	first-release	geckwiki:SetDetonationTimer.wiki
+jip_ln	-	SetEffectFlag	(isFlagSet:0/1) SetEffectFlag effectForm:ref flagID:int flagSet:0/1	-	first-release	first-release	geckwiki:SetEffectFlag.wiki
+jip_ln	-	SetEmbeddedWeaponAV	(void) SetEmbeddedWeaponAV weapon:ref actorValue:StatName	-	first-release	first-release	geckwiki:SetEmbeddedWeaponAV.wiki
+jip_ln	-	SetEmbeddedWeaponNode	(void) SetEmbeddedWeaponNode weapon:ref nodeName:string	-	first-release	first-release	geckwiki:SetEmbeddedWeaponNode.wiki
+jip_ln	-	SetExcludedCombatActions	(void) SetExcludedCombatActions excludeMask:int	-	first-release	first-release	geckwiki:SetExcludedCombatActions.wiki
+jip_ln	-	SetExplosionFlag	(flagValue:0/1) SetExplosionFlag explosion:ref flagID:int newValue:0/1	-	first-release	first-release	geckwiki:SetExplosionFlag.wiki
+jip_ln	-	SetExplosionTraitForm	(traitForm:ref) SetExplosionTraitForm explosion:ref traitID:int newForm:ref	-	first-release	first-release	geckwiki:SetExplosionTraitForm.wiki
+jip_ln	-	SetExplosionTraitNumeric	(traitValue:float) SetExplosionTraitNumeric explosion:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetExplosionTraitNumeric.wiki
+jip_ln	-	SetFactionReputationType	(reputation:ref) SetFactionReputationType faction:ref newReputation:ref	-	first-release	first-release	geckwiki:SetFactionReputationType.wiki
+jip_ln	-	SetFontFile	(success:0/1) SetFontFile fontType:int filePath:string	-	first-release	first-release	geckwiki:SetFontFile.wiki
+jip_ln	-	SetFormDescription	(success:0/1) SetFormDescription baseForm:ref descriptionText:formattedString	-	first-release	first-release	geckwiki:SetFormDescription.wiki
+jip_ln	-	SetFullNameAlt	(void) SetFullNameAlt newName:string baseForm:ref	-	first-release	first-release	geckwiki:SetFullNameAlt.wiki
+jip_ln	-	SetGameDifficulty	(void) SetGameDifficulty difficulty:int	-	first-release	first-release	geckwiki:SetGameDifficulty.wiki
+jip_ln	-	SetGameHour	(void) SetGameHour gameHour:float	-	first-release	first-release	geckwiki:SetGameHour.wiki
+jip_ln	-	SetGameMainLoopCallback	(void) SetGameMainLoopCallback callbackScript:ref setORremove:1/0 callDelay:int modeFlag:int	-	first-release	first-release	geckwiki:SetGameMainLoopCallback.wiki
+jip_ln	-	SetGameVolume	(void) SetGameVolume volumeType:int volumeLevel:int	-	first-release	first-release	geckwiki:SetGameVolume.wiki
+jip_ln	-	SetGlobalRef	(void) SetGlobalRef global:ref anyForm:ref	-	first-release	first-release	geckwiki:SetGlobalRef.wiki
+jip_ln	-	SetGlobalVariable	(value:float) SetGlobalVariable global:ref newValue:float	-	first-release	first-release	geckwiki:SetGlobalVariable.wiki
+jip_ln	-	SetGrassModel	(void) SetGrassModel grass:ref modelPath:string	-	first-release	first-release	geckwiki:SetGrassModel.wiki
+jip_ln	-	SetGrassTraitNumeric	(traitValue:float) SetGrassTraitNumeric grass:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetGrassTraitNumeric.wiki
+jip_ln	-	SetHardcoreStageEffect	(void) SetHardcoreStageEffect hcStage:form sicknessEff:form	-	first-release	first-release	geckwiki:SetHardcoreStageEffect.wiki
+jip_ln	-	SetHardcoreStageThreshold	(void) SetHardcoreStageThreshold hcStage:form threshold:int	-	first-release	first-release	geckwiki:SetHardcoreStageThreshold.wiki
+jip_ln	-	SetHotkeyItemRef	(success:0/1) SetHotkeyItemRef hotkeyNum:int	-	first-release	first-release	geckwiki:SetHotkeyItemRef.wiki
+jip_ln	-	SetIdleLoopTimes	(void) SetIdleLoopTimes idleAnim:ref minTimes:int maxTimes:int	-	first-release	first-release	geckwiki:SetIdleLoopTimes.wiki
+jip_ln	-	SetImageSpaceModTrait	(void) SetImageSpaceModTrait imageSpaceMod:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetImageSpaceModTrait.wiki
+jip_ln	-	SetImageSpaceTrait	(void) SetImageSpaceTrait imageSpace:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetImageSpaceTrait.wiki
+jip_ln	-	SetImpactDataModel	(void) SetImpactDataModel impactData:ref modelPath:string	-	first-release	first-release	geckwiki:SetImpactDataModel.wiki
+jip_ln	-	SetImpactDataSet	(void) SetImpactDataSet weapon:form dataset:form	-	first-release	first-release	geckwiki:SetImpactDataSet.wiki
+jip_ln	-	SetImpactDataSetForm	(void) SetImpactDataSetForm impactDataSet:form materialType:int impactData:form	-	first-release	first-release	geckwiki:SetImpactDataSetForm.wiki
+jip_ln	-	SetImpactDataTraitForm	(traitValue:ref) SetImpactDataTraitForm impactData:ref traitID:int newValue:ref	-	first-release	first-release	geckwiki:SetImpactDataTraitForm.wiki
+jip_ln	-	SetImpactDataTraitNumeric	(traitValue:float) SetImpactDataTraitNumeric impactData:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetImpactDataTraitNumeric.wiki
+jip_ln	-	SetImpactMaterialType	(void) SetImpactMaterialType materialType:int baseActor:form	-	first-release	first-release	geckwiki:SetImpactMaterialType.wiki
+jip_ln	-	SetInteractionDisabled	(void) SetInteractionDisabled disable:0/1 baseForm:ref	-	first-release	first-release	geckwiki:SetInteractionDisabled.wiki
+jip_ln	-	SetInteractionDisabledType	(void) SetInteractionDisabledType disable:0/1 typeCode:int	-	first-release	first-release	geckwiki:SetInteractionDisabledType.wiki
+jip_ln	-	SetInternalMarker	(isInternal:0/1) SetInternalMarker object:form toggle:1/0	-	first-release	first-release	geckwiki:SetInternalMarker.wiki
+jip_ln	-	SetItemRefCurrentHealth	(success:0/1) SetItemRefCurrentHealth newHealth:float	-	first-release	first-release	geckwiki:SetItemRefCurrentHealth.wiki
+jip_ln	-	SetLandTextureTextureSet	(textureSet:ref) SetLandTextureTextureSet landTexture:ref newTextureSet:ref	-	first-release	first-release	geckwiki:SetLandTextureTextureSet.wiki
+jip_ln	-	SetLandTextureTraitNumeric	(traitValue:int) SetLandTextureTraitNumeric landTexture:ref traitID:int newValue:int	-	first-release	first-release	geckwiki:SetLandTextureTraitNumeric.wiki
+jip_ln	-	SetLightFlag	(flagValue:0/1) SetLightFlag light:ref flagID:int newValue:0/1	-	first-release	first-release	geckwiki:SetLightFlag.wiki
+jip_ln	-	SetLightTraitNumeric	(traitValue:float) SetLightTraitNumeric light:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetLightTraitNumeric.wiki
+jip_ln	-	SetLinearVelocity	(void) SetLinearVelocity nodeName:string velX:float velY:float velZ:float setLocal:0/1	-	first-release	first-release	geckwiki:SetLinearVelocity.wiki
+jip_ln	-	SetLinkedReference	(void) SetLinkedReference targetRef:ref	-	first-release	first-release	geckwiki:SetLinkedReference.wiki
+jip_ln	-	SetLocalGravityVector	(void) SetLocalGravityVector xGravity:float yGravity:float zGravity:float	-	first-release	first-release	geckwiki:SetLocalGravityVector.wiki
+jip_ln	-	SetMaterialPropertyValue	(propValue:float) SetMaterialPropertyValue nifBlockName:string valueID:int newValue:float	-	first-release	first-release	geckwiki:SetMaterialPropertyValue.wiki
+jip_ln	-	SetMessageDisabled	(void) SetMessageDisabled messageOrList:ref disable:0/1	-	first-release	first-release	geckwiki:SetMessageDisabled.wiki
+jip_ln	-	SetMessageDisplayTime	(displayTime:int) SetMessageDisplayTime message:ref displayTime:int	-	first-release	first-release	geckwiki:SetMessageDisplayTime.wiki
+jip_ln	-	SetMessageFlags	(flagState:int) SetMessageFlags message:ref newState:int	-	first-release	first-release	geckwiki:SetMessageFlags.wiki
+jip_ln	-	SetMoonTexture	(void) SetMoonTexture moonType:int newPath:string	-	first-release	first-release	geckwiki:SetMoonTexture.wiki
+jip_ln	-	SetMusicState	(void) SetMusicState musicState:int	-	first-release	first-release	geckwiki:SetMusicState.wiki
+jip_ln	-	SetNifBlockFlag	(void) SetNifBlockFlag blockName:string flagID:int doSet:0/1 pcModel:1/2	-	first-release	first-release	geckwiki:SetNifBlockFlag.wiki
+jip_ln	-	SetNifBlockRotation	(void) SetNifBlockRotation blockName:string rotX:float rotY:float rotZ:float method:int pcModel:1/2	-	first-release	first-release	geckwiki:SetNifBlockRotation.wiki
+jip_ln	-	SetNifBlockScale	(void) SetNifBlockScale blockName:string scale:float pcModel:1/2	-	first-release	first-release	geckwiki:SetNifBlockScale.wiki
+jip_ln	-	SetNifBlockTranslation	(void) SetNifBlockTranslation blockName:string posX:float posY:float posZ:float pcModel:1/2	-	first-release	first-release	geckwiki:SetNifBlockTranslation.wiki
+jip_ln	-	SetNoGunWobble	(void) SetNoGunWobble	-	first-release	first-release	geckwiki:ToggleNoGunWobble.wiki
+jip_ln	-	SetNoUnequip	(void) SetNoUnequip noUnequip:0/1	-	first-release	first-release	geckwiki:SetNoUnequip.wiki
+jip_ln	-	SetNPCSkeletonModel	(void) SetNPCSkeletonModel npc:form modelPath:string	-	first-release	first-release	geckwiki:SetNPCSkeletonModel.wiki
+jip_ln	-	SetNthDestructionStageDebris	(debris:ref) SetNthDestructionStageDebris object:ref stageIndex:int newDebris:ref	-	first-release	first-release	geckwiki:SetNthDestructionStageDebris.wiki
+jip_ln	-	SetNthDestructionStageExplosion	(explosion:ref) SetNthDestructionStageExplosion object:ref stageIndex:int newExplosion:ref	-	first-release	first-release	geckwiki:SetNthDestructionStageExplosion.wiki
+jip_ln	-	SetNthDestructionStageReplacement	(void) SetNthDestructionStageReplacement object:ref stageIndex:int modelPath:string	-	first-release	first-release	geckwiki:SetNthDestructionStageReplacement.wiki
+jip_ln	-	SetNthDestructionStageTrait	(traitValue:int) SetNthDestructionStageTrait object:ref stageIndex:int traitID:int newValue:int	-	first-release	first-release	geckwiki:SetNthDestructionStageTrait.wiki
+jip_ln	-	SetNthEffectBase	(baseEffect:ref) SetNthEffectBase effectForm:ref effectIndex:int newBaseEffect:ref	-	first-release	first-release	geckwiki:SetNthEffectBase.wiki
+jip_ln	-	SetNthEffectTraitNumeric	(traitValue:int) SetNthEffectTraitNumeric effectForm:ref effectIndex:int traitID:int newValue:int	-	first-release	first-release	geckwiki:SetNthEffectTraitNumeric.wiki
+jip_ln	-	SetObjectEffect	(success:0/1) SetObjectEffect form:BaseForm objectEffect:baseForm	-	first-release	first-release	geckwiki:SetObjectEffect.wiki
+jip_ln	-	SetObjectiveNthTarget	(void) SetObjectiveNthTarget quest:ref objectiveIndex:int targetIndex:int targetRef:ref	-	first-release	first-release	geckwiki:SetObjectiveNthTarget.wiki
+jip_ln	-	SetObjectiveText	(void) SetObjectiveText quest:ref objectiveIndex:int displayText:formattedString	-	first-release	first-release	geckwiki:SetObjectiveText.wiki
+jip_ln	-	SetOnAnimActionEventHandler	(void) SetOnAnimActionEventHandler handlerScript:ref setORremove:1/0 actorOrList:ref animAction:int	-	first-release	first-release	geckwiki:SetOnAnimActionEventHandler.wiki
+jip_ln	-	SetOnControlDownEventHandler	(void) SetOnControlDownEventHandler handlerScript:ref setORremove:1/0 controlID:int	-	first-release	first-release	geckwiki:SetOnControlDownEventHandler.wiki
+jip_ln	-	SetOnControlUpEventHandler	(void) SetOnControlUpEventHandler handlerScript:ref setORremove:1/0 controlID:int	-	first-release	first-release	geckwiki:SetOnControlUpEventHandler.wiki
+jip_ln	-	SetOnCraftingEventHandler	(void) SetOnCraftingEventHandler handlerScript:form setOrRremove:1/0	-	first-release	first-release	geckwiki:SetOnCraftingEventHandler.wiki
+jip_ln	-	SetOnCrippledLimbEventHandler	(void) SetOnCrippledLimbEventHandler handlerScript:ref setORremove:1/0 actorOrList:ref	-	first-release	first-release	geckwiki:SetOnCrippledLimbEventHandler.wiki
+jip_ln	-	SetOnCriticalHitEventHandler	(void) SetOnCriticalHitEventHandler handlerScript:ref setORremove:1/0 target:ref source:ref weapon:ref	-	first-release	first-release	geckwiki:SetOnCriticalHitEventHandler.wiki
+jip_ln	-	SetOnDialogTopicEventHandler	(void) SetOnDialogTopicEventHandler handlerScript:form setORremove:1/0 topicOrInfo:form	-	first-release	first-release	geckwiki:SetOnDialogTopicEventHandler.wiki
+jip_ln	-	SetOnFastTravelEventHandler	(void) SetOnFastTravelEventHandler handlerScript:ref setORremove:1/0	-	first-release	first-release	geckwiki:SetOnFastTravelEventHandler.wiki
+jip_ln	-	SetOnFireWeaponEventHandler	(void) SetOnFireWeaponEventHandler handlerScript:form setORremove:1/0 actorOrList:form	-	first-release	first-release	geckwiki:SetOnFireWeaponEventHandler.wiki
+jip_ln	-	SetOnHealthDamageEventHandler	(void) SetOnHealthDamageEventHandler handlerScript:ref setORremove:1/0 actorOrList:ref	-	first-release	first-release	geckwiki:SetOnHealthDamageEventHandler.wiki
+jip_ln	-	SetOnHitEventHandler	(void) SetOnHitEventHandler handlerScript:ref setORremove:1/0 target:ref	-	first-release	first-release	geckwiki:SetOnHitEventHandler.wiki
+jip_ln	-	SetOnKeyDownEventHandler	(void) SetOnKeyDownEventHandler handlerScript:ref setORremove:1/0 keyID:int	-	first-release	first-release	geckwiki:SetOnKeyDownEventHandler.wiki
+jip_ln	-	SetOnKeyUpEventHandler	(void) SetOnKeyUpEventHandler handlerScript:ref setORremove:1/0 keyID:int	-	first-release	first-release	geckwiki:SetOnKeyUpEventHandler.wiki
+jip_ln	-	SetOnLocationDiscoverEventHandler	(void) SetOnLocationDiscoverEventHandler handlerScript:ref setORremove:1/0	-	first-release	first-release	geckwiki:SetOnLocationDiscoverEventHandler.wiki
+jip_ln	-	SetOnMenuClickEventHandler	(void) SetOnMenuClickEventHandler handlerScript:ref setORremove:1/0 tilePath:string	-	first-release	first-release	geckwiki:SetOnMenuClickEventHandler.wiki
+jip_ln	-	SetOnMenuCloseEventHandler	(void) SetOnMenuCloseEventHandler handlerScript:ref setORremove:1/0 menuID:int	-	first-release	first-release	geckwiki:SetOnMenuCloseEventHandler.wiki
+jip_ln	-	SetOnMenuOpenEventHandler	(void) SetOnMenuOpenEventHandler handlerScript:ref setORremove:1/0 menuID:int	-	first-release	first-release	geckwiki:SetOnMenuOpenEventHandler.wiki
+jip_ln	-	SetOnMouseoverChangeEventHandler	(void) SetOnMouseoverChangeEventHandler handlerScript:ref setORremove:1/0 menuID:int	-	first-release	first-release	geckwiki:SetOnMouseoverChangeEventHandler.wiki
+jip_ln	-	SetOnNoteAddedEventHandler	(void) SetOnNoteAddedEventHandler handlerScript:ref setORremove:1/0	-	first-release	first-release	geckwiki:SetOnNoteAddedEventHandler.wiki
+jip_ln	-	SetOnPCTargetChangeEventHandler	(void) SetOnPCTargetChangeEventHandler handlerScript:ref setORremove:1/0	-	first-release	first-release	geckwiki:SetOnPCTargetChangeEventHandler.wiki
+jip_ln	-	SetOnPlayGroupEventHandler	(void) SetOnPlayGroupEventHandler handlerScript:ref setORremove:1/0 actorOrList:ref animGroup:keyWord	-	first-release	first-release	geckwiki:SetOnPlayGroupEventHandler.wiki
+jip_ln	-	SetOnProjectileImpactEventHandler	(void) SetOnProjectileImpactEventHandler handlerScript:form setORremove:1/0 projectileOrList:form	-	first-release	first-release	geckwiki:SetOnProjectileImpactEventHandler.wiki
+jip_ln	-	SetOnQuestStageEventHandler	(success:0/1) SetOnQuestStageEventHandler handlerScript:ref setORremove:1/0 quest:ref stageIdx:int skipScript:1/0	-	first-release	first-release	geckwiki:SetOnQuestStageEventHandler.wiki
+jip_ln	-	SetOnRagdollEventHandler	(void) SetOnRagdollEventHandler handlerScript:form setORremove:1/0	-	first-release	first-release	geckwiki:SetOnRagdollEventHandler.wiki
+jip_ln	-	SetOnReloadWeaponEventHandler	(void) SetOnReloadWeaponEventHandler handlerScript:form setORremove:1/0	-	first-release	first-release	geckwiki:SetOnReloadWeaponEventHandler.wiki
+jip_ln	-	SetOnTriggerDownEventHandler	(void) SetOnTriggerDownEventHandler handlerScript:ref setORremove:1/0 leftOrRight:0/1	-	first-release	first-release	geckwiki:SetOnTriggerDownEventHandler.wiki
+jip_ln	-	SetOnTriggerUpEventHandler	(void) SetOnTriggerUpEventHandler handlerScript:ref setORremove:1/0 leftOrRight:0/1	-	first-release	first-release	geckwiki:SetOnTriggerUpEventHandler.wiki
+jip_ln	-	SetOnUseAidItemEventHandler	(void) SetOnUseAidItemEventHandler handlerScript:form setORremove:1/0 itemOrList:form	-	first-release	first-release	geckwiki:SetOnUseAidItemEventHandler.wiki
+jip_ln	-	SetOptionalPatch	(void) SetOptionalPatch patchName:string enable:0/1	-	first-release	first-release	geckwiki:SetOptionalPatch.wiki
+jip_ln	-	SetPackageFlag	(flagValue:0/1) SetPackageFlag package:ref flagID:int newValue:0/1	-	first-release	first-release	geckwiki:SetPackageFlag.wiki
+jip_ln	-	SetPerkFlag	(isFlagSet:0/1) SetPerkFlag perk:ref flagID:int flagSet:0/1	-	first-release	first-release	geckwiki:SetPerkFlag.wiki
+jip_ln	-	SetPerkLevel	(void) SetPerkLevel perk:form reqLevel:int	-	first-release	first-release	geckwiki:SetPerkLevel.wiki
+jip_ln	-	SetPersistent	(persistent:0/1) SetPersistent persistent:0/1	-	first-release	first-release	geckwiki:SetPersistent.wiki
+jip_ln	-	SetPosEx	(void) SetPosEx posX:float posY:float posZ:float translate:0/1	-	first-release	first-release	geckwiki:SetPosEx.wiki
+jip_ln	-	SetPrimitiveBound	(bound:float) SetPrimitiveBound axis:X/Y/Z newValue:float	-	first-release	first-release	geckwiki:SetPrimitiveBound.wiki
+jip_ln	-	SetProjectileExplosion	(explosion:ref) SetProjectileExplosion projectile:ref newExplosion:ref	-	first-release	first-release	geckwiki:SetProjectileExplosion.wiki
+jip_ln	-	SetProjectileFlag	(flagValue:0/1) SetProjectileFlag projectile:ref flagID:int newValue:0/1	-	first-release	first-release	geckwiki:SetProjectileFlag.wiki
+jip_ln	-	SetProjectileMuzzleFlash	(void) SetProjectileMuzzleFlash Projectile:form NewPath:string	-	first-release	first-release	geckwiki:SetProjectileMuzzleFlash.wiki
+jip_ln	-	SetProjectileRefDamage	(damage:float) SetProjectileRefDamage newDamage:float	-	first-release	first-release	geckwiki:SetProjectileRefDamage.wiki
+jip_ln	-	SetProjectileRefSource	(void) SetProjectileRefSource newSource:ref	-	first-release	first-release	geckwiki:SetProjectileRefSource.wiki
+jip_ln	-	SetProjectileRefSpeedMult	(speedMult:float) SetProjectileRefSpeedMult newMult:float	-	first-release	first-release	geckwiki:SetProjectileRefSpeedMult.wiki
+jip_ln	-	SetProjectileRefWeapon	(weapon:ref) SetProjectileRefWeapon newWeapon:ref	-	first-release	first-release	geckwiki:SetProjectileRefWeapon.wiki
+jip_ln	-	SetProjectileTraitNumeric	(traitValue:float) SetProjectileTraitNumeric projectile:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetProjectileTraitNumeric.wiki
+jip_ln	-	SetQuestFlag	(void) SetQuestFlag quest:form flagID:int newValue:0/1	-	first-release	first-release	geckwiki:SetQuestFlag.wiki
+jip_ln	-	SetRefName	(void) SetRefName newName:string	-	first-release	first-release	geckwiki:SetRefName.wiki
+jip_ln	-	SetRefrModelPath	(void) SetRefrModelPath nifPath:string	-	first-release	first-release	geckwiki:SetRefrModelPath.wiki
+jip_ln	-	SetScriptDisabled	(void) SetScriptDisabled scriptOrList:ref disable:0/1	-	first-release	first-release	geckwiki:SetScriptDisabled.wiki
+jip_ln	-	SetScriptEventDisabled	(void) SetScriptEventDisabled anyFormOrList:ref eventNames:string disable:0/1	-	first-release	first-release	geckwiki:SetScriptEventDisabled.wiki
+jip_ln	-	SetSoundFlag	(flagValue:0/1) SetSoundFlag sound:ref flagID:int newValue:0/1	-	first-release	first-release	geckwiki:SetSoundFlag.wiki
+jip_ln	-	SetSoundSourceFile	(void) SetSoundSourceFile sound:ref filePath:string	-	first-release	first-release	geckwiki:SetSoundSourceFile.wiki
+jip_ln	-	SetSoundTraitNumeric	(traitValue:float) SetSoundTraitNumeric sound:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetSoundTraitNumeric.wiki
+jip_ln	-	SetSpeedMult	(void) SetSpeedMult speedMult:int	-	first-release	first-release	geckwiki:SetSpeedMult.wiki
+jip_ln	-	SetStageAlt	(void) SetStageAlt quest:ref stage:int	-	first-release	first-release	geckwiki:SetStageAlt.wiki
+jip_ln	-	SetStickDisabled	(void) SetStickDisabled rightStick:0/1 setDisabled:0/1	-	first-release	first-release	geckwiki:SetStickDisabled.wiki
+jip_ln	-	SetSystemColor	(void) SetSystemColor interfaceID:int red:float green:float blue:float	-	first-release	first-release	geckwiki:SetSystemColor.wiki
+jip_ln	-	SetTerminalUIModel	(void) SetTerminalUIModel terminalOrList:ref modelPath:string	-	first-release	first-release	geckwiki:SetTerminalUIModel.wiki
+jip_ln	-	SetTextInputExtendedProps	(void) SetTextInputExtendedProps offsetX:float offsetY:float minLength:int maxLength:int switches:int	-	first-release	first-release	geckwiki:SetTextInputExtendedProps.wiki
+jip_ln	-	SetTextInputString	(void) SetTextInputString textInput:formattedString	-	first-release	first-release	geckwiki:SetTextInputString.wiki
+jip_ln	-	SetTextureSetFlag	(flagValue:0/1) SetTextureSetFlag textureSet:ref flagID:int newValue:0/1	-	first-release	first-release	geckwiki:SetTextureSetFlag.wiki
+jip_ln	-	SetTextureSetTexture	(void) SetTextureSetTexture textureSet:ref mapID:int texturePath:string	-	first-release	first-release	geckwiki:SetTextureSetTexture.wiki
+jip_ln	-	SetTextureSetTraitNumeric	(traitValue:float) SetTextureSetTraitNumeric textureSet:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetTextureSetTraitNumeric.wiki
+jip_ln	-	SetUIFloatGradual	(void) SetUIFloatGradual componentPath:string startValue:float endValue:float duration:float changeMode:int	-	first-release	first-release	geckwiki:SetUIFloatGradual.wiki
+jip_ln	-	SetValueAlt	(oldValue:int) SetValueAlt baseItem:ref newValue:int	-	first-release	first-release	geckwiki:SetValueAlt.wiki
+jip_ln	-	SetVATSTargetable	(void) SetVATSTargetable isTargetable:0/1	-	first-release	first-release	geckwiki:SetVATSTargetable.wiki
+jip_ln	-	SetWaterFormEffect	(void) SetWaterFormEffect waterType:ref actorEffect:ref	-	first-release	first-release	geckwiki:SetWaterFormEffect.wiki
+jip_ln	-	SetWaterNoiseTexture	(void) SetWaterNoiseTexture waterType:ref texturePath:string	-	first-release	first-release	geckwiki:SetWaterNoiseTexture.wiki
+jip_ln	-	SetWaterSound	(void) SetWaterSound waterType:ref sound:ref	-	first-release	first-release	geckwiki:SetWaterSound.wiki
+jip_ln	-	SetWeaponDetectionSoundLevel	(soundLevel:int) SetWeaponDetectionSoundLevel weapon:ref newValue:int	-	first-release	first-release	geckwiki:SetWeaponDetectionSoundLevel.wiki
+jip_ln	-	SetWeaponItemMod	(itemMod:ref) SetWeaponItemMod weapon:ref index:int newItemMod:ref	-	first-release	first-release	geckwiki:SetWeaponItemMod.wiki
+jip_ln	-	SetWeaponItemModEffect	(effectID:int) SetWeaponItemModEffect weapon:ref index:int newEffectID:int	-	first-release	first-release	geckwiki:SetWeaponItemModEffect.wiki
+jip_ln	-	SetWeaponItemModValue	(effectValue:float) SetWeaponItemModValue weapon:ref index:int newEffectValue:float	-	first-release	first-release	geckwiki:SetWeaponItemModValue.wiki
+jip_ln	-	SetWeaponModel	(void) SetWeaponModel weapon:form modBitmask:int modelPath:string	-	first-release	first-release	geckwiki:SetWeaponModel.wiki
+jip_ln	-	SetWeaponModReloadAnim	(reloadAnim:int) SetWeaponModReloadAnim weapon:ref newAnim:int	-	first-release	first-release	geckwiki:SetWeaponModReloadAnim.wiki
+jip_ln	-	SetWeaponOnHitSetting	(void) SetWeaponOnHitSetting weapon:form onHitSetting:int	-	first-release	first-release	geckwiki:SetWeaponOnHitSetting.wiki
+jip_ln	-	SetWeaponOut	(void) SetWeaponOut weaponOut:1/0	-	first-release	first-release	geckwiki:SetWeaponOut.wiki
+jip_ln	-	SetWeaponRefModFlags	(success:0/1) SetWeaponRefModFlags newFlags:int	-	first-release	first-release	geckwiki:SetWeaponRefModFlags.wiki
+jip_ln	-	SetWeaponSemiAutoFireDelay	(void) SetWeaponSemiAutoFireDelay weapon:form setMax:0/1 fireDelay:float	-	first-release	first-release	geckwiki:SetWeaponSemiAutoFireDelay.wiki
+jip_ln	-	SetWeaponShellCasingModel	(void) SetWeaponShellCasingModel weapon:ref modelPath:string	-	first-release	first-release	geckwiki:SetWeaponShellCasingModel.wiki
+jip_ln	-	SetWeaponSound	(sound:ref) SetWeaponSound weapon:ref soundID:int newSound:ref	-	first-release	first-release	geckwiki:SetWeaponSound.wiki
+jip_ln	-	SetWeatherImageSpaceMod	(imageSpaceMod:ref) SetWeatherImageSpaceMod weather:ref timeID:int newImageSpaceMod:ref	-	first-release	first-release	geckwiki:SetWeatherImageSpaceMod.wiki
+jip_ln	-	SetWeatherPrecipitationModel	(void) SetWeatherPrecipitationModel weather:ref modelPath:string	-	first-release	first-release	geckwiki:SetWeatherPrecipitationModel.wiki
+jip_ln	-	SetWeatherRGBColor	(color:int) SetWeatherRGBColor weather:ref typeID:int timeID:int newColor:int cloudLayer:int	-	first-release	first-release	geckwiki:SetWeatherRGBColor.wiki
+jip_ln	-	SetWeatherTexture	(void) SetWeatherTexture weather:ref layerIndex:int texturePath:string	-	first-release	first-release	geckwiki:SetWeatherTexture.wiki
+jip_ln	-	SetWeatherTraitNumeric	(traitValue:float) SetWeatherTraitNumeric weather:ref traitID:int newValue:float	-	first-release	first-release	geckwiki:SetWeatherTraitNumeric.wiki
+jip_ln	-	SetWeatherTransitionTimeOverride	(void) SetWeatherTransitionTimeOverride transTime:int	-	first-release	first-release	geckwiki:SetWeatherTransitionTimeOverride.wiki
+jip_ln	-	SetWindDirection	(void) SetWindDirection windAngle:float	-	first-release	first-release	geckwiki:SetWindDirection.wiki
+jip_ln	-	SetWorldspaceClimate	(climate:ref) SetWorldspaceClimate worldSpace:ref newClimate:ref	-	first-release	first-release	geckwiki:SetWorldspaceClimate.wiki
+jip_ln	-	SetWorldspaceFlag	(flagValue:0/1) SetWorldspaceFlag worldspace:ref flagID:int newValue:0/1	-	first-release	first-release	geckwiki:SetWorldspaceFlag.wiki
+jip_ln	-	SetWorldspaceImagespace	(void) SetWorldspaceImagespace worldSpace:ref imageSpace:ref	-	first-release	first-release	geckwiki:SetWorldspaceImagespace.wiki
+jip_ln	-	SetWorldspaceNoiseTexture	(void) SetWorldspaceNoiseTexture worldSpace:ref texturePath:string	-	first-release	first-release	geckwiki:SetWorldspaceNoiseTexture.wiki
+jip_ln	-	SetWorldspaceWaterType	(void) SetWorldspaceWaterType worldSpace:ref waterType:ref	-	first-release	first-release	geckwiki:SetWorldspaceWaterType.wiki
+jip_ln	-	ShowCompletedQuests	(array_var) ShowCompletedQuests ShowCompletedQuests:bool	-	first-release	first-release	geckwiki:GetQuests.wiki
+jip_ln	-	ShowQuantityMenu	(void) ShowQuantityMenu callbackScript:ref maxQuantity:int initQuantity:int	-	first-release	first-release	geckwiki:ShowQuantityMenu.wiki
+jip_ln	-	ShowTextInputMenu	(success:0/1) ShowTextInputMenu callbackScript:ref msgBoxWidth:float msgBoxHeight:float msgBoxTitle:formattedString	-	first-release	first-release	geckwiki:ShowTextInputMenu.wiki
+jip_ln	-	StopIdle	(void) StopIdle	-	first-release	first-release	geckwiki:StopIdle.wiki
+jip_ln	-	StopScriptWaiting	(void) StopScriptWaiting quest:ref	-	first-release	first-release	geckwiki:StopScriptWaiting.wiki
+jip_ln	-	StopSound	(void) StopSound sound:form	-	first-release	first-release	geckwiki:StopSound.wiki
+jip_ln	-	StringToActorValue	(avCode:int) StringToActorValue avString:string	-	first-release	first-release	geckwiki:StringToActorValue.wiki
+jip_ln	-	StringToRef	(form:ref) StringToRef refString:string	-	first-release	first-release	geckwiki:StringToRef.wiki
+jip_ln	-	sv_RegexMatch	(match:0/1) sv_RegexMatch targetSeq:string_var regEx:formattedString	-	first-release	first-release	geckwiki:Sv RegexMatch.wiki
+jip_ln	-	sv_RegexReplace	(modifiedSeq:string_var) sv_RegexReplace targetSeq:string_var replacement&#124;pattern:formattedString	-	first-release	first-release	geckwiki:Sv RegexReplace.wiki
+jip_ln	-	sv_RegexSearch	(matches:array_var) sv_RegexSearch targetSeq:string_var regEx:formattedString	-	first-release	first-release	geckwiki:Sv RegexSearch.wiki
+jip_ln	-	SwapTextureEx	(void) SwapTextureEx objectRef:ref nifBlockName:string texturePath:string texSlotIndex:int	-	first-release	first-release	geckwiki:SwapTextureEx.wiki
+jip_ln	-	TapButton	(void) TapButton button:int	-	first-release	first-release	geckwiki:TapButton.wiki
+jip_ln	-	TapTrigger	(void) TapTrigger leftOrRight:0/1	-	first-release	first-release	geckwiki:TapTrigger.wiki
+jip_ln	-	TestEquippedSlots	(slotConflict:0/1) TestEquippedSlots armor:form	-	first-release	first-release	geckwiki:TestEquippedSlots.wiki
+jip_ln	-	ToggleBipedSlotVisibility	(isToggled:0/1) ToggleBipedSlotVisibility slotID:int toggle:1/0	-	first-release	first-release	geckwiki:ToggleBipedSlotVisibility.wiki
+jip_ln	-	ToggleCameraCollision	(isToggled:0/1) ToggleCameraCollision toggle:1/0	-	first-release	first-release	geckwiki:ToggleCameraCollision.wiki
+jip_ln	-	ToggleCraftingMessages	(void) ToggleCraftingMessages	-	first-release	first-release	geckwiki:ToggleCraftingMessages.wiki
+jip_ln	-	ToggleCreatureModel	(success:0/1) ToggleCreatureModel modelPath:string enableModel:0/1 baseForm:ref	-	first-release	first-release	geckwiki:ToggleCreatureModel.wiki
+jip_ln	-	ToggleFirstPerson	(void) ToggleFirstPerson firstPerson:0/1	-	first-release	first-release	geckwiki:ToggleFirstPerson.wiki
+jip_ln	-	ToggleHardcoreTracking	(void) ToggleHardcoreTracking toggleON:1/0	-	first-release	first-release	geckwiki:ToggleHardcoreTracking.wiki
+jip_ln	-	ToggleHUDCursor	(isToggled:0/1) ToggleHUDCursor toggle:1/0	-	first-release	first-release	geckwiki:ToggleHUDCursor.wiki
+jip_ln	-	ToggleImmortalMode	(currMode:0/1/2) ToggleImmortalMode setMode:0/1/2	-	first-release	first-release	geckwiki:ToggleImmortalMode.wiki
+jip_ln	-	ToggleItemUnique	(void) ToggleItemUnique item/list:form doToggle:1/0	-	first-release	first-release	geckwiki:ToggleItemUnique.wiki
+jip_ln	-	ToggleMouseMovement	(movementFlag:int) ToggleMouseMovement movementFlag:int	-	first-release	first-release	geckwiki:ToggleMouseMovement.wiki
+jip_ln	-	ToggleObjectCollision	(void) ToggleObjectCollision toggleState:0/1	-	first-release	first-release	geckwiki:ToggleObjectCollision.wiki
+jip_ln	-	TogglePipBoyLight	(void) TogglePipBoyLight switchON:1/0	-	first-release	first-release	geckwiki:TogglePipBoyLight.wiki
+jip_ln	-	TogglePlayerSneaking	(void) TogglePlayerSneaking sneakMode:1/0	-	first-release	first-release	geckwiki:TogglePlayerSneaking.wiki
+jip_ln	-	ToggleTeammateKillable	(void) ToggleTeammateKillable	-	first-release	first-release	geckwiki:ToggleTeammateKillable.wiki
+jip_ln	-	ToggleVanityWheel	(isToggled:0/1) ToggleVanityWheel toggle:1/0	-	first-release	first-release	geckwiki:ToggleVanityWheel.wiki
+jip_ln	-	TravelToRef	(void) TravelToRef target:ref flags:int	-	first-release	first-release	geckwiki:TravelToRef.wiki
+jip_ln	-	TriggerLightningFX	(void) TriggerLightningFX	-	first-release	first-release	geckwiki:TriggerLightningFX.wiki
+jip_ln	-	Turn	(void) Turn turnDegrees:float	-	first-release	first-release	geckwiki:Turn.wiki
+jip_ln	-	UnequipItemAlt	(void) UnequipItemAlt item:ref noEquip:0/1 hideMessage:0/1	-	first-release	first-release	geckwiki:UnequipItemAlt.wiki
+jip_ln	-	UnloadUIComponent	(void) UnloadUIComponent componentPath:string	-	first-release	first-release	geckwiki:UnloadUIComponent.wiki
+jip_ln	-	UpdatePlayer3D	(void) UpdatePlayer3D	-	first-release	first-release	geckwiki:UpdatePlayer3D.wiki
+jip_ln	-	ValidateModIndex	(validatedIndex:int) ValidateModIndex modIndex:int	-	first-release	first-release	geckwiki:ValidateModIndex.wiki
+jip_ln	-	WeaponHasModType	(modSlot:int) WeaponHasModType weapon:form modType:int	-	first-release	first-release	geckwiki:WeaponHasModType.wiki
+jip_ln	-	WriteArrayToFile	(successful:0/1) WriteArrayToFile filePath:string append:0/1 sourceArray:array_var transpose:1/0	-	first-release	first-release	geckwiki:WriteArrayToFile.wiki
+jip_ln	-	WriteStringToFile	(successful:0/1) WriteStringToFile filePath:string append:0/1 sourceString:formattedString	-	first-release	first-release	geckwiki:WriteStringToFile.wiki

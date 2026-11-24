@@ -1,0 +1,805 @@
+family	script	function	signature	global	introduced	introduced_source	source
+skse64	ActiveMagicEffect	GetDuration	float GetDuration()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	GetMagnitude	float GetMagnitude()	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	GetTimeElapsed	float GetTimeElapsed()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	RegisterForActorAction	None RegisterForActorAction(int actionType)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	RegisterForCameraState	None RegisterForCameraState()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	RegisterForControl	None RegisterForControl(string control)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	RegisterForCrosshairRef	None RegisterForCrosshairRef()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	RegisterForKey	None RegisterForKey(int keyCode)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	RegisterForMenu	None RegisterForMenu(string menuName)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	RegisterForModEvent	None RegisterForModEvent(string eventName, string callbackName)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	RegisterForNiNodeUpdate	None RegisterForNiNodeUpdate()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	SendModEvent	None SendModEvent(string eventName, string strArg = "", float numArg = 0.0)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	UnregisterForActorAction	None UnregisterForActorAction(int actionType)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	UnregisterForAllControls	None UnregisterForAllControls()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	UnregisterForAllKeys	None UnregisterForAllKeys()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	UnregisterForAllMenus	None UnregisterForAllMenus()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	UnregisterForAllModEvents	None UnregisterForAllModEvents()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	UnregisterForCameraState	None UnregisterForCameraState()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	UnregisterForControl	None UnregisterForControl(string control)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	UnregisterForCrosshairRef	None UnregisterForCrosshairRef()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	UnregisterForKey	None UnregisterForKey(int keyCode)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	UnregisterForMenu	None UnregisterForMenu(string menuName)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	UnregisterForModEvent	None UnregisterForModEvent(string eventName)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	ActiveMagicEffect	UnregisterForNiNodeUpdate	None UnregisterForNiNodeUpdate()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActiveMagicEffect.psc
+skse64	Actor	ChangeHeadPart	None ChangeHeadPart(HeadPart hPart)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	EquipItemById	None EquipItemById(Form item, int itemId, int equipSlot = 0, bool preventUnequip = false, bool equipSound = true)	0	1.6.15	whatsnew:1.6.15	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	EquipItemEx	None EquipItemEx(Form item, int equipSlot = 0, bool preventUnequip = false, bool equipSound = true)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	GetEquippedItemId	int GetEquippedItemId(int location)	0	1.6.15	whatsnew:1.6.15	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	GetEquippedObject	Form GetEquippedObject(int location)	0	1.6.14	whatsnew:1.6.14	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	GetFactions	Faction[] GetFactions(int minRank, int maxRank)	0	1.7.2	whatsnew:1.7.2	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	GetFurnitureReference	ObjectReference GetFurnitureReference()	0	1.7.1	whatsnew:1.7.1	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	GetNthSpell	Spell GetNthSpell(int n)	0	1.6.14	whatsnew:1.6.14	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	GetSpellCount	Int GetSpellCount()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	GetWornForm	Form GetWornForm(int slotMask)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	GetWornItemId	int GetWornItemId(int slotMask)	0	1.6.15	whatsnew:1.6.15	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	IsAIEnabled	bool IsAIEnabled()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	IsSwimming	bool IsSwimming()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	QueueNiNodeUpdate	None QueueNiNodeUpdate()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	RegenerateHead	None RegenerateHead()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	ReplaceHeadPart	None ReplaceHeadPart(HeadPart oPart, HeadPart newPart)	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	ResetAI	None ResetAI()	0	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	ResetExpressionOverrides	None ResetExpressionOverrides()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	SetExpressionModifier	None SetExpressionModifier(int index, float value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	SetExpressionPhoneme	None SetExpressionPhoneme(int index, float value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	SheatheWeapon	None SheatheWeapon()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	UnequipItemEx	None UnequipItemEx(Form item, int equipSlot = 0, bool preventEquip = false)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	Actor	UpdateWeight	None UpdateWeight(float neckDelta)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Actor.psc
+skse64	ActorBase	GetCombatStyle	CombatStyle GetCombatStyle()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetFaceMorph	float GetFaceMorph(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetFacePreset	int GetFacePreset(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetFaceTextureSet	TextureSet GetFaceTextureSet()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetHairColor	ColorForm GetHairColor()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetHeight	float GetHeight()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetIndexOfHeadPartByType	int GetIndexOfHeadPartByType(int type)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetIndexOfOverlayHeadPartByType	int GetIndexOfOverlayHeadPartByType(int type)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetNthHeadPart	HeadPart GetNthHeadPart(int slotPart)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetNthOverlayHeadPart	HeadPart GetNthOverlayHeadPart(int slotPart)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetNthSpell	Spell GetNthSpell(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetNumHeadParts	int GetNumHeadParts()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetNumOverlayHeadParts	int GetNumOverlayHeadParts()	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetOutfit	Outfit GetOutfit(bool bSleepOutfit = false)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetSkin	Armor GetSkin()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetSkinFar	Armor GetSkinFar()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetSpellCount	int GetSpellCount()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetTemplate	ActorBase GetTemplate()	0	1.6.14	whatsnew:1.6.14	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetVoiceType	VoiceType GetVoiceType()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	GetWeight	float GetWeight()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	SetClass	None SetClass(Class c)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	SetCombatStyle	None SetCombatStyle(CombatStyle cs)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	SetFaceMorph	None SetFaceMorph(float value, int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	SetFacePreset	None SetFacePreset(int value, int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	SetFaceTextureSet	None SetFaceTextureSet(TextureSet textures)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	SetHairColor	None SetHairColor(ColorForm color)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	SetHeight	None SetHeight(float height)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	SetNthHeadPart	None SetNthHeadPart(HeadPart headPart, int slotPart)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	SetSkin	None SetSkin(Armor skin)	0	1.6.14	whatsnew:1.6.14	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	SetSkinFar	None SetSkinFar(Armor skin)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	SetVoiceType	None SetVoiceType(VoiceType nVoice)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorBase	SetWeight	None SetWeight(float weight)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorBase.psc
+skse64	ActorValueInfo	AddSkillExperience	None AddSkillExperience(float exp)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetActorValueInfoByID	ActorValueInfo GetActorValueInfoByID(int id)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetActorValueInfoByName	ActorValueInfo GetActorValueInfoByName(string avName)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetBaseValue	float GetBaseValue(Actor akActor)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetCurrentValue	float GetCurrentValue(Actor akActor)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetExperienceForLevel	float GetExperienceForLevel(int currentLevel)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetMaximumValue	float GetMaximumValue(Actor akActor)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetPerks	Perk[] GetPerks(Actor akActor = None, bool unowned = true, bool allRanks = false)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetPerkTree	None GetPerkTree(FormList list, Actor akActor = None, bool unowned = true, bool allRanks = false)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetSkillExperience	float GetSkillExperience()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetSkillImproveMult	float GetSkillImproveMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetSkillImproveOffset	float GetSkillImproveOffset()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetSkillLegendaryLevel	int GetSkillLegendaryLevel()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetSkillOffsetMult	float GetSkillOffsetMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	GetSkillUseMult	float GetSkillUseMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	IsSkill	bool IsSkill()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	SetSkillExperience	None SetSkillExperience(float exp)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	SetSkillImproveMult	None SetSkillImproveMult(float value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	SetSkillImproveOffset	None SetSkillImproveOffset(float value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	SetSkillLegendaryLevel	None SetSkillLegendaryLevel(int level)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	SetSkillOffsetMult	None SetSkillOffsetMult(float value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	ActorValueInfo	SetSkillUseMult	None SetSkillUseMult(float value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ActorValueInfo.psc
+skse64	Alias	GetID	int GetID()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	GetName	string GetName()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	RegisterForActorAction	None RegisterForActorAction(int actionType)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	RegisterForCameraState	None RegisterForCameraState()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	RegisterForControl	None RegisterForControl(string control)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	RegisterForCrosshairRef	None RegisterForCrosshairRef()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	RegisterForKey	None RegisterForKey(int keyCode)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	RegisterForMenu	None RegisterForMenu(string menuName)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	RegisterForModEvent	None RegisterForModEvent(string eventName, string callbackName)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	RegisterForNiNodeUpdate	None RegisterForNiNodeUpdate()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	SendModEvent	None SendModEvent(string eventName, string strArg = "", float numArg = 0.0)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	UnregisterForActorAction	None UnregisterForActorAction(int actionType)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	UnregisterForAllControls	None UnregisterForAllControls()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	UnregisterForAllKeys	None UnregisterForAllKeys()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	UnregisterForAllMenus	None UnregisterForAllMenus()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	UnregisterForAllModEvents	None UnregisterForAllModEvents()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	UnregisterForCameraState	None UnregisterForCameraState()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	UnregisterForControl	None UnregisterForControl(string control)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	UnregisterForCrosshairRef	None UnregisterForCrosshairRef()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	UnregisterForKey	None UnregisterForKey(int keyCode)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	UnregisterForMenu	None UnregisterForMenu(string menuName)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	UnregisterForModEvent	None UnregisterForModEvent(string eventName)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Alias	UnregisterForNiNodeUpdate	None UnregisterForNiNodeUpdate()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Alias.psc
+skse64	Ammo	GetDamage	float GetDamage()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ammo.psc
+skse64	Ammo	GetProjectile	Projectile GetProjectile()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ammo.psc
+skse64	Ammo	IsBolt	bool IsBolt()	0	1.7.1	whatsnew:1.7.1	ianpatt/skse64@25b72352adb6:scripts/modified/Ammo.psc
+skse64	Apparatus	GetQuality	int GetQuality()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Apparatus.psc
+skse64	Apparatus	SetQuality	None SetQuality(int quality)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Apparatus.psc
+skse64	Armor	AddSlotToMask	int AddSlotToMask(int slotMask)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	GetArmorRating	int GetArmorRating()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	GetEnchantment	Enchantment GetEnchantment()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	GetIconPath	string GetIconPath(bool bFemalePath)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	GetMaskForSlot	int GetMaskForSlot(int slot)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	GetMessageIconPath	string GetMessageIconPath(bool bFemalePath)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	GetModelPath	string GetModelPath(bool bFemalePath)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	GetNthArmorAddon	ArmorAddon GetNthArmorAddon(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	GetNumArmorAddons	int GetNumArmorAddons()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	GetSlotMask	int GetSlotMask()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	GetWeightClass	int GetWeightClass()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	ModArmorRating	None ModArmorRating(int modBy)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	RemoveSlotFromMask	int RemoveSlotFromMask(int slotMask)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	SetArmorRating	None SetArmorRating(int armorRating)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	SetEnchantment	None SetEnchantment(Enchantment e)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	SetIconPath	None SetIconPath(string path, bool bFemalePath)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	SetMessageIconPath	None SetMessageIconPath(string path, bool bFemalePath)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	SetModelPath	None SetModelPath(string path, bool bFemalePath)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	SetSlotMask	None SetSlotMask(int slotMask)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	Armor	SetWeightClass	None SetWeightClass(int weightClass)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Armor.psc
+skse64	ArmorAddon	AddSlotToMask	int AddSlotToMask(int slotMask)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ArmorAddon.psc
+skse64	ArmorAddon	GetModelNthTextureSet	TextureSet GetModelNthTextureSet(int n, bool first, bool female)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ArmorAddon.psc
+skse64	ArmorAddon	GetModelNumTextureSets	int GetModelNumTextureSets(bool first, bool female)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ArmorAddon.psc
+skse64	ArmorAddon	GetModelPath	string GetModelPath(bool firstPerson, bool female)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ArmorAddon.psc
+skse64	ArmorAddon	GetNthAdditionalRace	Race GetNthAdditionalRace(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ArmorAddon.psc
+skse64	ArmorAddon	GetNumAdditionalRaces	int GetNumAdditionalRaces()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ArmorAddon.psc
+skse64	ArmorAddon	GetSlotMask	int GetSlotMask()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ArmorAddon.psc
+skse64	ArmorAddon	RemoveSlotFromMask	int RemoveSlotFromMask(int slotMask)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ArmorAddon.psc
+skse64	ArmorAddon	SetModelNthTextureSet	None SetModelNthTextureSet(TextureSet texture, int n, bool first, bool female)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ArmorAddon.psc
+skse64	ArmorAddon	SetModelPath	None SetModelPath(string path, bool firstPerson, bool female)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ArmorAddon.psc
+skse64	ArmorAddon	SetSlotMask	None SetSlotMask(int slotMask)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ArmorAddon.psc
+skse64	Art	GetModelPath	string GetModelPath()	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/Art.psc
+skse64	Art	SetModelPath	None SetModelPath(string path)	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/Art.psc
+skse64	Book	GetSkill	Int GetSkill()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Book.psc
+skse64	Book	GetSpell	Spell GetSpell()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Book.psc
+skse64	Book	IsRead	bool IsRead()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Book.psc
+skse64	Book	IsTakeable	bool IsTakeable()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Book.psc
+skse64	Camera	GetCameraState	int GetCameraState()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Camera.psc
+skse64	Camera	GetFirstPersonFieldOfView	float GetFirstPersonFieldOfView()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Camera.psc
+skse64	Camera	GetWorldFieldOfView	float GetWorldFieldOfView()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Camera.psc
+skse64	Camera	SetFirstPersonFieldOfView	None SetFirstPersonFieldOfView(float fov)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Camera.psc
+skse64	Camera	SetWorldFieldOfView	None SetWorldFieldOfView(float fov)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Camera.psc
+skse64	Camera	UpdateThirdPerson	None UpdateThirdPerson()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Camera.psc
+skse64	Cell	GetActualWaterLevel	float GetActualWaterLevel()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Cell.psc
+skse64	Cell	GetNthRef	ObjectReference GetNthRef(int n, int formTypeFilter = 0)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Cell.psc
+skse64	Cell	GetNumRefs	int GetNumRefs(int formTypeFilter = 0)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Cell.psc
+skse64	Cell	GetWaterLevel	float GetWaterLevel()	0	1.7.2	whatsnew:1.7.2	ianpatt/skse64@25b72352adb6:scripts/modified/Cell.psc
+skse64	ColorComponent	GetAlpha	int GetAlpha(int argb)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	GetBlue	int GetBlue(int argb)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	GetGreen	int GetGreen(int argb)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	GetHue	float GetHue(int argb)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	GetRed	int GetRed(int argb)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	GetSaturation	float GetSaturation(int argb)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	GetValue	float GetValue(int argb)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	SetAlpha	int SetAlpha(int argb, int a)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	SetBlue	int SetBlue(int argb, int b)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	SetGreen	int SetGreen(int argb, int g)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	SetHue	int SetHue(int argb, float h)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	SetRed	int SetRed(int argb, int r)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	SetSaturation	int SetSaturation(int argb, float s)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorComponent	SetValue	int SetValue(int argb, float v)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorComponent.psc
+skse64	ColorForm	GetColor	int GetColor()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorForm.psc
+skse64	ColorForm	SetColor	None SetColor(int color)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ColorForm.psc
+skse64	CombatStyle	GetAllowDualWielding	bool GetAllowDualWielding()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetAvoidThreatChance	float GetAvoidThreatChance()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetCloseRangeDuelingCircleMult	float GetCloseRangeDuelingCircleMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetCloseRangeDuelingFallbackMult	float GetCloseRangeDuelingFallbackMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetCloseRangeFlankingFlankDistance	float GetCloseRangeFlankingFlankDistance()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetCloseRangeFlankingStalkTime	float GetCloseRangeFlankingStalkTime()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetDefensiveMult	float GetDefensiveMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetFlightDiveBombChance	float GetFlightDiveBombChance()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetFlightFlyingAttackChance	float GetFlightFlyingAttackChance()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetFlightHoverChance	float GetFlightHoverChance()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetGroupOffensiveMult	float GetGroupOffensiveMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetLongRangeStrafeMult	float GetLongRangeStrafeMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetMagicMult	float GetMagicMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetMeleeAttackStaggeredMult	float GetMeleeAttackStaggeredMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetMeleeBashAttackMult	float GetMeleeBashAttackMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetMeleeBashMult	float GetMeleeBashMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetMeleeBashPowerAttackMult	float GetMeleeBashPowerAttackMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetMeleeBashRecoiledMult	float GetMeleeBashRecoiledMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetMeleeMult	float GetMeleeMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetMeleePowerAttackBlockingMult	float GetMeleePowerAttackBlockingMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetMeleePowerAttackStaggeredMult	float GetMeleePowerAttackStaggeredMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetMeleeSpecialAttackMult	float GetMeleeSpecialAttackMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetOffensiveMult	float GetOffensiveMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetRangedMult	float GetRangedMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetShoutMult	float GetShoutMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetStaffMult	float GetStaffMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	GetUnarmedMult	float GetUnarmedMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetAllowDualWielding	None SetAllowDualWielding(bool allow)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetAvoidThreatChance	None SetAvoidThreatChance(float chance)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetCloseRangeDuelingCircleMult	None SetCloseRangeDuelingCircleMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetCloseRangeDuelingFallbackMult	None SetCloseRangeDuelingFallbackMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetCloseRangeFlankingFlankDistance	None SetCloseRangeFlankingFlankDistance(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetCloseRangeFlankingStalkTime	None SetCloseRangeFlankingStalkTime(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetDefensiveMult	None SetDefensiveMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetFlightDiveBombChance	None SetFlightDiveBombChance(float chance)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetFlightFlyingAttackChance	None SetFlightFlyingAttackChance(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetFlightHoverChance	None SetFlightHoverChance(float chance)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetGroupOffensiveMult	None SetGroupOffensiveMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetLongRangeStrafeMult	None SetLongRangeStrafeMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetMagicMult	None SetMagicMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetMeleeAttackStaggeredMult	None SetMeleeAttackStaggeredMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetMeleeBashAttackMult	None SetMeleeBashAttackMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetMeleeBashMult	None SetMeleeBashMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetMeleeBashPowerAttackMult	None SetMeleeBashPowerAttackMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetMeleeBashRecoiledMult	None SetMeleeBashRecoiledMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetMeleeMult	None SetMeleeMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetMeleePowerAttackBlockingMult	None SetMeleePowerAttackBlockingMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetMeleePowerAttackStaggeredMult	None SetMeleePowerAttackStaggeredMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetMeleeSpecialAttackMult	None SetMeleeSpecialAttackMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetOffensiveMult	None SetOffensiveMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetRangedMult	None SetRangedMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetShoutMult	None SetShoutMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetStaffMult	None SetStaffMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	CombatStyle	SetUnarmedMult	None SetUnarmedMult(float mult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/CombatStyle.psc
+skse64	ConstructibleObject	GetNthIngredient	Form GetNthIngredient(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ConstructibleObject.psc
+skse64	ConstructibleObject	GetNthIngredientQuantity	int GetNthIngredientQuantity(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ConstructibleObject.psc
+skse64	ConstructibleObject	GetNumIngredients	int GetNumIngredients()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ConstructibleObject.psc
+skse64	ConstructibleObject	GetResult	Form GetResult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ConstructibleObject.psc
+skse64	ConstructibleObject	GetResultQuantity	int GetResultQuantity()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ConstructibleObject.psc
+skse64	ConstructibleObject	GetWorkbenchKeyword	Keyword GetWorkbenchKeyword()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ConstructibleObject.psc
+skse64	ConstructibleObject	SetNthIngredient	None SetNthIngredient(Form required, int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ConstructibleObject.psc
+skse64	ConstructibleObject	SetNthIngredientQuantity	None SetNthIngredientQuantity(int value, int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ConstructibleObject.psc
+skse64	ConstructibleObject	SetResult	None SetResult(Form result)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ConstructibleObject.psc
+skse64	ConstructibleObject	SetResultQuantity	None SetResultQuantity(int quantity)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ConstructibleObject.psc
+skse64	ConstructibleObject	SetWorkbenchKeyword	None SetWorkbenchKeyword(Keyword aKeyword)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ConstructibleObject.psc
+skse64	DefaultObjectManager	GetForm	Form GetForm(string key)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/DefaultObjectManager.psc
+skse64	DefaultObjectManager	SetForm	None SetForm(string key, Form newForm)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/DefaultObjectManager.psc
+skse64	Enchantment	GetBaseEnchantment	Enchantment GetBaseEnchantment()	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/Enchantment.psc
+skse64	Enchantment	GetCostliestEffectIndex	int GetCostliestEffectIndex()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Enchantment.psc
+skse64	Enchantment	GetKeywordRestrictions	FormList GetKeywordRestrictions()	0	1.7.2	whatsnew:1.7.2	ianpatt/skse64@25b72352adb6:scripts/modified/Enchantment.psc
+skse64	Enchantment	GetNthEffectArea	int GetNthEffectArea(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Enchantment.psc
+skse64	Enchantment	GetNthEffectDuration	int GetNthEffectDuration(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Enchantment.psc
+skse64	Enchantment	GetNthEffectMagicEffect	MagicEffect GetNthEffectMagicEffect(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Enchantment.psc
+skse64	Enchantment	GetNthEffectMagnitude	float GetNthEffectMagnitude(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Enchantment.psc
+skse64	Enchantment	GetNumEffects	int GetNumEffects()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Enchantment.psc
+skse64	Enchantment	SetKeywordRestrictions	None SetKeywordRestrictions(FormList newKeywordList)	0	1.7.2	whatsnew:1.7.2	ianpatt/skse64@25b72352adb6:scripts/modified/Enchantment.psc
+skse64	Enchantment	SetNthEffectArea	None SetNthEffectArea(int index, int value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Enchantment.psc
+skse64	Enchantment	SetNthEffectDuration	None SetNthEffectDuration(int index, int value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Enchantment.psc
+skse64	Enchantment	SetNthEffectMagnitude	None SetNthEffectMagnitude(int index, float value)	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/Enchantment.psc
+skse64	EquipSlot	GetNthParent	EquipSlot GetNthParent(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/EquipSlot.psc
+skse64	EquipSlot	GetNumParents	int GetNumParents()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/EquipSlot.psc
+skse64	Faction	ClearFactionFlag	None ClearFactionFlag(int flag)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	GetBuySellList	FormList GetBuySellList()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	GetMerchantContainer	ObjectReference GetMerchantContainer()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	GetVendorEndHour	int GetVendorEndHour()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	GetVendorRadius	int GetVendorRadius()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	GetVendorStartHour	int GetVendorStartHour()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	IsFactionFlagSet	bool IsFactionFlagSet(int flag)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	IsNotSellBuy	bool IsNotSellBuy()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	OnlyBuysStolenItems	bool OnlyBuysStolenItems()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	SetBuySellList	None SetBuySellList(FormList akList)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	SetFactionFlag	None SetFactionFlag(int flag)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	SetMerchantContainer	None SetMerchantContainer(ObjectReference akContainer)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	SetNotSellBuy	None SetNotSellBuy(bool notSellBuy)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	SetOnlyBuysStolenItems	None SetOnlyBuysStolenItems(bool onlyStolen)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	SetVendorEndHour	None SetVendorEndHour(int hour)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	SetVendorRadius	None SetVendorRadius(int radius)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Faction	SetVendorStartHour	None SetVendorStartHour(int hour)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Faction.psc
+skse64	Flora	GetHarvestSound	SoundDescriptor GetHarvestSound()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Flora.psc
+skse64	Flora	GetIngredient	Form GetIngredient()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Flora.psc
+skse64	Flora	SetHarvestSound	None SetHarvestSound(SoundDescriptor akSoundDescriptor)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Flora.psc
+skse64	Flora	SetIngredient	None SetIngredient(Form akIngredient)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Flora.psc
+skse64	Form	GetKeywords	Keyword[] GetKeywords()	0	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	GetName	string GetName()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	GetNthKeyword	Keyword GetNthKeyword(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	GetNumKeywords	int GetNumKeywords()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	GetType	Int GetType()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	GetWeight	float GetWeight()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	GetWorldModelNthTextureSet	TextureSet GetWorldModelNthTextureSet(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	GetWorldModelNumTextureSets	int GetWorldModelNumTextureSets()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	GetWorldModelPath	string GetWorldModelPath()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	HasWorldModel	bool HasWorldModel()	0	1.7.1	whatsnew:1.7.1	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	IsPlayable	bool IsPlayable()	0	1.7.1	whatsnew:1.7.1	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	RegisterForActorAction	None RegisterForActorAction(int actionType)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	RegisterForCameraState	None RegisterForCameraState()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	RegisterForControl	None RegisterForControl(string control)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	RegisterForCrosshairRef	None RegisterForCrosshairRef()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	RegisterForKey	None RegisterForKey(int keyCode)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	RegisterForMenu	None RegisterForMenu(string menuName)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	RegisterForModEvent	None RegisterForModEvent(string eventName, string callbackName)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	RegisterForNiNodeUpdate	None RegisterForNiNodeUpdate()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	SendModEvent	None SendModEvent(string eventName, string strArg = "", float numArg = 0.0)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	SetGoldValue	None SetGoldValue(int value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	SetName	None SetName(string name)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	SetPlayerKnows	None SetPlayerKnows(bool knows)	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	SetWeight	None SetWeight(float weight)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	SetWorldModelNthTextureSet	None SetWorldModelNthTextureSet(TextureSet nSet, int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	SetWorldModelPath	None SetWorldModelPath(string path)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	TempClone	Form TempClone()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	UnregisterForActorAction	None UnregisterForActorAction(int actionType)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	UnregisterForAllControls	None UnregisterForAllControls()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	UnregisterForAllKeys	None UnregisterForAllKeys()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	UnregisterForAllMenus	None UnregisterForAllMenus()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	UnregisterForAllModEvents	None UnregisterForAllModEvents()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	UnregisterForCameraState	None UnregisterForCameraState()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	UnregisterForControl	None UnregisterForControl(string control)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	UnregisterForCrosshairRef	None UnregisterForCrosshairRef()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	UnregisterForKey	None UnregisterForKey(int keyCode)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	UnregisterForMenu	None UnregisterForMenu(string menuName)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	UnregisterForModEvent	None UnregisterForModEvent(string eventName)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	Form	UnregisterForNiNodeUpdate	None UnregisterForNiNodeUpdate()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Form.psc
+skse64	FormList	AddForms	None AddForms(Form[] forms)	0	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/FormList.psc
+skse64	FormList	ToArray	Form[] ToArray()	0	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/FormList.psc
+skse64	Game	GetCurrentConsoleRef	ObjectReference GetCurrentConsoleRef()	1	1.7.2	whatsnew:1.7.2	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetCurrentCrosshairRef	ObjectReference GetCurrentCrosshairRef()	1	1.7.1	whatsnew:1.7.1	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetDialogueTarget	ObjectReference GetDialogueTarget()	1	1.7.1	whatsnew:1.7.1	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetExperienceForLevel	float GetExperienceForLevel(int currentLevel)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetFormEx	Form GetFormEx(int formId)	1	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetHotkeyBoundObject	Form GetHotkeyBoundObject(int hotkey)	1	1.6.14	whatsnew:1.6.14	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetLightModAuthor	string GetLightModAuthor(int idx)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetLightModByName	int GetLightModByName(string name)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetLightModCount	int GetLightModCount()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetLightModDependencyCount	int GetLightModDependencyCount(int idx)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetLightModDescription	string GetLightModDescription(int idx)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetLightModName	string GetLightModName(int idx)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetModAuthor	string GetModAuthor(int modIndex)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetModByName	int GetModByName(string name)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetModCount	int GetModCount()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetModDependencyCount	int GetModDependencyCount(int modIndex)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetModDescription	string GetModDescription(int modIndex)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetModName	string GetModName(int modIndex)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetNthLightModDependency	int GetNthLightModDependency(int modIdx, int idx)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetNthTintMaskColor	int GetNthTintMaskColor(int n)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetNthTintMaskTexturePath	string GetNthTintMaskTexturePath(int n)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetNthTintMaskType	int GetNthTintMaskType(int n)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetNumTintMasks	int GetNumTintMasks()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetNumTintsByType	int GetNumTintsByType(int type)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetPerkPoints	int GetPerkPoints()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetPlayerExperience	float GetPlayerExperience()	1	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetPlayerMovementMode	bool GetPlayerMovementMode()	1	1.6.14	whatsnew:1.6.14	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetTintMaskColor	int GetTintMaskColor(int type, int index)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	GetTintMaskTexturePath	string GetTintMaskTexturePath(int type, int index)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	IsObjectFavorited	bool IsObjectFavorited(Form form)	1	1.6.14	whatsnew:1.6.14	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	IsPluginInstalled	bool IsPluginInstalled(string name)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	LoadGame	None LoadGame(string name)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	ModPerkPoints	None ModPerkPoints(int perkPoints)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SaveGame	None SaveGame(string name)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetGameSettingBool	None SetGameSettingBool(string setting, bool value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetGameSettingFloat	None SetGameSettingFloat(string setting, float value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetGameSettingInt	None SetGameSettingInt(string setting, int value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetGameSettingString	None SetGameSettingString(string setting, string value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetMiscStat	None SetMiscStat(string name, int value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetNthTintMaskColor	None SetNthTintMaskColor(int n, int color)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetNthTintMaskTexturePath	None SetNthTintMaskTexturePath(string path, int n)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetPerkPoints	None SetPerkPoints(int perkPoints)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetPlayerExperience	None SetPlayerExperience(float exp)	1	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetPlayerLevel	None SetPlayerLevel(int level)	1	1.7.2	whatsnew:1.7.2	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetPlayersLastRiddenHorse	None SetPlayersLastRiddenHorse(Actor horse)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetTintMaskColor	None SetTintMaskColor(int color, int type, int index)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	SetTintMaskTexturePath	None SetTintMaskTexturePath(string path, int type, int index)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	UnbindObjectHotkey	None UnbindObjectHotkey(int hotkey)	1	1.6.14	whatsnew:1.6.14	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	UpdateHairColor	None UpdateHairColor()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	Game	UpdateTintMaskColors	None UpdateTintMaskColors()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Game.psc
+skse64	GameData	GetAllAmmo	Form[] GetAllAmmo(string modName, Keyword[] keywords = None, bool playable = true)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/GameData.psc
+skse64	GameData	GetAllArmor	Form[] GetAllArmor(string modName, Keyword[] keywords = None, bool playable = true, bool ignoreTemplates = true, bool ignoreEnchantments = true, bool onlyEnchanted = false, bool ignoreSkin = true)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/GameData.psc
+skse64	GameData	GetAllBooks	Form[] GetAllBooks(string modName, Keyword[] keywords = None, bool regular = true, bool spell = false, bool skill = false)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/GameData.psc
+skse64	GameData	GetAllIngredients	Form[] GetAllIngredients(string modName, Keyword[] keywords = None)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/GameData.psc
+skse64	GameData	GetAllKeys	Form[] GetAllKeys(string modName, Keyword[] keywords = None)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/GameData.psc
+skse64	GameData	GetAllMiscItems	Form[] GetAllMiscItems(string modName, Keyword[] keywords = None)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/GameData.psc
+skse64	GameData	GetAllPotions	Form[] GetAllPotions(string modName, Keyword[] keywords = None, bool potions = true, bool food = false, bool poison = false)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/GameData.psc
+skse64	GameData	GetAllScrolls	Form[] GetAllScrolls(string modName, Keyword[] keywords = None)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/GameData.psc
+skse64	GameData	GetAllWeapons	Form[] GetAllWeapons(string modName, Keyword[] keywords = None, bool playable = true, bool ignoreTemplates = true, bool ignoreEnchantments = true, bool onlyEnchanted = false, int weaponTypes = 0xFFFFFFFF)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/GameData.psc
+skse64	HeadPart	GetHeadPart	HeadPart GetHeadPart(string name)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/HeadPart.psc
+skse64	HeadPart	GetIndexOfExtraPart	int GetIndexOfExtraPart(HeadPart p)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/HeadPart.psc
+skse64	HeadPart	GetNthExtraPart	HeadPart GetNthExtraPart(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/HeadPart.psc
+skse64	HeadPart	GetNumExtraParts	int GetNumExtraParts()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/HeadPart.psc
+skse64	HeadPart	GetPartName	string GetPartName()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/HeadPart.psc
+skse64	HeadPart	GetType	int GetType()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/HeadPart.psc
+skse64	HeadPart	GetValidRaces	FormList GetValidRaces()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/HeadPart.psc
+skse64	HeadPart	HasExtraPart	bool HasExtraPart(HeadPart p)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/HeadPart.psc
+skse64	HeadPart	IsExtraPart	bool IsExtraPart()	0	1.7.1	whatsnew:1.7.1	ianpatt/skse64@25b72352adb6:scripts/modified/HeadPart.psc
+skse64	HeadPart	SetValidRaces	None SetValidRaces(FormList vRaces)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/HeadPart.psc
+skse64	Ingredient	GetCostliestEffectIndex	int GetCostliestEffectIndex()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	GetEffectAreas	int[] GetEffectAreas()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	GetEffectDurations	int[] GetEffectDurations()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	GetEffectMagnitudes	float[] GetEffectMagnitudes()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	GetIsNthEffectKnown	bool GetIsNthEffectKnown(int index)	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	GetMagicEffects	MagicEffect[] GetMagicEffects()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	GetNthEffectArea	int GetNthEffectArea(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	GetNthEffectDuration	int GetNthEffectDuration(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	GetNthEffectMagicEffect	MagicEffect GetNthEffectMagicEffect(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	GetNthEffectMagnitude	float GetNthEffectMagnitude(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	GetNumEffects	int GetNumEffects()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	SetNthEffectArea	None SetNthEffectArea(int index, int value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	SetNthEffectDuration	None SetNthEffectDuration(int index, int value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Ingredient	SetNthEffectMagnitude	None SetNthEffectMagnitude(int index, float value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Ingredient.psc
+skse64	Input	GetMappedControl	string GetMappedControl(int keycode)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Input.psc
+skse64	Input	GetMappedKey	int GetMappedKey(string control, int deviceType = 0xFF)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Input.psc
+skse64	Input	GetNthKeyPressed	int GetNthKeyPressed(int n)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Input.psc
+skse64	Input	GetNumKeysPressed	int GetNumKeysPressed()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Input.psc
+skse64	Input	HoldKey	None HoldKey(Int dxKeycode)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Input.psc
+skse64	Input	IsKeyPressed	bool IsKeyPressed(Int dxKeycode)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Input.psc
+skse64	Input	ReleaseKey	None ReleaseKey(Int dxKeycode)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Input.psc
+skse64	Input	TapKey	None TapKey(Int dxKeycode)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Input.psc
+skse64	Keyword	GetKeyword	Keyword GetKeyword(string key)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Keyword.psc
+skse64	Keyword	GetString	string GetString()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Keyword.psc
+skse64	LeveledActor	GetNthCount	int GetNthCount(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledActor.psc
+skse64	LeveledActor	GetNthForm	Form GetNthForm(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledActor.psc
+skse64	LeveledActor	GetNthLevel	int GetNthLevel(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledActor.psc
+skse64	LeveledActor	GetNumForms	int GetNumForms()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledActor.psc
+skse64	LeveledActor	SetNthCount	None SetNthCount(int n, int count)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledActor.psc
+skse64	LeveledActor	SetNthLevel	None SetNthLevel(int n, int level)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledActor.psc
+skse64	LeveledItem	GetChanceGlobal	GlobalVariable GetChanceGlobal()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledItem.psc
+skse64	LeveledItem	GetChanceNone	int GetChanceNone()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledItem.psc
+skse64	LeveledItem	GetNthCount	int GetNthCount(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledItem.psc
+skse64	LeveledItem	GetNthForm	Form GetNthForm(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledItem.psc
+skse64	LeveledItem	GetNthLevel	int GetNthLevel(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledItem.psc
+skse64	LeveledItem	GetNumForms	int GetNumForms()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledItem.psc
+skse64	LeveledItem	SetChanceGlobal	None SetChanceGlobal(GlobalVariable glob)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledItem.psc
+skse64	LeveledItem	SetChanceNone	None SetChanceNone(int chance)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledItem.psc
+skse64	LeveledItem	SetNthCount	None SetNthCount(int n, int count)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledItem.psc
+skse64	LeveledItem	SetNthLevel	None SetNthLevel(int n, int level)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledItem.psc
+skse64	LeveledSpell	GetChanceNone	int GetChanceNone()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledSpell.psc
+skse64	LeveledSpell	GetNthForm	Form GetNthForm(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledSpell.psc
+skse64	LeveledSpell	GetNthLevel	int GetNthLevel(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledSpell.psc
+skse64	LeveledSpell	GetNumForms	int GetNumForms()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledSpell.psc
+skse64	LeveledSpell	SetChanceNone	None SetChanceNone(int chance)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledSpell.psc
+skse64	LeveledSpell	SetNthLevel	None SetNthLevel(int n, int level)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/LeveledSpell.psc
+skse64	Location	GetParent	Location GetParent()	0	2.0.18	whatsnew:2.0.18	ianpatt/skse64@25b72352adb6:scripts/modified/Location.psc
+skse64	MagicEffect	ClearEffectFlag	None ClearEffectFlag(int flag)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetArea	int GetArea()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetBaseCost	float GetBaseCost()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetCastingArt	Art GetCastingArt()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetCastingType	int GetCastingType()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetCastTime	float GetCastTime()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetDeliveryType	int GetDeliveryType()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetEnchantArt	Art GetEnchantArt()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetEnchantShader	EffectShader GetEnchantShader()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetEquipAbility	Spell GetEquipAbility()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetExplosion	Explosion GetExplosion()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetHitEffectArt	Art GetHitEffectArt()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetHitShader	EffectShader GetHitShader()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetImageSpaceMod	ImageSpaceModifier GetImageSpaceMod()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetImpactDataSet	ImpactDataSet GetImpactDataSet()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetLight	Light GetLight()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetPerk	Perk GetPerk()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetProjectile	Projectile GetProjectile()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetResistance	string GetResistance()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetSkillLevel	int GetSkillLevel()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetSkillUsageMult	float GetSkillUsageMult()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	GetSounds	Sound[] GetSounds()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	IsEffectFlagSet	bool IsEffectFlagSet(int flag)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetArea	None SetArea(int area)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetAssociatedSkill	None SetAssociatedSkill(string skill)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetBaseCost	None SetBaseCost(float cost)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetCastingArt	None SetCastingArt(Art obj)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetCastTime	None SetCastTime(float castTime)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetEffectFlag	None SetEffectFlag(int flag)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetEnchantArt	None SetEnchantArt(Art obj)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetEnchantShader	None SetEnchantShader(EffectShader obj)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetEquipAbility	None SetEquipAbility(Spell obj)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetExplosion	None SetExplosion(Explosion obj)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetHitEffectArt	None SetHitEffectArt(Art obj)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetHitShader	None SetHitShader(EffectShader obj)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetImageSpaceMod	None SetImageSpaceMod(ImageSpaceModifier obj)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetImpactDataSet	None SetImpactDataSet(ImpactDataSet obj)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetLight	None SetLight(Light obj)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetPerk	None SetPerk(Perk obj)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetProjectile	None SetProjectile(Projectile obj)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetResistance	None SetResistance(string skill)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetSkillLevel	None SetSkillLevel(int level)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	MagicEffect	SetSkillUsageMult	None SetSkillUsageMult(float usageMult)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/MagicEffect.psc
+skse64	Math	LeftShift	int LeftShift(int value, int shiftBy)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Math.psc
+skse64	Math	Log	float Log(float arg1)	1	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/Math.psc
+skse64	Math	LogicalAnd	int LogicalAnd(int arg1, int arg2)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Math.psc
+skse64	Math	LogicalNot	int LogicalNot(int arg1)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Math.psc
+skse64	Math	LogicalOr	int LogicalOr(int arg1, int arg2)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Math.psc
+skse64	Math	LogicalXor	int LogicalXor(int arg1, int arg2)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Math.psc
+skse64	Math	RightShift	int RightShift(int value, int shiftBy)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Math.psc
+skse64	ModEvent	Create	int Create(string eventName)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ModEvent.psc
+skse64	ModEvent	PushBool	None PushBool(int handle, bool value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ModEvent.psc
+skse64	ModEvent	PushFloat	None PushFloat(int handle, float value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ModEvent.psc
+skse64	ModEvent	PushForm	None PushForm(int handle, Form value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ModEvent.psc
+skse64	ModEvent	PushInt	None PushInt(int handle, int value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ModEvent.psc
+skse64	ModEvent	PushString	None PushString(int handle, string value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ModEvent.psc
+skse64	ModEvent	Release	None Release(int handle)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ModEvent.psc
+skse64	ModEvent	Send	bool Send(int handle)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ModEvent.psc
+skse64	NetImmerse	GetNodeLocalPosition	bool GetNodeLocalPosition(ObjectReference ref, string node, float[] in, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetNodeLocalPositionX	float GetNodeLocalPositionX(ObjectReference ref, string node, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetNodeLocalPositionY	float GetNodeLocalPositionY(ObjectReference ref, string node, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetNodeLocalPositionZ	float GetNodeLocalPositionZ(ObjectReference ref, string node, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetNodeLocalRotationEuler	bool GetNodeLocalRotationEuler(ObjectReference ref, string node, float[] in, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetNodeLocalRotationMatrix	bool GetNodeLocalRotationMatrix(ObjectReference ref, string node, float[] in, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetNodeScale	float GetNodeScale(ObjectReference ref, string node, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetNodeWorldPosition	bool GetNodeWorldPosition(ObjectReference ref, string node, float[] in, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetNodeWorldPositionX	float GetNodeWorldPositionX(ObjectReference ref, string node, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetNodeWorldPositionY	float GetNodeWorldPositionY(ObjectReference ref, string node, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetNodeWorldPositionZ	float GetNodeWorldPositionZ(ObjectReference ref, string node, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetNodeWorldRotationEuler	bool GetNodeWorldRotationEuler(ObjectReference ref, string node, float[] in, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetNodeWorldRotationMatrix	bool GetNodeWorldRotationMatrix(ObjectReference ref, string node, float[] in, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetRelativeNodePosition	bool GetRelativeNodePosition(ObjectReference ref, string nodeA, string nodeB, float[] in, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetRelativeNodePositionX	float GetRelativeNodePositionX(ObjectReference ref, string nodeA, string nodeB, bool firstPerson)	1	1.7.1	whatsnew:1.7.1	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetRelativeNodePositionY	float GetRelativeNodePositionY(ObjectReference ref, string nodeA, string nodeB, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	GetRelativeNodePositionZ	float GetRelativeNodePositionZ(ObjectReference ref, string nodeA, string nodeB, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	HasNode	bool HasNode(ObjectReference ref, string node, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	SetNodeLocalPosition	bool SetNodeLocalPosition(ObjectReference ref, string node, float[] in, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	SetNodeLocalPositionX	None SetNodeLocalPositionX(ObjectReference ref, string node, float x, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	SetNodeLocalPositionY	None SetNodeLocalPositionY(ObjectReference ref, string node, float y, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	SetNodeLocalPositionZ	None SetNodeLocalPositionZ(ObjectReference ref, string node, float z, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	SetNodeLocalRotationEuler	bool SetNodeLocalRotationEuler(ObjectReference ref, string node, float[] in, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	SetNodeLocalRotationMatrix	bool SetNodeLocalRotationMatrix(ObjectReference ref, string node, float[] in, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	SetNodeScale	None SetNodeScale(ObjectReference ref, string node, float scale, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	NetImmerse	SetNodeTextureSet	None SetNodeTextureSet(ObjectReference ref, string node, TextureSet tSet, bool firstPerson)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/NetImmerse.psc
+skse64	ObjectReference	CreateEnchantment	None CreateEnchantment(float maxCharge, MagicEffect[] effects, float[] magnitudes, int[] areas, int[] durations)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetAllForms	None GetAllForms(FormList toFill)	0	1.7.1	whatsnew:1.7.1	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetContainerForms	Form[] GetContainerForms()	0	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetDisplayName	string GetDisplayName()	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetEnableParent	ObjectReference GetEnableParent()	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetEnchantment	Enchantment GetEnchantment()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetItemCharge	float GetItemCharge()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetItemMaxCharge	float GetItemMaxCharge()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetNthForm	Form GetNthForm(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetNthReferenceAlias	ReferenceAlias GetNthReferenceAlias(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetNumItems	int GetNumItems()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetNumReferenceAliases	int GetNumReferenceAliases()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetPoison	Potion GetPoison()	0	1.7.1	whatsnew:1.7.1	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetReferenceAliases	ReferenceAlias[] GetReferenceAliases()	0	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetTotalArmorWeight	float GetTotalArmorWeight()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	GetTotalItemWeight	float GetTotalItemWeight()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	IsHarvested	bool IsHarvested()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	IsOffLimits	bool IsOffLimits()	0	1.6.14	whatsnew:1.6.14	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	ResetInventory	None ResetInventory()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	SetDisplayName	bool SetDisplayName(string name, bool force = false)	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	SetEnchantment	None SetEnchantment(Enchantment source, float maxCharge)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	SetHarvested	None SetHarvested(bool harvested)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	SetItemCharge	None SetItemCharge(float charge)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	SetItemHealthPercent	None SetItemHealthPercent(float health)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	ObjectReference	SetItemMaxCharge	None SetItemMaxCharge(float maxCharge)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/ObjectReference.psc
+skse64	Outfit	GetNthPart	Form GetNthPart(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Outfit.psc
+skse64	Outfit	GetNumParts	int GetNumParts()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Outfit.psc
+skse64	Perk	GetNextPerk	Perk GetNextPerk()	0	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	GetNthEntryLeveledList	LeveledItem GetNthEntryLeveledList(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	GetNthEntryPriority	int GetNthEntryPriority(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	GetNthEntryQuest	Quest GetNthEntryQuest(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	GetNthEntryRank	int GetNthEntryRank(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	GetNthEntrySpell	Spell GetNthEntrySpell(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	GetNthEntryStage	int GetNthEntryStage(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	GetNthEntryText	string GetNthEntryText(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	GetNthEntryValue	float GetNthEntryValue(int n, int i)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	GetNumEntries	int GetNumEntries()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	SetNthEntryLeveledList	bool SetNthEntryLeveledList(int n, LeveledItem lList)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	SetNthEntryPriority	bool SetNthEntryPriority(int n, int priority)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	SetNthEntryQuest	bool SetNthEntryQuest(int n, Quest newQuest)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	SetNthEntryRank	bool SetNthEntryRank(int n, int rank)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	SetNthEntrySpell	bool SetNthEntrySpell(int n, Spell newSpell)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	SetNthEntryStage	bool SetNthEntryStage(int n, int stage)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	SetNthEntryText	bool SetNthEntryText(int n, string newText)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Perk	SetNthEntryValue	bool SetNthEntryValue(int n, int i, float value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Perk.psc
+skse64	Potion	GetCostliestEffectIndex	int GetCostliestEffectIndex()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	GetEffectAreas	int[] GetEffectAreas()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	GetEffectDurations	int[] GetEffectDurations()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	GetEffectMagnitudes	float[] GetEffectMagnitudes()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	GetMagicEffects	MagicEffect[] GetMagicEffects()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	GetNthEffectArea	int GetNthEffectArea(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	GetNthEffectDuration	int GetNthEffectDuration(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	GetNthEffectMagicEffect	MagicEffect GetNthEffectMagicEffect(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	GetNthEffectMagnitude	float GetNthEffectMagnitude(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	GetNumEffects	int GetNumEffects()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	GetUseSound	SoundDescriptor GetUseSound()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	IsFood	bool IsFood()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	IsPoison	bool IsPoison()	0	1.7.1	whatsnew:1.7.1	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	SetNthEffectArea	None SetNthEffectArea(int index, int value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	SetNthEffectDuration	None SetNthEffectDuration(int index, int value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Potion	SetNthEffectMagnitude	None SetNthEffectMagnitude(int index, float value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Potion.psc
+skse64	Quest	GetAliasById	Alias GetAliasById(int aliasId)	0	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/Quest.psc
+skse64	Quest	GetAliasByName	Alias GetAliasByName(string name)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Quest.psc
+skse64	Quest	GetAliases	Alias[] GetAliases()	0	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/Quest.psc
+skse64	Quest	GetID	string GetID()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Quest.psc
+skse64	Quest	GetNthAlias	Alias GetNthAlias(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Quest.psc
+skse64	Quest	GetNumAliases	int GetNumAliases()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Quest.psc
+skse64	Quest	GetPriority	int GetPriority()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Quest.psc
+skse64	Quest	GetQuest	Quest GetQuest(string editorId)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Quest.psc
+skse64	Race	ClearRaceFlag	None ClearRaceFlag(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Race.psc
+skse64	Race	GetDefaultVoiceType	VoiceType GetDefaultVoiceType(bool female)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Race.psc
+skse64	Race	GetNthPlayableRace	Race GetNthPlayableRace(int n)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Race.psc
+skse64	Race	GetNthSpell	Spell GetNthSpell(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Race.psc
+skse64	Race	GetNumPlayableRaces	int GetNumPlayableRaces()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Race.psc
+skse64	Race	GetRace	Race GetRace(string editorId)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Race.psc
+skse64	Race	GetSkin	Armor GetSkin()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Race.psc
+skse64	Race	GetSpellCount	int GetSpellCount()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Race.psc
+skse64	Race	IsRaceFlagSet	bool IsRaceFlagSet(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Race.psc
+skse64	Race	SetDefaultVoiceType	None SetDefaultVoiceType(bool female, VoiceType voice)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Race.psc
+skse64	Race	SetRaceFlag	None SetRaceFlag(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Race.psc
+skse64	Race	SetSkin	None SetSkin(Armor skin)	0	1.6.14	whatsnew:1.6.14	ianpatt/skse64@25b72352adb6:scripts/modified/Race.psc
+skse64	Scroll	GetCastTime	float GetCastTime()	0	1.6.15	whatsnew:1.6.15	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	GetCostliestEffectIndex	int GetCostliestEffectIndex()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	GetEffectAreas	int[] GetEffectAreas()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	GetEffectDurations	int[] GetEffectDurations()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	GetEffectMagnitudes	float[] GetEffectMagnitudes()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	GetEquipType	EquipSlot GetEquipType()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	GetMagicEffects	MagicEffect[] GetMagicEffects()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	GetNthEffectArea	int GetNthEffectArea(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	GetNthEffectDuration	int GetNthEffectDuration(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	GetNthEffectMagicEffect	MagicEffect GetNthEffectMagicEffect(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	GetNthEffectMagnitude	float GetNthEffectMagnitude(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	GetNumEffects	int GetNumEffects()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	GetPerk	Perk GetPerk()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	SetEquipType	None SetEquipType(EquipSlot type)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	SetNthEffectArea	None SetNthEffectArea(int index, int value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	SetNthEffectDuration	None SetNthEffectDuration(int index, int value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Scroll	SetNthEffectMagnitude	None SetNthEffectMagnitude(int index, float value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Scroll.psc
+skse64	Shout	GetNthRecoveryTime	float GetNthRecoveryTime(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Shout.psc
+skse64	Shout	GetNthSpell	Spell GetNthSpell(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Shout.psc
+skse64	Shout	GetNthWordOfPower	WordOfPower GetNthWordOfPower(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Shout.psc
+skse64	Shout	SetNthRecoveryTime	None SetNthRecoveryTime(int n, float time)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Shout.psc
+skse64	Shout	SetNthSpell	None SetNthSpell(int n, Spell aSpell)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Shout.psc
+skse64	Shout	SetNthWordOfPower	None SetNthWordOfPower(int n, WordOfPower aWoop)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Shout.psc
+skse64	SKSE	GetPluginVersion	int GetPluginVersion(string name)	1	1.6.14	whatsnew:1.6.14	ianpatt/skse64@25b72352adb6:scripts/modified/SKSE.psc
+skse64	SKSE	GetVersion	int GetVersion()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SKSE.psc
+skse64	SKSE	GetVersionBeta	int GetVersionBeta()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SKSE.psc
+skse64	SKSE	GetVersionMinor	int GetVersionMinor()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SKSE.psc
+skse64	SKSE	GetVersionRelease	int GetVersionRelease()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SKSE.psc
+skse64	SoulGem	GetGemSize	int GetGemSize()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SoulGem.psc
+skse64	SoulGem	GetSoulSize	int GetSoulSize()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SoulGem.psc
+skse64	Sound	GetDescriptor	SoundDescriptor GetDescriptor()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Sound.psc
+skse64	SoundDescriptor	GetDecibelAttenuation	float GetDecibelAttenuation()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SoundDescriptor.psc
+skse64	SoundDescriptor	GetDecibelVariance	int GetDecibelVariance()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SoundDescriptor.psc
+skse64	SoundDescriptor	GetFrequencyShift	int GetFrequencyShift()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SoundDescriptor.psc
+skse64	SoundDescriptor	GetFrequencyVariance	int GetFrequencyVariance()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SoundDescriptor.psc
+skse64	SoundDescriptor	SetDecibelAttenuation	None SetDecibelAttenuation(float dbAttenuation)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SoundDescriptor.psc
+skse64	SoundDescriptor	SetDecibelVariance	None SetDecibelVariance(int dbVariance)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SoundDescriptor.psc
+skse64	SoundDescriptor	SetFrequencyShift	None SetFrequencyShift(int frequencyShift)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SoundDescriptor.psc
+skse64	SoundDescriptor	SetFrequencyVariance	None SetFrequencyVariance(int frequencyVariance)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SoundDescriptor.psc
+skse64	SpawnerTask	AddSpawn	None AddSpawn(int handle, Form formToPlace, ObjectReference target, float[] positionOffset, float[] rotation, int count = 1, bool bForcePersist = false, bool bInitiallyDisabled = false)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SpawnerTask.psc
+skse64	SpawnerTask	Cancel	None Cancel(int handle)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SpawnerTask.psc
+skse64	SpawnerTask	Create	int Create()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SpawnerTask.psc
+skse64	SpawnerTask	Run	ObjectReference[] Run(int handle)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/SpawnerTask.psc
+skse64	Spell	GetCastTime	float GetCastTime()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetCostliestEffectIndex	int GetCostliestEffectIndex()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetEffectAreas	int[] GetEffectAreas()	0	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetEffectDurations	int[] GetEffectDurations()	0	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetEffectiveMagickaCost	int GetEffectiveMagickaCost(Actor caster)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetEffectMagnitudes	float[] GetEffectMagnitudes()	0	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetEquipType	EquipSlot GetEquipType()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetMagicEffects	MagicEffect[] GetMagicEffects()	0	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetMagickaCost	int GetMagickaCost()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetNthEffectArea	int GetNthEffectArea(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetNthEffectDuration	int GetNthEffectDuration(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetNthEffectMagicEffect	MagicEffect GetNthEffectMagicEffect(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetNthEffectMagnitude	float GetNthEffectMagnitude(int index)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetNumEffects	int GetNumEffects()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	GetPerk	Perk GetPerk()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	SetEquipType	None SetEquipType(EquipSlot type)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	SetNthEffectArea	None SetNthEffectArea(int index, int value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	SetNthEffectDuration	None SetNthEffectDuration(int index, int value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	Spell	SetNthEffectMagnitude	None SetNthEffectMagnitude(int index, float value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Spell.psc
+skse64	StringUtil	AsChar	string AsChar(int c)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/StringUtil.psc
+skse64	StringUtil	AsOrd	int AsOrd(string c)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/StringUtil.psc
+skse64	StringUtil	Find	int Find(string s, string toFind, int startIndex = 0)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/StringUtil.psc
+skse64	StringUtil	GetLength	int GetLength(string s)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/StringUtil.psc
+skse64	StringUtil	GetNthChar	string GetNthChar(string s, int index)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/StringUtil.psc
+skse64	StringUtil	IsDigit	bool IsDigit(string c)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/StringUtil.psc
+skse64	StringUtil	IsLetter	bool IsLetter(string c)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/StringUtil.psc
+skse64	StringUtil	IsPrintable	bool IsPrintable(string c)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/StringUtil.psc
+skse64	StringUtil	IsPunctuation	bool IsPunctuation(string c)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/StringUtil.psc
+skse64	StringUtil	Split	string[] Split(string s, string delim)	1	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/StringUtil.psc
+skse64	StringUtil	Substring	string Substring(string s, int startIndex, int len = 0)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/StringUtil.psc
+skse64	TextureSet	GetNthTexturePath	string GetNthTexturePath(int n)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/TextureSet.psc
+skse64	TextureSet	GetNumTexturePaths	int GetNumTexturePaths()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/TextureSet.psc
+skse64	TextureSet	SetNthTexturePath	None SetNthTexturePath(int n, string texturePath)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/TextureSet.psc
+skse64	TreeObject	GetHarvestSound	SoundDescriptor GetHarvestSound()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/TreeObject.psc
+skse64	TreeObject	GetIngredient	Form GetIngredient()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/TreeObject.psc
+skse64	TreeObject	SetHarvestSound	None SetHarvestSound(SoundDescriptor akSoundDescriptor)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/TreeObject.psc
+skse64	TreeObject	SetIngredient	None SetIngredient(Form akIngredient)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/TreeObject.psc
+skse64	UI	CloseCustomMenu	None CloseCustomMenu()	1	1.7.0	whatsnew:1.7.0	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	GetBool	bool GetBool(string menuName, string target)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	GetFloat	float GetFloat(string menuName, string target)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	GetInt	int GetInt(string menuName, string target)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	GetString	string GetString(string menuName, string target)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	InvokeBool	None InvokeBool(string menuName, string target, bool arg)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	InvokeBoolA	None InvokeBoolA(string menuName, string target, bool[] args)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	InvokeFloat	None InvokeFloat(string menuName, string target, float arg)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	InvokeFloatA	None InvokeFloatA(string menuName, string target, float[] args)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	InvokeForm	None InvokeForm(string menuName, string target, Form arg)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	InvokeInt	None InvokeInt(string menuName, string target, int arg)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	InvokeIntA	None InvokeIntA(string menuName, string target, int[] args)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	InvokeString	None InvokeString(string menuName, string target, string arg)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	InvokeStringA	None InvokeStringA(string menuName, string target, string[] args)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	IsMenuOpen	bool IsMenuOpen(string menuName)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	IsTextInputEnabled	bool IsTextInputEnabled()	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	OpenCustomMenu	None OpenCustomMenu(string swfPath, int flags = 0)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	SetBool	None SetBool(string menuName, string target, bool value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	SetFloat	None SetFloat(string menuName, string target, float value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	SetInt	None SetInt(string menuName, string target, int value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UI	SetString	None SetString(string menuName, string target, string value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UI.psc
+skse64	UICallback	Create	int Create(string menuName, string target)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UICallback.psc
+skse64	UICallback	PushBool	None PushBool(int handle, bool value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UICallback.psc
+skse64	UICallback	PushBoolA	None PushBoolA(int handle, bool[] args)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UICallback.psc
+skse64	UICallback	PushFloat	None PushFloat(int handle, float value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UICallback.psc
+skse64	UICallback	PushFloatA	None PushFloatA(int handle, float[] args)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UICallback.psc
+skse64	UICallback	PushInt	None PushInt(int handle, int value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UICallback.psc
+skse64	UICallback	PushIntA	None PushIntA(int handle, int[] args)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UICallback.psc
+skse64	UICallback	PushString	None PushString(int handle, string value)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UICallback.psc
+skse64	UICallback	PushStringA	None PushStringA(int handle, string[] args)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UICallback.psc
+skse64	UICallback	Release	None Release(int handle)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UICallback.psc
+skse64	UICallback	Send	bool Send(int handle)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/UICallback.psc
+skse64	Utility	CreateAliasArray	Alias[] CreateAliasArray(int size, Alias fill = None)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	CreateBoolArray	bool[] CreateBoolArray(int size, bool fill = false)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	CreateFloatArray	float[] CreateFloatArray(int size, float fill = 0.0)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	CreateFormArray	Form[] CreateFormArray(int size, Form fill = None)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	CreateIntArray	int[] CreateIntArray(int size, int fill = 0)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	CreateStringArray	string[] CreateStringArray(int size, string fill = "")	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	GetINIBool	bool GetINIBool(string ini)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	GetINIFloat	float GetINIFloat(string ini)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	GetINIInt	int GetINIInt(string ini)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	GetINIString	string GetINIString(string ini)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	ResizeAliasArray	Alias[] ResizeAliasArray(Alias[] source, int size, Alias fill = None)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	ResizeBoolArray	bool[] ResizeBoolArray(bool[] source, int size, bool fill = false)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	ResizeFloatArray	float[] ResizeFloatArray(float[] source, int size, float fill = 0.0)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	ResizeFormArray	Form[] ResizeFormArray(Form[] source, int size, Form fill = None)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	ResizeIntArray	int[] ResizeIntArray(int[] source, int size, int fill = 0)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Utility	ResizeStringArray	string[] ResizeStringArray(string[] source, int size, string fill = "")	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Utility.psc
+skse64	Weapon	GetBaseDamage	int GetBaseDamage()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetCritDamage	int GetCritDamage()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetCritEffect	Spell GetCritEffect()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetCritEffectOnDeath	bool GetCritEffectOnDeath()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetCritMultiplier	float GetCritMultiplier()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetEnchantment	Enchantment GetEnchantment()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetEnchantmentValue	int GetEnchantmentValue()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetEquippedModel	Static GetEquippedModel()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetEquipType	EquipSlot GetEquipType()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetIconPath	string GetIconPath()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetMaxRange	float GetMaxRange()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetMessageIconPath	string GetMessageIconPath()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetMinRange	float GetMinRange()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetModelPath	string GetModelPath()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetReach	float GetReach()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetResist	string GetResist()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetSkill	string GetSkill()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetSpeed	float GetSpeed()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetStagger	float GetStagger()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetTemplate	Weapon GetTemplate()	0	1.7.1	whatsnew:1.7.1	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	GetWeaponType	int GetWeaponType()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetBaseDamage	None SetBaseDamage(int damage)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetCritDamage	None SetCritDamage(int damage)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetCritEffect	None SetCritEffect(Spell ce)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetCritEffectOnDeath	None SetCritEffectOnDeath(bool ceod)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetCritMultiplier	None SetCritMultiplier(float crit)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetEnchantment	None SetEnchantment(Enchantment e)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetEnchantmentValue	None SetEnchantmentValue(int value)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetEquippedModel	None SetEquippedModel(Static model)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetEquipType	None SetEquipType(EquipSlot type)	0	1.6.14	whatsnew:1.6.14	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetIconPath	None SetIconPath(string path)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetMaxRange	None SetMaxRange(float maxRange)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetMessageIconPath	None SetMessageIconPath(string path)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetMinRange	None SetMinRange(float minRange)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetModelPath	None SetModelPath(string path)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetReach	None SetReach(float reach)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetResist	None SetResist(string resist)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetSkill	None SetSkill(string skill)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetSpeed	None SetSpeed(float speed)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetStagger	None SetStagger(float stagger)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weapon	SetWeaponType	None SetWeaponType(int type)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weapon.psc
+skse64	Weather	GetFogDistance	float GetFogDistance(bool day, int type)	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weather.psc
+skse64	Weather	GetSunDamage	float GetSunDamage()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weather.psc
+skse64	Weather	GetSunGlare	float GetSunGlare()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weather.psc
+skse64	Weather	GetWindDirection	float GetWindDirection()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weather.psc
+skse64	Weather	GetWindDirectionRange	float GetWindDirectionRange()	0	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/Weather.psc
+skse64	WornObject	CreateEnchantment	None CreateEnchantment(Actor akActor, int handSlot, int slotMask, float maxCharge, MagicEffect[] effects, float[] magnitudes, int[] areas, int[] durations)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	GetDisplayName	string GetDisplayName(Actor akActor, int handSlot, int slotMask)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	GetEnchantment	Enchantment GetEnchantment(Actor akActor, int handSlot, int slotMask)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	GetItemCharge	float GetItemCharge(Actor akActor, int handSlot, int slotMask)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	GetItemHealthPercent	float GetItemHealthPercent(Actor akActor, int handSlot, int slotMask)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	GetItemMaxCharge	float GetItemMaxCharge(Actor akActor, int handSlot, int slotMask)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	GetNthReferenceAlias	ReferenceAlias GetNthReferenceAlias(Actor akActor, int handSlot, int slotMask, int n)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	GetNumReferenceAliases	int GetNumReferenceAliases(Actor akActor, int handSlot, int slotMask)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	GetPoison	Potion GetPoison(Actor akActor, int handSlot, int slotMask)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	GetReferenceAliases	ReferenceAlias[] GetReferenceAliases(Actor akActor, int handSlot, int slotMask)	1	1.7.3	whatsnew:1.7.3	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	SetDisplayName	bool SetDisplayName(Actor akActor, int handSlot, int slotMask, string name, bool force = false)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	SetEnchantment	None SetEnchantment(Actor akActor, int handSlot, int slotMask, Enchantment source, float maxCharge)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	SetItemHealthPercent	None SetItemHealthPercent(Actor akActor, int handSlot, int slotMask, float health)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc
+skse64	WornObject	SetItemMaxCharge	None SetItemMaxCharge(Actor akActor, int handSlot, int slotMask, float maxCharge)	1	1.1.0	first-release	ianpatt/skse64@25b72352adb6:scripts/modified/WornObject.psc

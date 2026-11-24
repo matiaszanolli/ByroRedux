@@ -1,0 +1,123 @@
+family	script	function	signature	global	introduced	introduced_source	source
+showoff	-	AdvanceSeed	(bool) AdvanceSeed numIncrement:UInt	-	first-release	first-release	geckwiki:AdvanceSeed.wiki
+showoff	-	ApplyEasing	(bool) ApplyEasing input:float{0-1 easingFuncName:string easingMode:int{0,1,2	-	1.40	wiki:originVersion	geckwiki:ApplyEasing.wiki
+showoff	-	bOn	(bool) bOn bOn:int	-	1.17	wiki:originVersion	geckwiki:ToggleQuestMessages.wiki
+showoff	-	checkPerks	(int) checkPerks checkPerks:bool checkAssigned:bool	-	1.17	wiki:originVersion	geckwiki:GetLevelUpMenuPoints.wiki
+showoff	-	ClearCinematicTextQueue	(void) ClearCinematicTextQueue	-	1.35	wiki:originVersion	geckwiki:ClearCinematicTextQueue.wiki
+showoff	-	ClearFileCacheShowOff	(bool) ClearFileCacheShowOff filePath:string toClearType:int	-	1.45	wiki:originVersion	geckwiki:ClearFileCacheShowOff.wiki
+showoff	-	ConditionPrint	(1) ConditionPrint	-	first-release	first-release	geckwiki:ConditionPrint.wiki
+showoff	-	CreateFolder	(bool) CreateFolder folderPath:string	-	1.25	wiki:originVersion	geckwiki:CreateFolder.wiki
+showoff	-	DisableAlt	(void) DisableAlt FadeOut:Int	-	1.17	wiki:originVersion	geckwiki:DisableAlt.wiki
+showoff	-	DumpFormList	(void) DumpFormList FormList:baseForm fileName:string bAppend:0/1	-	first-release	first-release	geckwiki:DumpFormList.wiki
+showoff	-	EnableAlt	(void) EnableAlt FadeIn:Int	-	1.17	wiki:originVersion	geckwiki:EnableAlt.wiki
+showoff	-	faction1	(void) faction1 faction1:baseform faction2:baseform F1toF2Flag:int F2toF1Flag:int	-	1.30	wiki:originVersion	geckwiki:SetAllyTemp.wiki
+showoff	-	flagIndex	(0/1) flagIndex flagIndex:int actor:baseForm	-	1.15	wiki:originVersion	geckwiki:ActorHasBaseFlag.wiki
+showoff	-	flags	(0/1) flags flags:int typeCode:int targetContainer:reference exceptionFormlist:baseForm	-	1.15	wiki:originVersion	geckwiki:RemoveAllItemsShowOff.wiki
+showoff	-	ForceWeaponJamAnim	(bool) ForceWeaponJamAnim	-	1.17	wiki:originVersion	geckwiki:ForceWeaponJamAnim.wiki
+showoff	-	GetActorValueDamage	(float) GetActorValueDamage actorValue:statName	-	1.25	wiki:originVersion	geckwiki:GetActorValueDamage.wiki
+showoff	-	GetActorValueName	(string) GetActorValueName actorValue:statName	-	1.50	wiki:originVersion	geckwiki:GetActorValueName.wiki
+showoff	-	GetBaseEquippedWeight	(float) GetBaseEquippedWeight minWeight:float flagsMask:int	-	first-release	first-release	geckwiki:GetBaseEquippedWeight.wiki
+showoff	-	GetCalculatedAPCost	(int) GetCalculatedAPCost whatAttack:int weaponOverride:baseForm	-	1.50	wiki:originVersion	geckwiki:GetCalculatedAPCost.wiki
+showoff	-	GetCalculatedEquippedWeight	(float) GetCalculatedEquippedWeight minWeight:float flagsMask:int	-	first-release	first-release	geckwiki:GetCalculatedEquippedWeight.wiki
+showoff	-	GetCalculatedItemValue	(float) GetCalculatedItemValue accountForBarterChanges:bool	-	1.45	wiki:originVersion	geckwiki:GetCalculatedItemValue.wiki
+showoff	-	GetCalculatedMaxCarryWeight	(float) GetCalculatedMaxCarryWeight	-	first-release	first-release	geckwiki:GetCalculatedMaxCarryWeight.wiki
+showoff	-	GetCellEncounterZone	(baseForm) GetCellEncounterZone	-	1.35	wiki:originVersion	geckwiki:GetCellEncounterZone.wiki
+showoff	-	GetChallengeProgress	(progress:int) GetChallengeProgress challenge:baseForm	-	first-release	first-release	geckwiki:GetChallengeProgress.wiki
+showoff	-	GetCreatureFootWeight	(footWeight:float) GetCreatureFootWeight creatureBase:form	-	first-release	first-release	geckwiki:GetCreatureFootWeight.wiki
+showoff	-	GetCreatureTurningSpeed	(turningSpeed:float) GetCreatureTurningSpeed creatureBase:form	-	first-release	first-release	geckwiki:GetCreatureTurningSpeed.wiki
+showoff	-	GetCrippledLimbsAsBitMask	(int) GetCrippledLimbsAsBitMask healthThreshold:int	-	first-release	first-release	geckwiki:GetCrippledLimbsAsBitMask.wiki
+showoff	-	GetEquippedItemRefForItem	(itemRef:ref) GetEquippedItemRefForItem itemOrFormlist:BaseForm	-	1.30	wiki:originVersion	geckwiki:GetEquippedItemRefForItem.wiki
+showoff	-	GetEquippedItemRefs	(array) GetEquippedItemRefs filterFlags:int	-	1.25	wiki:originVersion	geckwiki:GetEquippedItemRefs.wiki
+showoff	-	GetEquippedItems	(array) GetEquippedItems filterFlags:int	-	first-release	first-release	geckwiki:GetEquippedItems.wiki
+showoff	-	GetEquippedItemsAsBitMask	(int) GetEquippedItemsAsBitMask	-	first-release	first-release	geckwiki:GetEquippedItemsAsBitMask.wiki
+showoff	-	GetEquippedWeapon	(baseForm) GetEquippedWeapon	-	1.50	wiki:originVersion	geckwiki:GetEquippedWeapon.wiki
+showoff	-	GetEquippedWeaponType	(int) GetEquippedWeaponType	-	first-release	first-release	geckwiki:GetEquippedWeaponType.wiki
+showoff	-	GetExplosionRefRadius	(float) GetExplosionRefRadius	-	1.25	wiki:originVersion	geckwiki:GetExplosionRefRadius.wiki
+showoff	-	GetExplosionRefSource	(reference) GetExplosionRefSource	-	1.25	wiki:originVersion	geckwiki:GetExplosionRefSource.wiki
+showoff	-	GetINIFloatOrCreate_Cached	(float) GetINIFloatOrCreate_Cached sectionAndKey:string iniPath:string createValue:float comment:string	-	1.45	wiki:originVersion	geckwiki:GetINIFloatOrCreate Cached.wiki
+showoff	-	GetINIFloatOrDefault_Cached	(float) GetINIFloatOrDefault_Cached sectionAndKey:string iniPath:string defaultValue:Float	-	1.45	wiki:originVersion	geckwiki:GetINIFloatOrDefault Cached.wiki
+showoff	-	GetINIStringOrDefault_Cached	(string) GetINIStringOrDefault_Cached sectionAndKey:string iniPath:string defaultValue:string	-	1.45	wiki:originVersion	geckwiki:GetINIStringOrDefault Cached.wiki
+showoff	-	GetIsPlayerOverencumbered	(isOverencumbered:bool) GetIsPlayerOverencumbered ignoreGodMode:bool	-	1.55	wiki:originVersion	geckwiki:GetIsPlayerOverencumbered.wiki
+showoff	-	GetItemCanHaveHealth	(void) GetItemCanHaveHealth baseItem:baseForm	-	1.35	wiki:originVersion	geckwiki:GetItemCanHaveHealth.wiki
+showoff	-	GetLevelUpMenuCurrentPage	(int) GetLevelUpMenuCurrentPage	-	1.20	wiki:originVersion	geckwiki:GetLevelUpMenuCurrentPage.wiki
+showoff	-	GetNumActorsInRangeFromRef	(numActors:int) GetNumActorsInRangeFromRef maxDistance:float flagsBitMask:int	-	first-release	first-release	geckwiki:GetNumActorsInRangeFromRef.wiki
+showoff	-	GetNumBrokenEquippedItems	(int) GetNumBrokenEquippedItems healthPercThreshold:int flagsMask:int	-	first-release	first-release	geckwiki:GetNumBrokenEquippedItems.wiki
+showoff	-	GetNumCombatActorsFromActor	(numActors:int) GetNumCombatActorsFromActor maxDistance:float flagsBitMask:int	-	first-release	first-release	geckwiki:GetNumCombatActorsFromActor.wiki
+showoff	-	GetNumCrippledLimbs	(int) GetNumCrippledLimbs healthThreshold:int	-	first-release	first-release	geckwiki:GetNumCrippledLimbs.wiki
+showoff	-	GetNumQueuedCornerMessages	(numQueuedMsg:int) GetNumQueuedCornerMessages	-	first-release	first-release	geckwiki:GetNumQueuedCornerMessages.wiki
+showoff	-	GetPCCanFastTravel	(bool) GetPCCanFastTravel	-	1.15	wiki:originVersion	geckwiki:GetPCCanFastTravel.wiki
+showoff	-	GetPCHasScriptedFastTravelOverride	(bool) GetPCHasScriptedFastTravelOverride	-	1.15	wiki:originVersion	geckwiki:GetPCHasScriptedFastTravelOverride.wiki
+showoff	-	GetPCHasSleepWaitOverride	(bool) GetPCHasSleepWaitOverride	-	first-release	first-release	geckwiki:GetPCHasSleepWaitOverride.wiki
+showoff	-	GetPlayerCanPickpocketEquippedItems	(bool) GetPlayerCanPickpocketEquippedItems	-	first-release	first-release	geckwiki:GetPlayerCanPickpocketEquippedItems.wiki
+showoff	-	GetPosArray	(array) GetPosArray	-	1.50	wiki:originVersion	geckwiki:GetPosArray.wiki
+showoff	-	GetRadiationExtraData	(float) GetRadiationExtraData	-	first-release	first-release	geckwiki:GetRadiationExtraData.wiki
+showoff	-	GetRandomizerSeed	(int) GetRandomizerSeed	-	first-release	first-release	geckwiki:GetRandomizerSeed.wiki
+showoff	-	GetRandomPercentSeeded	(int) GetRandomPercentSeeded	-	first-release	first-release	geckwiki:GetRandomPercentSeeded.wiki
+showoff	-	GetShowOffDebugMode	(0/1) GetShowOffDebugMode	-	first-release	first-release	geckwiki:GetShowOffDebugMode.wiki
+showoff	-	GetZoneRespawns	(bool) GetZoneRespawns encounterZone:form	-	1.35	wiki:originVersion	geckwiki:GetZoneRespawns.wiki
+showoff	-	HasINISetting_Cached	(bool) HasINISetting_Cached sectionAndKey:string iniPath:string	-	1.45	wiki:originVersion	geckwiki:HasINISetting Cached.wiki
+showoff	-	includeWhat	(array) includeWhat includeWhat:int	-	1.50	wiki:originVersion	geckwiki:GetCompassTargets.wiki
+showoff	-	ingestible	(form) ingestible ingestible:form	-	1.30	wiki:originVersion	geckwiki:GetIngestibleConsumeSound.wiki
+showoff	-	IsActorAlt	(bool) IsActorAlt baseForm:form	-	1.40	wiki:originVersion	geckwiki:IsActorAlt.wiki
+showoff	-	IsAnimPlayingExCond	(animPlaying:0/1) IsAnimPlayingExCond category:int subType:int	-	first-release	first-release	geckwiki:IsAnimPlayingExCond.wiki
+showoff	-	IsBaseForm	(bool) IsBaseForm refVar:ref	-	first-release	first-release	geckwiki:IsBaseForm.wiki
+showoff	-	IsEquippedWeaponMelee	(isMelee:bool) IsEquippedWeaponMelee	-	first-release	first-release	geckwiki:IsEquippedWeaponMelee.wiki
+showoff	-	IsEquippedWeaponRanged	(isRanged:bool) IsEquippedWeaponRanged	-	first-release	first-release	geckwiki:IsEquippedWeaponRanged.wiki
+showoff	-	IsLimbCrippled	(isCrippled) IsLimbCrippled LimbIndex:int healthThreshold:int	-	first-release	first-release	geckwiki:IsLimbCrippled.wiki
+showoff	-	IsNight	(bool) IsNight climate:baseForm	-	first-release	first-release	geckwiki:IsNight.wiki
+showoff	-	IsOutsideMainThread	(bool) IsOutsideMainThread	-	1.50	wiki:originVersion	geckwiki:IsOutsideMainThread.wiki
+showoff	-	IsReferenceCloned	(0/1) IsReferenceCloned	-	first-release	first-release	geckwiki:IsReferenceCloned.wiki
+showoff	-	IsWeaponMelee	(isMelee:bool) IsWeaponMelee weapon:baseForm	-	first-release	first-release	geckwiki:IsWeaponMelee.wiki
+showoff	-	IsWeaponRanged	(isRanged:bool) IsWeaponRanged weapon:baseForm	-	first-release	first-release	geckwiki:IsWeaponRanged.wiki
+showoff	-	levelOverride	(int) levelOverride levelOverride:int	-	1.20	wiki:originVersion	geckwiki:GetCalculatedPerkPoints.wiki
+showoff	-	ListAddArray	(success:bool) ListAddArray formlist:baseform array:array_var index:int	-	first-release	first-release	geckwiki:ListAddArray.wiki
+showoff	-	ListAddList	(success:bool) ListAddList destinationList:baseform sourceList:baseForm index:int	-	first-release	first-release	geckwiki:ListAddList.wiki
+showoff	-	Matrix ApplyOperationWithScalar	(array) Matrix ApplyOperationWithScalar matrix:array_var operator:string scalar:float	-	1.40	wiki:originVersion	geckwiki:Matrix ApplyOperationWithScalar.wiki
+showoff	-	Matrix3x3_GetQuaternion	(array) Matrix3x3_GetQuaternion 3x3RotationMatrix:array_var	-	1.40	wiki:originVersion	geckwiki:Matrix3x3 GetQuaternion.wiki
+showoff	-	Matrix_ApplyOperationWithMatrix	(array) Matrix_ApplyOperationWithMatrix matrixA:array_var operator:string matrixB:array_var	-	1.40	wiki:originVersion	geckwiki:Matrix ApplyOperationWithMatrix.wiki
+showoff	-	Matrix_Dump	(void) Matrix_Dump matrix:array_var	-	1.40	wiki:originVersion	geckwiki:Matrix Dump.wiki
+showoff	-	Matrix_IsMatrix	(bool) Matrix_IsMatrix array:array_var	-	1.40	wiki:originVersion	geckwiki:Matrix IsMatrix.wiki
+showoff	-	Matrix_Transpose	(array) Matrix_Transpose matrix:array_var	-	1.40	wiki:originVersion	geckwiki:Matrix Transpose.wiki
+showoff	-	maxRange	(numCompassHostiles) maxRange maxRange:float flags:int	-	first-release	first-release	geckwiki:GetNumCompassHostiles.wiki
+showoff	-	ModNumericGameSetting	(success:bool) ModNumericGameSetting settingName:string valueModifier:float	-	first-release	first-release	geckwiki:ModNumericGameSetting.wiki
+showoff	-	ModNumericINISetting	(success:bool) ModNumericINISetting settingName:string valueModifier:float	-	first-release	first-release	geckwiki:ModNumericINISetting.wiki
+showoff	-	newOwner	(bool) newOwner newOwner:form{Default:Player Cell:BaseForm{Default:0	-	1.40	wiki:originVersion	geckwiki:SetOwnershipTemp.wiki
+showoff	-	newSound	(bool) newSound newSound:form ingestible:form	-	1.30	wiki:originVersion	geckwiki:SetIngestibleConsumeSound.wiki
+showoff	-	numPerksOverride	(bool) numPerksOverride numPerksOverride:int menuTitleOverride:string	-	1.20	wiki:originVersion	geckwiki:ShowPerkMenu.wiki
+showoff	-	page	(bool) page page:int	-	1.20	wiki:originVersion	geckwiki:SetLevelUpMenuCurrentPage.wiki
+showoff	-	PlayerHasNightVisionActive	(bool) PlayerHasNightVisionActive	-	first-release	first-release	geckwiki:PlayerHasNightVisionActive.wiki
+showoff	-	PlayerIsDrinkingPlacedWater	(bool) PlayerIsDrinkingPlacedWater	-	first-release	first-release	geckwiki:PlayerIsDrinkingPlacedWater.wiki
+showoff	-	Quaternion_GetMatrix	(array) Quaternion_GetMatrix quaternion:array_var	-	1.40	wiki:originVersion	geckwiki:Quaternion GetMatrix.wiki
+showoff	-	RandSeeded	(int) RandSeeded Minimum:UInt Maximum:UInt	-	first-release	first-release	geckwiki:RandSeeded.wiki
+showoff	-	ReadFromJSON	(anyType) ReadFromJSON filepath:string jsonPointer:string parserMode:int useCache:bool	-	1.45	wiki:originVersion	geckwiki:ReadFromJSON.wiki
+showoff	-	ReloadIniCache	(bool) ReloadIniCache iniPath:string	-	1.45	wiki:originVersion	geckwiki:ReloadIniCache.wiki
+showoff	-	RemoveFormFromFormList	(int) RemoveFormFromFormList formList:baseForm form:baseForm/refr	-	1.35	wiki:originVersion	geckwiki:RemoveFormFromFormList.wiki
+showoff	-	RemoveFormFromLeveledList	(int) RemoveFormFromLeveledList levelledList:baseform formToRemove:baseform	-	1.35	wiki:originVersion	geckwiki:RemoveFormFromLeveledList.wiki
+showoff	-	ResetInteriorAlt	(void) ResetInteriorAlt cellID:baseForm	-	1.45	wiki:originVersion	geckwiki:ResetInteriorAlt.wiki
+showoff	-	SaveCachedIniFile	(bool) SaveCachedIniFile iniPath:string	-	1.45	wiki:originVersion	geckwiki:SaveCachedIniFile.wiki
+showoff	-	SayTo_GetTopic	(baseForm) SayTo_GetTopic	-	1.35	wiki:originVersion	geckwiki:SayTo GetTopic.wiki
+showoff	-	SayTo_GetTopicInfo	(baseForm) SayTo_GetTopicInfo	-	1.35	wiki:originVersion	geckwiki:SayTo GetTopicInfo.wiki
+showoff	-	SetCreatureBaseScale	(success:bool) SetCreatureBaseScale newVal:float creatureBase:form	-	first-release	first-release	geckwiki:SetCreatureBaseScale.wiki
+showoff	-	SetCreatureFootWeight	(success:bool) SetCreatureFootWeight newVal:float creatureBase:form	-	first-release	first-release	geckwiki:SetCreatureFootWeight.wiki
+showoff	-	SetCreatureReach	(success:bool) SetCreatureReach newVal:int creatureBase:form	-	first-release	first-release	geckwiki:SetCreatureReach.wiki
+showoff	-	SetCreatureTurningSpeed	(success:bool) SetCreatureTurningSpeed newVal:float creatureBase:form	-	first-release	first-release	geckwiki:SetCreatureTurningSpeed.wiki
+showoff	-	SetEnableParent	(void) SetEnableParent newParent:reference	-	1.50	wiki:originVersion	geckwiki:SetEnableParent.wiki
+showoff	-	SetExplosionRefRadius	(bool) SetExplosionRefRadius newRadius:float	-	1.25	wiki:originVersion	geckwiki:SetExplosionRefRadius.wiki
+showoff	-	SetExplosionRefSource	(bool) SetExplosionRefSource newSource:actorRef	-	1.25	wiki:originVersion	geckwiki:SetExplosionRefSource.wiki
+showoff	-	SetINIInteger_Cached	(int) SetINIInteger_Cached sectionAndKey:string newValue:int iniPath:string comment:string	-	1.50	wiki:originVersion	geckwiki:SetINIInteger Cached.wiki
+showoff	-	SetINIValue_Cached	(int) SetINIValue_Cached sectionAndKey:string newValue:stringOrFloat iniPath:string comment:string	-	1.45	wiki:originVersion	geckwiki:SetINIValue Cached.wiki
+showoff	-	SetIsPCAMurderer	(void) SetIsPCAMurderer isMurderer:0/1	-	first-release	first-release	geckwiki:SetIsPCAMurderer.wiki
+showoff	-	SetPCHasSleepWaitOverride	(void) SetPCHasSleepWaitOverride	-	first-release	first-release	geckwiki:SetPCHasSleepWaitOverride.wiki
+showoff	-	SetPlayerCanPickpocketEquippedItems	(none) SetPlayerCanPickpocketEquippedItems bOn:0/1	-	first-release	first-release	geckwiki:SetPlayerCanPickpocketEquippedItems.wiki
+showoff	-	SetRadiationExtraData	(bool) SetRadiationExtraData newVal:float	-	first-release	first-release	geckwiki:SetRadiationExtraData.wiki
+showoff	-	SetRandomizerSeed	(void) SetRandomizerSeed seedValue:UInt	-	first-release	first-release	geckwiki:SetRandomizerSeed.wiki
+showoff	-	SetSeedUsingForm	(void) SetSeedUsingForm seedForm:anyForm	-	first-release	first-release	geckwiki:SetSeedUsingForm.wiki
+showoff	-	SetShowOffDebugMode	(void) SetShowOffDebugMode isDebugEnabled:int	-	first-release	first-release	geckwiki:SetShowOffDebugMode.wiki
+showoff	-	SetShowOffOnCornerMessageEventHandler	(void) SetShowOffOnCornerMessageEventHandler setORremove:1/0 handlerScript:ref flag:int	-	1.25	wiki:originVersion	geckwiki:SetShowOffOnCornerMessageEventHandler.wiki
+showoff	-	SetWeaponFlag	(0/1) SetWeaponFlag flagIndex:int bFlagOn:bool weapon:baseForm	-	1.40	wiki:originVersion	geckwiki:SetWeaponFlag.wiki
+showoff	-	ShowPauseMenu	(void) ShowPauseMenu pauseMode:int{Default:0	-	1.35	wiki:originVersion	geckwiki:ShowPauseMenu.wiki
+showoff	-	TopicInfoGetResponseStrings	(array) TopicInfoGetResponseStrings TopicInfo:form	-	1.30	wiki:originVersion	geckwiki:TopicInfoGetResponseStrings.wiki
+showoff	-	TopicInfoSetNthResponseString	(bool) TopicInfoSetNthResponseString TopicInfo:form responseIndex:int newString:string_var	-	1.31	wiki:originVersion	geckwiki:TopicInfoSetNthResponseString.wiki
+showoff	-	TopicInfoSetResponseStrings	(bool) TopicInfoSetResponseStrings TopicInfo:form newStrings:array	-	1.30	wiki:originVersion	geckwiki:TopicInfoSetResponseStrings.wiki
+showoff	-	UnequipItems	(void) UnequipItems flagsMask:int noEquip:int hideMessage:int triggerOnUnequip:int	-	first-release	first-release	geckwiki:UnequipItems.wiki
+showoff	-	WriteToJSON	(bool) WriteToJSON toWrite:anyType filepath:string jsonPointer:string parserMode:int useCache:bool saveFile:bool	-	1.45	wiki:originVersion	geckwiki:WriteToJSON.wiki

@@ -1,0 +1,183 @@
+family	script	function	signature	global	introduced	introduced_source	source
+sup	-	Ar_GetRandomKey	(iKey:int) Ar_GetRandomKey myArr:array	-	first-release	first-release	geckwiki:Ar GetRandomKey.wiki
+sup	-	Ar_GetRandomKeyMap	(sKey:string) Ar_GetRandomKeyMap myArr:array	-	first-release	first-release	geckwiki:Ar GetRandomKeyMap.wiki
+sup	-	Ar_HasInvalidRefs	(iHasBadRefs:int) Ar_HasInvalidRefs myArr:array Array Dimension:int	-	first-release	first-release	geckwiki:Ar HasInvalidRefs.wiki
+sup	-	Ar_SetFloatsFrom	(void) Ar_SetFloatsFrom myArr:array f1:float f2:float f3:float f4:float f5:float f6:float f7:float f8:float f9:float f10:float	-	first-release	first-release	geckwiki:Ar SetFloatsFrom.wiki
+sup	-	CallFunctionNextFrame	(void) CallFunctionNextFrame UDF:script inFrames:int iRemoveOnGameLoad:int	-	first-release	first-release	geckwiki:CallFunctionNextFrame.wiki
+sup	-	CaptureScreenshot	(void) CaptureScreenshot File:string Format:int	-	first-release	first-release	geckwiki:CaptureScreenshot.wiki
+sup	-	CaptureScreenshotAlt	(void) CaptureScreenshotAlt Folder:string File:string XStart:float XEnd:float YStart:float YEnd:float Format:int Use Game Res:int Image Quality:int DrawElements:array	-	first-release	first-release	geckwiki:CaptureScreenshotAlt.wiki
+sup	-	ClipboardToString	(clipboard text:string) ClipboardToString	-	first-release	first-release	geckwiki:ClipboardToString.wiki
+sup	-	DebugTextCreate	(void) DebugTextCreate DebugTextName:string PosX:float PosY:float Text:string	-	first-release	first-release	geckwiki:DebugTextCreate.wiki
+sup	-	DebugTextDestroy	(void) DebugTextDestroy DebugTextName:string	-	first-release	first-release	geckwiki:DebugTextDestroy.wiki
+sup	-	DebugTextExists	(iExists:int) DebugTextExists DebugTextName:string	-	first-release	first-release	geckwiki:DebugTextExists.wiki
+sup	-	DebugTextSetPos	(void) DebugTextSetPos DebugTextName:string PosX:float PosY:float	-	first-release	first-release	geckwiki:DebugTextSetPos.wiki
+sup	-	DebugTextSetString	(void) DebugTextSetString DebugTextName:string Text:string	-	first-release	first-release	geckwiki:DebugTextSetString.wiki
+sup	-	DebugTextSetZoom	(void) DebugTextSetZoom DebugTextName:string Zoom:float	-	first-release	first-release	geckwiki:DebugTextSetZoom.wiki
+sup	-	DeleteScreenshot	(void) DeleteScreenshot Folder:string File:string	-	first-release	first-release	geckwiki:DeleteScreenshot.wiki
+sup	-	DrawGraphicsToDDSTextureAndSave	(void) DrawGraphicsToDDSTextureAndSave Folder:string File:string Multidimensional Array:array Width:int Height:int	-	first-release	first-release	geckwiki:DrawGraphicsToDDSTextureAndSave.wiki
+sup	-	DumpLoadOrder	(void) DumpLoadOrder	-	first-release	first-release	geckwiki:DumpLoadOrder.wiki
+sup	-	DumpTileInfo	(void) DumpTileInfo DumpToFile:int ComponentPath:string	-	first-release	first-release	geckwiki:DumpTileInfo.wiki
+sup	-	DumpTileInfoALL	(void) DumpTileInfoALL DumpToFile:int	-	first-release	first-release	geckwiki:DumpTileInfoAll.wiki
+sup	-	DumpTileInfoToArray	(Child traits:array_var) DumpTileInfoToArray ComponentPath:string	-	first-release	first-release	geckwiki:DumpTileInfoToArray.wiki
+sup	-	ExcelArrayFromFile	(FromFile:array_var) ExcelArrayFromFile filepath:string WorksheetID:int Row_or_Column_Number:int Read_row(0/1):int	-	first-release	first-release	geckwiki:ExcelArrayFromFile.wiki
+sup	-	ExcelArrayToFile	(iSuccess:int) ExcelArrayToFile filepath:string WorksheetID:int StartRow:int StartColumn:int myArr:array Horizontal(0/1):int	-	first-release	first-release	geckwiki:ExcelArrayToFile.wiki
+sup	-	ExcelEraseCell	(iSuccess:int) ExcelEraseCell filepath:string WorksheetID:int Row:int Column:int	-	first-release	first-release	geckwiki:ExcelEraseCell.wiki
+sup	-	ExcelEraseSheet	(iSuccess:int) ExcelEraseSheet filepath:string WorksheetID:int	-	first-release	first-release	geckwiki:ExcelEraseSheet.wiki
+sup	-	ExcelGetCellValueType	(iType:int) ExcelGetCellValueType filepath:string WorksheetID:int Row:int Column:int	-	first-release	first-release	geckwiki:ExcelGetCellValueType.wiki
+sup	-	ExcelGetColCount	(iCount:int) ExcelGetColCount filepath:string WorksheetID:int	-	first-release	first-release	geckwiki:ExcelGetColCount.wiki
+sup	-	ExcelGetRowCount	(iCount:int) ExcelGetRowCount filepath:string WorksheetID:int	-	first-release	first-release	geckwiki:ExcelGetRowCount.wiki
+sup	-	ExcelGetWorkSheetCount	(iCount:int) ExcelGetWorkSheetCount filepath:string	-	first-release	first-release	geckwiki:ExcelGetWorkSheetCount.wiki
+sup	-	ExcelReadFloat	(fValue:float) ExcelReadFloat filepath:string WorksheetID:int Row:int Column:int	-	first-release	first-release	geckwiki:ExcelReadFloat.wiki
+sup	-	ExcelReadString	(Value:string) ExcelReadString filepath:string WorksheetID:int Row:int Column:int	-	first-release	first-release	geckwiki:ExcelReadString.wiki
+sup	-	ExcelSetSheetName	(Name:string) ExcelSetSheetName filepath:string WorksheetID:int Name:string	-	first-release	first-release	geckwiki:ExcelSetSheetName.wiki
+sup	-	ExcelWriteFloat	(iSuccess:int) ExcelWriteFloat filepath:string WorksheetID:int Row:int Column:int Value:float	-	first-release	first-release	geckwiki:ExcelWriteFloat.wiki
+sup	-	ExcelWriteString	(iSuccess:int) ExcelWriteString filepath:string WorksheetID:int Row:int Column:int Value:string	-	first-release	first-release	geckwiki:ExcelWriteString.wiki
+sup	-	FakeMouseMovement	(void) FakeMouseMovement fX:float fY:float	-	first-release	first-release	geckwiki:FakeMouseMovement.wiki
+sup	-	FindClosestActor	(Actor:ref) FindClosestActor PosX:float PosY:float PosZ:float includeDead:int includeTeammates:int fDistance:float	-	first-release	first-release	geckwiki:FindClosestActor.wiki
+sup	-	FindClosestActorFromRef	(Actor:ref) FindClosestActorFromRef includeDead:int includeTeammates:int fDistance:float	-	first-release	first-release	geckwiki:FindClosestActorFromRef.wiki
+sup	-	FindRandomActor	(Actor:ref) FindRandomActor PosX:float PosY:float PosZ:float includeDead:int includeTeammates:int fDistance:float	-	first-release	first-release	geckwiki:FindRandomActor.wiki
+sup	-	FindRandomActorFromRef	(Actor:ref) FindRandomActorFromRef includeDead:int includeTeammates:int fDistance:float	-	first-release	first-release	geckwiki:FindRandomActorFromRef.wiki
+sup	-	GetCalculatedAngleXForTFCCamera	(Angle:float) GetCalculatedAngleXForTFCCamera fXin:float fYin:float fZin:float	-	first-release	first-release	geckwiki:GetCalculatedAngleXForTFCCamera.wiki
+sup	-	GetCalculatedAngleZForTFCCamera	(Angle:float) GetCalculatedAngleZForTFCCamera fXin:float fYin:float	-	first-release	first-release	geckwiki:GetCalculatedAngleZForTFCCamera.wiki
+sup	-	GetCalculatedPos	(void) GetCalculatedPos fAngle:float fDistance:float xOut:float yOut:float	-	first-release	first-release	geckwiki:GetCalculatedPos.wiki
+sup	-	GetCalculatedPosAlt	(void) GetCalculatedPosAlt fAngle:float fDistance:float xOut:float yOut:float xIn:float yIn:float	-	first-release	first-release	geckwiki:GetCalculatedPosAlt.wiki
+sup	-	GetCurrentQuestObjectiveTeleportLinksAlt	(array) GetCurrentQuestObjectiveTeleportLinksAlt	-	first-release	first-release	geckwiki:GetCurrentQuestObjectiveTeleportLinksAlt.wiki
+sup	-	GetCursorTrait	(fValue:float) GetCursorTrait iTrait:int	-	first-release	first-release	geckwiki:GetCursorTrait.wiki
+sup	-	GetDistanceBetweenPoints	(Distance:float) GetDistanceBetweenPoints x1:float y1:float z1:float x2:float y2:float z2:float	-	first-release	first-release	geckwiki:GetDistanceBetweenPoints.wiki
+sup	-	GetFileSize	(fValue:float) GetFileSize filepath:string	-	first-release	first-release	geckwiki:GetFileSize.wiki
+sup	-	GetFileTime	(Filetime:Array) GetFileTime filepath:string Request(0-2):int	-	first-release	first-release	geckwiki:GetFileTime.wiki
+sup	-	GetFileTimeSTR	(Filetime:String) GetFileTimeSTR filepath:string Request(0-2):int iDataOutPutType(0-1):int	-	first-release	first-release	geckwiki:GetFileTimeSTR.wiki
+sup	-	GetFontTrait	(fValue:float) GetFontTrait iFont:int iTrait:int	-	first-release	first-release	geckwiki:GetFontTrait.wiki
+sup	-	GetGitHubLatestReleaseTag	(tag:String) GetGitHubLatestReleaseTag GitHubRepoPath:string	-	first-release	first-release	geckwiki:GetGitHubLatestReleaseTag.wiki
+sup	-	GetGrenadeTimeHeld	(fGetGrenadeTime:float) GetGrenadeTimeHeld	-	first-release	first-release	geckwiki:GetGrenadeTimeHeld.wiki
+sup	-	GetHeadingAngleAlt	(float) GetHeadingAngleAlt CallerPosX:float CallerPosY:float CallerAngleZ:float ObjectRef:ref	-	first-release	first-release	geckwiki:GetHeadingAngleAlt.wiki
+sup	-	GetHeadingAngleBetweenPoints	(float) GetHeadingAngleBetweenPoints CallPosX:float CallPosY:float CallAngleZ:float TargetX:float TargetY:float	-	first-release	first-release	geckwiki:GetHeadingAngleBetweenPoints.wiki
+sup	-	GetHUDVisibilityFlags	(iVisFlags:int) GetHUDVisibilityFlags	-	first-release	first-release	geckwiki:GetHUDVisibilityFlags.wiki
+sup	-	GetLoadedSaveSize	(fValue:float) GetLoadedSaveSize iFileType:int	-	first-release	first-release	geckwiki:GetLoadedSaveSize.wiki
+sup	-	GetLockPickMenuValue	(Value:float) GetLockPickMenuValue iRequest:int	-	first-release	first-release	geckwiki:GetLockPickMenuValue.wiki
+sup	-	GetModTraitSTR	(Trait:string) GetModTraitSTR iModIndex:int iTrait:int	-	first-release	first-release	geckwiki:GetModTraitSTR.wiki
+sup	-	GetMouseMovement	(void) GetMouseMovement fPosX:float fPosY:float iRequest:int	-	first-release	first-release	geckwiki:GetMouseMovement.wiki
+sup	-	GetMousePosition	(void) GetMousePosition fPosX:float fPosY:float	-	first-release	first-release	geckwiki:GetMousePosition.wiki
+sup	-	GetMouseWheelMovement	(iWheelScroll:int) GetMouseWheelMovement iTrait:int	-	first-release	first-release	geckwiki:GetMouseWheelMovement.wiki
+sup	-	GetNearCells	(Near_cells:array_var) GetNearCells Depth:int	-	first-release	first-release	geckwiki:GetNearCells.wiki
+sup	-	GetNearMapMarkers	(Near_map markers:array_var) GetNearMapMarkers Depth:int	-	first-release	first-release	geckwiki:GetNearMapMarkers.wiki
+sup	-	GetNexusModVersion	(Mod Version:String) GetNexusModVersion iNexusModID:int	-	first-release	first-release	geckwiki:GetNexusModVersion.wiki
+sup	-	GetNexusModVersionAPI	(Mod Version:String) GetNexusModVersionAPI iNexusModID:int	-	first-release	first-release	geckwiki:GetNexusModVersionAPI.wiki
+sup	-	GetNexusModVersionMulti	(Mod Versions:Array) GetNexusModVersionMulti IDs_Array:array	-	first-release	first-release	geckwiki:GetNexusModVersionMulti.wiki
+sup	-	GetNifBlockNumVerticles	(int:Num verticles) GetNifBlockNumVerticles blockName:string pcModel:1/2	-	first-release	first-release	geckwiki:GetNifBlockNumVerticles.wiki
+sup	-	GetNVSEOnlineVersion	(Version:int) GetNVSEOnlineVersion	-	first-release	first-release	geckwiki:GetNVSEOnlineVersion.wiki
+sup	-	GetPastebinRawTextArray	(Text:Array) GetPastebinRawTextArray paste_key:string	-	first-release	first-release	geckwiki:GetPastebinRawTextArray.wiki
+sup	-	GetPastebinRawTextString	(Text:String) GetPastebinRawTextString paste_key:string	-	first-release	first-release	geckwiki:GetPastebinRawTextString.wiki
+sup	-	GetPCTrait	(fValue:float) GetPCTrait iTrait:int	-	first-release	first-release	geckwiki:GetPCTrait.wiki
+sup	-	GetSavedSaveSize	(fValue:float) GetSavedSaveSize iFileType:int	-	first-release	first-release	geckwiki:GetSavedSaveSize.wiki
+sup	-	GetSaveName	(filename:string) GetSaveName iFileType:int	-	first-release	first-release	geckwiki:GetSaveName.wiki
+sup	-	GetScreenTrait	(fValue:float) GetScreenTrait iTrait:int	-	first-release	first-release	geckwiki:GetScreenTrait.wiki
+sup	-	GetSUPVersion	(void) GetSUPVersion :	-	first-release	first-release	geckwiki:GetSUPVersion.wiki
+sup	-	GetTFCAngle	(angle:float) GetTFCAngle axis:X/Y	-	first-release	first-release	geckwiki:GetTFCAngle.wiki
+sup	-	GetTFCAngleEx	(void) GetTFCAngleEx fAngleX:float fAngleZ:float	-	first-release	first-release	geckwiki:GetTFCAngleEx.wiki
+sup	-	GetTFCPos	(angle:float) GetTFCPos axis:X/Y/Z	-	first-release	first-release	geckwiki:GetTFCPos.wiki
+sup	-	GetTFCPosEx	(void) GetTFCPosEx fPosX:float fPosY:float fPosZ:float	-	first-release	first-release	geckwiki:GetTFCPosEx.wiki
+sup	-	GetTFCRot	(angle:float) GetTFCRot axis:X/Y	-	first-release	first-release	geckwiki:GetTFCRot.wiki
+sup	-	GetTFCRotEx	(void) GetTFCRotEx fRotX:float fRotY:float	-	first-release	first-release	geckwiki:GetTFCRotEx.wiki
+sup	-	GetUIElementType	(int) GetUIElementType ComponentPath:string	-	first-release	first-release	geckwiki:GetUIElementType.wiki
+sup	-	GetUIFloatGradualActiveForTile	(int) GetUIFloatGradualActiveForTile ComponentPath:string	-	first-release	first-release	geckwiki:GetUIFloatGradualActiveForTile.wiki
+sup	-	GetUIFloatGradualActiveForTileTrait	(int) GetUIFloatGradualActiveForTileTrait ComponentPath:string	-	first-release	first-release	geckwiki:GetUIFloatGradualActiveForTileTrait.wiki
+sup	-	GetUIFloatGradualMode	(int) GetUIFloatGradualMode ComponentPath:string	-	first-release	first-release	geckwiki:GetUIFloatGradualMode.wiki
+sup	-	GetUIFloatGradualTimer	(float) GetUIFloatGradualTimer ComponentPath:string iTimeRemaining:int	-	first-release	first-release	geckwiki:GetUIFloatGradualTimer.wiki
+sup	-	GetUIValueType	(int) GetUIValueType ComponentPath:string	-	first-release	first-release	geckwiki:GetUIValueType.wiki
+sup	-	GetUserWindowsLanguage	(Language:string) GetUserWindowsLanguage	-	first-release	first-release	geckwiki:GetUserWindowsLanguage.wiki
+sup	-	GetWindowsFonts	(fonts:array_var) GetWindowsFonts	-	first-release	first-release	geckwiki:GetWindowsFonts.wiki
+sup	-	HudBarCreate	(success:bool) HudBarCreate barName:string xPos:float yPos:float Type:int	-	first-release	first-release	geckwiki:HudBarCreate.wiki
+sup	-	HudBarDestroy	(void) HudBarDestroy barName:string	-	first-release	first-release	geckwiki:HudBarDestroy.wiki
+sup	-	HudBarDestroyAllBars	(void) HudBarDestroyAllBars	-	first-release	first-release	geckwiki:HudBarDestroyAllBars.wiki
+sup	-	HudBarExists	(exists:bool) HudBarExists barName:string	-	first-release	first-release	geckwiki:HudBarExists.wiki
+sup	-	HudBarGetAllBars	(AllBars:array_var) HudBarGetAllBars OutputAllbars:int	-	first-release	first-release	geckwiki:HudBarGetAllBars.wiki
+sup	-	HudBarGetBarTrait	(Value:float) HudBarGetBarTrait barName:string Trait:int iModIndex:int	-	first-release	first-release	geckwiki:HudBarGetBarTrait.wiki
+sup	-	HudBarGetDebugInfo	(void) HudBarGetDebugInfo barName:string	-	first-release	first-release	geckwiki:HudBarGetDebugInfo.wiki
+sup	-	HudBarGetDebugInfoAll	(void) HudBarGetDebugInfoAll barName:string	-	first-release	first-release	geckwiki:HudBarGetDebugInfoAll.wiki
+sup	-	HudBarGetElementUIPath	(success:int) HudBarGetElementUIPath barName:string iElement:int	-	first-release	first-release	geckwiki:HudBarGetElementUIPath.wiki
+sup	-	HudBarGetVisible	(success:int) HudBarGetVisible barName:string iElement:int iModIndex:int	-	first-release	first-release	geckwiki:HudBarGetVisible.wiki
+sup	-	HudBarSetAlpha	(success:int) HudBarSetAlpha barName:string iElement:int fAlphaValue:float	-	first-release	first-release	geckwiki:HudBarSetAlpha.wiki
+sup	-	HudBarSetAutoPos	(void) HudBarSetAutoPos barName:string iRequest:int	-	first-release	first-release	geckwiki:HudBarSetAutoPos.wiki
+sup	-	HudBarSetBarTrait	(success:int) HudBarSetBarTrait barName:string Trait:int Value:float/int	-	first-release	first-release	geckwiki:HudBarSetBarTrait.wiki
+sup	-	HudBarSetColor	(success:int) HudBarSetColor barName:string iElement:int Red:float Green:float Blue:float	-	first-release	first-release	geckwiki:HudBarSetColor.wiki
+sup	-	HudBarSetDepth	(success:int) HudBarSetDepth barName:string iElement:int fDepthValue:float	-	first-release	first-release	geckwiki:HudBarSetDepth.wiki
+sup	-	HudBarSetFormList	(success:int) HudBarSetFormList barName:string ItemFormList:form	-	first-release	first-release	geckwiki:HudBarSetFormList.wiki
+sup	-	HudBarSetIndent	(success:int) HudBarSetIndent barName:string iElement:int fZoomValue:float	-	first-release	first-release	geckwiki:HudBarSetIndent.wiki
+sup	-	HudBarSetItem	(success:int) HudBarSetItem barName:string ItemBaseForm:form	-	first-release	first-release	geckwiki:HudBarSetItem.wiki
+sup	-	HudBarSetMeterTrait	(success:int) HudBarSetMeterTrait barName:string Trait:int Value:float/int	-	first-release	first-release	geckwiki:HudBarSetMeterTrait.wiki
+sup	-	HudBarSetPos	(success:int) HudBarSetPos barName:string iElement:int fPosX:float fPosY:float	-	first-release	first-release	geckwiki:HudBarSetPos.wiki
+sup	-	HudBarSetRotation	(success:int) HudBarSetRotation barName:string iElement:int iRotationType:int fRotationValue:float	-	first-release	first-release	geckwiki:HudBarSetRotation.wiki
+sup	-	HudBarSetSize	(success:int) HudBarSetSize barName:string iElement:int fWidth:float fHeight:float	-	first-release	first-release	geckwiki:HudBarSetSize.wiki
+sup	-	HudBarSetSizeAlt	(success:int) HudBarSetSizeAlt barName:string iElement:int fWidth:float fHeight:float	-	first-release	first-release	geckwiki:HudBarSetSizeAlt.wiki
+sup	-	HudBarSetSystemColor	(success:int) HudBarSetSystemColor barName:string iElement:int SystemColor:float	-	first-release	first-release	geckwiki:HudBarSetSystemColor.wiki
+sup	-	HudBarSetTextString	(success:int) HudBarSetTextString barName:string iElement:int Text:string	-	first-release	first-release	geckwiki:HudBarSetTextString.wiki
+sup	-	HudBarSetTextTrait	(success:int) HudBarSetTextTrait barName:string iElement:int iTrait:int fValue:float	-	first-release	first-release	geckwiki:HudBarSetTextTrait.wiki
+sup	-	HudBarSetTexture	(success:int) HudBarSetTexture barName:string iElement:int TexturePath:string iCalculateSize:int	-	first-release	first-release	geckwiki:HudBarSetTexture.wiki
+sup	-	HudBarSetValueFloat	(success:int) HudBarSetValueFloat barName:string MaxValue:float	-	first-release	first-release	geckwiki:HudBarSetValueFloat.wiki
+sup	-	HudBarSetValueMax	(success:int) HudBarSetValueMax barName:string MaxValue:float	-	first-release	first-release	geckwiki:HudBarSetValueMax.wiki
+sup	-	HudBarSetValuePercentage	(success:int) HudBarSetValuePercentage barName:string fPercentage:float	-	first-release	first-release	geckwiki:HudBarSetValuePercentage.wiki
+sup	-	HudBarSetValueScriptVar	(success:int) HudBarSetValueScriptVar barName:string ScriptVariable:float/int iCalculateValueMax:int	-	first-release	first-release	geckwiki:HudBarSetValueScriptVar.wiki
+sup	-	HudBarSetValueUDF	(success:int) HudBarSetValueUDF barName:string myUDF:script iCalculateValueMax:int FunctionCaller:reference	-	first-release	first-release	geckwiki:HudBarSetValueUDF.wiki
+sup	-	HudBarSetVisible	(success:int) HudBarSetVisible barName:string iElement:int iVisible:int	-	first-release	first-release	geckwiki:HudBarSetVisible.wiki
+sup	-	HudBarSetZoom	(success:int) HudBarSetZoom barName:string iElement:int fZoomValue:float	-	first-release	first-release	geckwiki:HudBarSetZoom.wiki
+sup	-	HudBarShowBar	(success:bool) HudBarShowBar barName:string Show(0/1):int	-	first-release	first-release	geckwiki:HudBarShowBar.wiki
+sup	-	IsNexusAPIKeyValid	(isValud:bool) IsNexusAPIKeyValid	-	first-release	first-release	geckwiki:IsNexusAPIKeyValid.wiki
+sup	-	IsNifBlockInterpolated	(success:bool) IsNifBlockInterpolated blockName:string type:int FirstPersonModel_PlayerOnly:int	-	first-release	first-release	geckwiki:IsNifBlockInterpolated.wiki
+sup	-	IsNumberNAN	(isNan:int) IsNumberNAN fValue:float	-	first-release	first-release	geckwiki:IsNumberNAN.wiki
+sup	-	IsPlayerOverencumbered	(isOverencumbered:int) IsPlayerOverencumbered	-	first-release	first-release	geckwiki:IsPlayerOverencumbered.wiki
+sup	-	IsProgramRunning	(isRunning:int) IsProgramRunning Program name:string	-	first-release	first-release	geckwiki:IsProgramRunning.wiki
+sup	-	IsScriptMarkedOnLoad	(int) IsScriptMarkedOnLoad ScriptForm:script	-	first-release	first-release	geckwiki:IsScriptMarkedOnLoad.wiki
+sup	-	JSONGetValue	(JSONValue:array_var) JSONGetValue FilePath:string key:string iCached:int	-	first-release	first-release	geckwiki:JSONGetValue.wiki
+sup	-	JSONIsFileValid	(result:int) JSONIsFileValid FilePath:string	-	first-release	first-release	geckwiki:JSONIsFileValid.wiki
+sup	-	KillAll2	(void) KillAll2 :	-	first-release	first-release	geckwiki:KillAll2.wiki
+sup	-	MarkScriptOnLoad	(int) MarkScriptOnLoad	-	first-release	first-release	geckwiki:MarkScriptOnLoad.wiki
+sup	-	NifBlockGetVerticles	(Verticles:array_var) NifBlockGetVerticles blockName:string pcModel:1/2	-	first-release	first-release	geckwiki:NifBlockGetVerticles.wiki
+sup	-	NifBlockInterpolateRotation	(success:bool) NifBlockInterpolateRotation block name:string Start Value X:float Start Value Y:float Start Value Z:float End Value X:float End Value Y:float End Value Z:float timer:float mode:int FirstPersonModel(Player only):int CalculateStartValue:int	-	first-release	first-release	geckwiki:NifBlockInterpolateRotation.wiki
+sup	-	NifBlockInterpolateScale	(success:bool) NifBlockInterpolateScale block name:string Start Value:float End Value:float timer:float mode:int FirstPersonModel(Player only):int CalculateStartValue:int	-	first-release	first-release	geckwiki:NifBlockInterpolateScale.wiki
+sup	-	NifBlockInterpolateSetTrait	(success:bool) NifBlockInterpolateSetTrait trait:int value:float block name:string type:int FirstPersonModel(Player only):int	-	first-release	first-release	geckwiki:NifBlockInterpolateSetTrait.wiki
+sup	-	NifBlockInterpolateStop	(success:bool) NifBlockInterpolateStop blockName:string type:int FirstPersonModel_PlayerOnly:int	-	first-release	first-release	geckwiki:NifBlockInterpolateStop.wiki
+sup	-	NifBlockInterpolateTranslation	(success:bool) NifBlockInterpolateTranslation block name:string Start Value X:float Start Value Y:float Start Value Z:float End Value X:float End Value Y:float End Value Z:float timer:float mode:int iGetWorld:int FirstPersonModel(Player only):int CalculateStartValue:int	-	first-release	first-release	geckwiki:NifBlockInterpolateTranslation.wiki
+sup	-	NumberToWords	(Result:String) NumberToWords Number:int	-	first-release	first-release	geckwiki:NumberToWords.wiki
+sup	-	OpenFileDialogBox	(FilePath:string) OpenFileDialogBox UDF:script File extension:string	-	first-release	first-release	geckwiki:OpenFileDialogBox.wiki
+sup	-	OpenFolder	(void) OpenFolder Folder path:string	-	first-release	first-release	geckwiki:OpenFolder.wiki
+sup	-	OpenFolderDialogBox	(FilePath:string) OpenFolderDialogBox UDF:script	-	first-release	first-release	geckwiki:OpenFolderDialogBox.wiki
+sup	-	OpenNexusModPage	(void) OpenNexusModPage iModID:int	-	first-release	first-release	geckwiki:OpenNexusModPage.wiki
+sup	-	OpenNexusUserPage	(void) OpenNexusUserPage iNexusUserID:int	-	first-release	first-release	geckwiki:OpenNexusUserPage.wiki
+sup	-	ReadINIFloatFromFile	(fValue:float) ReadINIFloatFromFile filepath:string Section:string Setting:string	-	first-release	first-release	geckwiki:ReadINIFloatFromFile.wiki
+sup	-	ReadINIFloatFromFileAlt	(fValue:float) ReadINIFloatFromFileAlt filepath:string Section:string Value:string	-	first-release	first-release	geckwiki:ReadINIFloatFromFileAlt.wiki
+sup	-	ReadINISectionKeysFromFile	(ar_INIKeys:array_var) ReadINISectionKeysFromFile "File path":string "Section Name":string	-	first-release	first-release	geckwiki:ReadINISectionKeysFromFile.wiki
+sup	-	ReadINISectionsFromFile	(ar_INISections:array_var) ReadINISectionsFromFile "File path":string	-	first-release	first-release	geckwiki:ReadINISectionsFromFile.wiki
+sup	-	ReadINIStringFromFile	(sResult:String) ReadINIStringFromFile filepath:string Section:string Value:string	-	first-release	first-release	geckwiki:ReadINIStringFromFile.wiki
+sup	-	RemoveSUPOnInterpolateFinishEvent	(void) RemoveSUPOnInterpolateFinishEvent UDF:script	-	first-release	first-release	geckwiki:RemoveSUPOnInterpolateFinishEvent.wiki
+sup	-	Round	(fValue:float) Round fValue:float	-	first-release	first-release	geckwiki:Round.wiki
+sup	-	RoundAlt	(fValue:float) RoundAlt fValue:float Precision:int Round:int	-	first-release	first-release	geckwiki:RoundAlt.wiki
+sup	-	SetBobbyPinHealth	(Health:float) SetBobbyPinHealth fHealth:float	-	first-release	first-release	geckwiki:SetBobbyPinHealth.wiki
+sup	-	SetCaughtPCPickpocketting	(isCaught:int) SetCaughtPCPickpocketting iCaught:int	-	first-release	first-release	geckwiki:SetCaughtPCPickpocketting.wiki
+sup	-	SetCursorTrait	(void) SetCursorTrait iTrait:int	-	first-release	first-release	geckwiki:SetCursorTrait.wiki
+sup	-	SetCursorTraitGradual	(void) SetCursorTraitGradual iTrait:int startValue:float endValue:float duration:float changeMode:int	-	first-release	first-release	geckwiki:SetCursorTraitGradual.wiki
+sup	-	SetHUDVisibilityFlags	(void) SetHUDVisibilityFlags iVisFlags:int	-	first-release	first-release	geckwiki:SetHUDVisibilityFlags.wiki
+sup	-	SetSUPOnInterpolateFinishEvent	(void) SetSUPOnInterpolateFinishEvent UDF:script SendEventsFromLoops:int	-	first-release	first-release	geckwiki:SetSUPOnInterpolateFinishEvent.wiki
+sup	-	SetTFCAngle	(void) SetTFCAngle axis:X/Z Value:float	-	first-release	first-release	geckwiki:SetTFCAngle.wiki
+sup	-	SetTFCAngleEx	(void) SetTFCAngleEx fAngleX:float fAngleZ:float	-	first-release	first-release	geckwiki:SetTFCAngleEx.wiki
+sup	-	SetTFCPos	(void) SetTFCPos axis:X/Y/Z Value:float	-	first-release	first-release	geckwiki:SetTFCPos.wiki
+sup	-	SetTFCPosEx	(void) SetTFCPosEx fPosX:float fPosY:float fPosZ:float	-	first-release	first-release	geckwiki:SetTFCPosEx.wiki
+sup	-	SetTFCRot	(void) SetTFCRot axis:X/Y Value:float	-	first-release	first-release	geckwiki:SetTFCRot.wiki
+sup	-	SetTFCRotEx	(void) SetTFCRotEx fRotX:float fRotY:float	-	first-release	first-release	geckwiki:SetTFCRotEx.wiki
+sup	-	SetUIFloatMultiple	(void) SetUIFloatMultiple ComponentPath:string Trait:string fValue:float iType:int	-	first-release	first-release	geckwiki:SetUIFloatMultiple.wiki
+sup	-	StringContainsCyrillic	(contains:bool) StringContainsCyrillic text:string	-	first-release	first-release	geckwiki:StringContainsCyrillic.wiki
+sup	-	StringToClipboard	(void) StringToClipboard text:string	-	first-release	first-release	geckwiki:StringToClipboard.wiki
+sup	-	TextToQRCode	(void) TextToQRCode FileName:string Text:string ConvertToUTF8:int	-	first-release	first-release	geckwiki:TextToQRCode.wiki
+sup	-	TopicGetAllTopicInfos	(TopicInfos:array) TopicGetAllTopicInfos Topic:form ChosenQuest:quest	-	first-release	first-release	geckwiki:TopicGetAllTopicInfos.wiki
+sup	-	TopicGetType	(iType:int) TopicGetType Topic:form	-	first-release	first-release	geckwiki:TopicGetType.wiki
+sup	-	TopicInfoAddChoice	(void) TopicInfoAddChoice TopicInfo:form Topic:form Position:int	-	first-release	first-release	geckwiki:TopicInfoAddChoice.wiki
+sup	-	TopicInfoGetAllChoices	(void) TopicInfoGetAllChoices TopicInfo:form	-	first-release	first-release	geckwiki:TopicInfoGetAllChoices.wiki
+sup	-	TopicInfoGetChoiceCount	(void) TopicInfoGetChoiceCount TopicInfo:form	-	first-release	first-release	geckwiki:TopicInfoGetChoiceCount.wiki
+sup	-	TopicInfoHasChoice	(void) TopicInfoHasChoice TopicInfo:form Topic:form	-	first-release	first-release	geckwiki:TopicInfoHasChoice.wiki
+sup	-	TopicInfoReplaceChoice	(void) TopicInfoReplaceChoice TopicInfo:form Topic:form Position:int	-	first-release	first-release	geckwiki:TopicInfoReplaceChoice.wiki
+sup	-	TopicInfoSetFlagsHigh	(iFlags:int) TopicInfoSetFlagsHigh TopicInfo:form Flags:int	-	first-release	first-release	geckwiki:TopicInfoSetFlagsHigh.wiki
+sup	-	TopicInfoSetFlagsLow	(iFlags:int) TopicInfoSetFlagsLow TopicInfo:form Flags:int	-	first-release	first-release	geckwiki:TopicInfoSetFlagsLow.wiki
+sup	-	TopicInfoSetPrompt	(Prompt:string) TopicInfoSetPrompt TopicInfo:form Prompt:string	-	first-release	first-release	geckwiki:TopicInfoSetPrompt.wiki
+sup	-	TopicInfoSetSaidOnce	(iSaidOnce:int) TopicInfoSetSaidOnce TopicInfo:form	-	first-release	first-release	geckwiki:TopicInfoSetSaidOnce.wiki
+sup	-	TopicSetFlags	(iFlags:int) TopicSetFlags Topic:form Flags:int	-	first-release	first-release	geckwiki:TopicSetFlags.wiki
+sup	-	TranslitText	(void) TranslitText text:string	-	first-release	first-release	geckwiki:TranslitText.wiki

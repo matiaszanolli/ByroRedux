@@ -1,0 +1,283 @@
+family	script	function	signature	global	introduced	introduced_source	source
+lstewieal_tweaks	-	ActorHasEffect	(hasEffect:1/0) ActorHasEffect baseEffect:form	-	first-release	first-release	geckwiki:ActorHasEffect.wiki
+lstewieal_tweaks	-	AddNoteNS	(void) AddNoteNS note:form	-	first-release	first-release	geckwiki:AddNoteNS.wiki
+lstewieal_tweaks	-	AddRecipeInputForm	(void) AddRecipeInputForm recipe:baseform ingredient:baseform count:int	-	first-release	first-release	geckwiki:AddRecipeInputForm.wiki
+lstewieal_tweaks	-	AddRecipeOutputForm	(void) AddRecipeOutputForm recipe:baseform output:baseform count:int	-	first-release	first-release	geckwiki:AddRecipeOutputForm.wiki
+lstewieal_tweaks	-	ar_Cat	(void) ar_Cat baseArray:array_var toAddArray:array_var overrideOldKeys:int	-	first-release	first-release	geckwiki:Ar Cat.wiki
+lstewieal_tweaks	-	BaseAddItem	(void) BaseAddItem itemToAdd:form count:int baseContainerForm:form	-	first-release	first-release	geckwiki:BaseAddItem.wiki
+lstewieal_tweaks	-	BaseAddItemHealth	(void) BaseAddItemHealth itemToAdd:form count:int health:float baseContainerForm:baseform	-	first-release	first-release	geckwiki:BaseAddItemHealth.wiki
+lstewieal_tweaks	-	BaseGetItemCount	(count:int) BaseGetItemCount item:baseform container:baseform	-	first-release	first-release	geckwiki:BaseGetItemCount.wiki
+lstewieal_tweaks	-	BaseRemoveItem	(void) BaseRemoveItem itemToRemove:form count:int baseContainerForm:baseform	-	first-release	first-release	geckwiki:BaseRemoveItem.wiki
+lstewieal_tweaks	-	ClearAllHotkeys	(void) ClearAllHotkeys	-	first-release	first-release	geckwiki:ClearAllHotkeys.wiki
+lstewieal_tweaks	-	Console	(float) Console line:string	-	first-release	first-release	geckwiki:Console.wiki
+lstewieal_tweaks	-	CopyFaceGenFrom	(void) CopyFaceGenFrom sourceNPC:form	-	first-release	first-release	geckwiki:CopyFaceGenFrom.wiki
+lstewieal_tweaks	-	CrosshairRefInList	(int) CrosshairRefInList list:formlist	-	first-release	first-release	geckwiki:CrosshairRefInList.wiki
+lstewieal_tweaks	-	DisableButton	(none) DisableButton Button:int	-	first-release	first-release	geckwiki:DisableButton.wiki
+lstewieal_tweaks	-	DisableTrigger	(void) DisableTrigger trigger:int	-	first-release	first-release	geckwiki:DisableTrigger.wiki
+lstewieal_tweaks	-	DumpLevList	(void) DumpLevList levelledList:baseform	-	first-release	first-release	geckwiki:DumpLevList.wiki
+lstewieal_tweaks	-	EnableButton	(none) EnableButton Button:int	-	first-release	first-release	geckwiki:EnableButton.wiki
+lstewieal_tweaks	-	EnableTrigger	(void) EnableTrigger trigger:int	-	first-release	first-release	geckwiki:EnableTrigger.wiki
+lstewieal_tweaks	-	EquipItemData	(void) EquipItemData item:form itemHealth:float modFlags:int noUnequip:0/1 noMessage:0/1	-	first-release	first-release	geckwiki:EquipItemData.wiki
+lstewieal_tweaks	-	fcos	(float) fcos angle:float	-	first-release	first-release	geckwiki:Fcos.wiki
+lstewieal_tweaks	-	fsin	(float) fsin angle:float	-	first-release	first-release	geckwiki:Fsin.wiki
+lstewieal_tweaks	-	fsqrt	(outputValue:float) fsqrt inputValue:float	-	first-release	first-release	geckwiki:Fsqrt.wiki
+lstewieal_tweaks	-	GetActivatorPrompt	(prompt:string_var) GetActivatorPrompt activator:form	-	first-release	first-release	geckwiki:GetActivatorPrompt.wiki
+lstewieal_tweaks	-	GetActivatorRadioStation	(radioStation:ref) GetActivatorRadioStation activator:form	-	first-release	first-release	geckwiki:GetActivatorRadioStation.wiki
+lstewieal_tweaks	-	GetActivatorSoundActivate	(activateSound:ref) GetActivatorSoundActivate activator:form	-	first-release	first-release	geckwiki:GetActivatorSoundActivate.wiki
+lstewieal_tweaks	-	GetActivatorSoundLooping	(loopingSound:ref) GetActivatorSoundLooping activator:form	-	first-release	first-release	geckwiki:GetActivatorSoundLooping.wiki
+lstewieal_tweaks	-	GetActivatorWaterType	(waterType:baseForm) GetActivatorWaterType activatorOrPlaceableWater:baseForm	-	first-release	first-release	geckwiki:GetActivatorWaterType.wiki
+lstewieal_tweaks	-	GetActiveQuest	(quest:ref) GetActiveQuest	-	first-release	first-release	geckwiki:GetActiveQuest.wiki
+lstewieal_tweaks	-	GetActorTemplateFlag	(flagSet:1/0) GetActorTemplateFlag flagID:int actorBase:form	-	first-release	first-release	geckwiki:GetActorTemplateFlag.wiki
+lstewieal_tweaks	-	GetAnimObjectIdle	(idleAnim:ref) GetAnimObjectIdle animObject:form	-	first-release	first-release	geckwiki:GetAnimObjectIdle.wiki
+lstewieal_tweaks	-	GetArmorClass	(armorClass:int) GetArmorClass armor:form	-	first-release	first-release	geckwiki:GetArmorClass.wiki
+lstewieal_tweaks	-	GetBaseKarma	(baseKarma:float) GetBaseKarma actorBase:form	-	first-release	first-release	geckwiki:GetBaseKarma.wiki
+lstewieal_tweaks	-	GetBipedModelList	(modelList:ref) GetBipedModelList armor:form	-	first-release	first-release	geckwiki:GetBipedModelList.wiki
+lstewieal_tweaks	-	GetBodyPartData	(bodyPartData:ref) GetBodyPartData creature:form	-	first-release	first-release	geckwiki:GetBodyPartData.wiki
+lstewieal_tweaks	-	GetCasinoBJ17Stand	(bool) GetCasinoBJ17Stand casino:form	-	first-release	first-release	geckwiki:GetCasinoBJ17Stand.wiki
+lstewieal_tweaks	-	GetCasinoBJPayout	(payout:float) GetCasinoBJPayout casino:form	-	first-release	first-release	geckwiki:GetCasinoBJPayout.wiki
+lstewieal_tweaks	-	GetCasinoMaxWinnings	(maxWinnings:int) GetCasinoMaxWinnings casino:form	-	first-release	first-release	geckwiki:GetCasinoMaxWinnings.wiki
+lstewieal_tweaks	-	GetCasinoNumDecks	(numDecks:int) GetCasinoNumDecks casino:form	-	first-release	first-release	geckwiki:GetCasinoNumDecks.wiki
+lstewieal_tweaks	-	GetCasinoReelStops	(numStops:int) GetCasinoReelStops casino:form symbol:int	-	first-release	first-release	geckwiki:GetCasinoReelStops.wiki
+lstewieal_tweaks	-	GetCasinoShufflePercent	(percToShuffle:float) GetCasinoShufflePercent casino:form	-	first-release	first-release	geckwiki:GetCasinoShufflePercent.wiki
+lstewieal_tweaks	-	GetCellCoords	(array) GetCellCoords cell:form	-	first-release	first-release	geckwiki:GetCellCoords.wiki
+lstewieal_tweaks	-	GetCellRefs	(array) GetCellRefs typeID:int celldepth:int includeTaken:bool targetCell:cell	-	first-release	first-release	geckwiki:GetCellRefs.wiki
+lstewieal_tweaks	-	GetCellWaterForm	(ref) GetCellWaterForm cell:form	-	first-release	first-release	geckwiki:GetCellWaterForm.wiki
+lstewieal_tweaks	-	GetCellWaterHeight	(float) GetCellWaterHeight cell:form	-	first-release	first-release	geckwiki:GetCellWaterHeight.wiki
+lstewieal_tweaks	-	GetChallengeFlags	(flags:int) GetChallengeFlags challenge:form	-	first-release	first-release	geckwiki:GetChallengeFlags.wiki
+lstewieal_tweaks	-	GetChallengeForm1	(SNAMform:ref) GetChallengeForm1 challenge:form	-	first-release	first-release	geckwiki:GetChallengeForm1.wiki
+lstewieal_tweaks	-	GetChallengeForm2	(XNAMform:ref) GetChallengeForm2 challenge:form	-	first-release	first-release	geckwiki:GetChallengeForm2.wiki
+lstewieal_tweaks	-	GetChallengeInterval	(interval:int) GetChallengeInterval challenge:baseform	-	first-release	first-release	geckwiki:GetChallengeInterval.wiki
+lstewieal_tweaks	-	GetChallengeThreshold	(threshold:int) GetChallengeThreshold challenge:baseform	-	first-release	first-release	geckwiki:GetChallengeThreshold.wiki
+lstewieal_tweaks	-	GetChallengeType	(challengeType:int) GetChallengeType challenge:baseform	-	first-release	first-release	geckwiki:GetChallengeType.wiki
+lstewieal_tweaks	-	GetChallengeValue1	(int) GetChallengeValue1 challenge:form	-	first-release	first-release	geckwiki:GetChallengeValue1.wiki
+lstewieal_tweaks	-	GetChallengeValue2	(int) GetChallengeValue2 challenge:form	-	first-release	first-release	geckwiki:GetChallengeValue2.wiki
+lstewieal_tweaks	-	GetChallengeValue3	(int) GetChallengeValue3 challenge:form	-	first-release	first-release	geckwiki:GetChallengeValue3.wiki
+lstewieal_tweaks	-	GetChanceNone	(chanceNone:int) GetChanceNone levelledList:baseform	-	first-release	first-release	geckwiki:GetChanceNone.wiki
+lstewieal_tweaks	-	GetChanceNoneGlobal	(globalVariable:ref) GetChanceNoneGlobal levelledList:ref	-	first-release	first-release	geckwiki:GetChanceNoneGlobal.wiki
+lstewieal_tweaks	-	GetCombatStyle	(combatStyle:ref) GetCombatStyle actorBase:form	-	first-release	first-release	geckwiki:GetCombatStyle.wiki
+lstewieal_tweaks	-	GetController	(enabled:1/0) GetController	-	first-release	first-release	geckwiki:GetController.wiki
+lstewieal_tweaks	-	GetCreatureType	(creatureType:int) GetCreatureType creatureBase:form	-	first-release	first-release	geckwiki:GetCreatureType.wiki
+lstewieal_tweaks	-	GetDefaultMessageTime	(float) GetDefaultMessageTime	-	first-release	first-release	geckwiki:GetDefaultMessageTime.wiki
+lstewieal_tweaks	-	GetDistance2D	(float) GetDistance2D ref:ref	-	first-release	first-release	geckwiki:GetDistance2D.wiki
+lstewieal_tweaks	-	GetDistance3D	(float) GetDistance3D ref:ref	-	first-release	first-release	geckwiki:GetDistance3D.wiki
+lstewieal_tweaks	-	GetEquippedData	(equippedData:array_var) GetEquippedData equipSlot:int	-	first-release	first-release	geckwiki:GetEquippedData.wiki
+lstewieal_tweaks	-	GetFilesInFolder	(array) GetFilesInFolder folderpath:string filter:string	-	first-release	first-release	geckwiki:GetFilesInFolder.wiki
+lstewieal_tweaks	-	GetFoldersInFolder	(array) GetFoldersInFolder folderpath:string filter:string	-	first-release	first-release	geckwiki:GetFoldersInFolder.wiki
+lstewieal_tweaks	-	GetFormCountType	(count:int) GetFormCountType formsArrayID:array type:int	-	first-release	first-release	geckwiki:GetFormCountType.wiki
+lstewieal_tweaks	-	GetFormFlag	(bool) GetFormFlag form:form flag:int	-	first-release	first-release	geckwiki:GetFormFlag.wiki
+lstewieal_tweaks	-	GetFormFromMod	(form) GetFormFromMod pluginName:string hexFormID:string	-	first-release	first-release	geckwiki:GetFormFromMod.wiki
+lstewieal_tweaks	-	GetFormMods	(array) GetFormMods form:form	-	first-release	first-release	geckwiki:GetFormMods.wiki
+lstewieal_tweaks	-	GetFormRecipeOutputs	(createdItemForms:array) GetFormRecipeOutputs item:baseform recipeCategoryToFilterBy:baseform	-	first-release	first-release	geckwiki:GetFormRecipeOutputs.wiki
+lstewieal_tweaks	-	GetFormRecipes	(array) GetFormRecipes ingredientItem:baseform recipeCategoryToFilterBy:baseform	-	first-release	first-release	geckwiki:GetFormRecipes.wiki
+lstewieal_tweaks	-	GetFormRefs	(array) GetFormRefs base:form	-	first-release	first-release	geckwiki:GetFormRefs.wiki
+lstewieal_tweaks	-	GetGlobalTimeMultiplier	(float) GetGlobalTimeMultiplier	-	first-release	first-release	geckwiki:GetGlobalTimeMultiplier.wiki
+lstewieal_tweaks	-	GetIdleAnimPath	(filePath:string_var) GetIdleAnimPath idleAnim:form	-	first-release	first-release	geckwiki:GetIdleAnimPath.wiki
+lstewieal_tweaks	-	GetIngestibleFlag	(bool) GetIngestibleFlag ingestible:form flag:int	-	first-release	first-release	geckwiki:GetIngestibleFlag.wiki
+lstewieal_tweaks	-	GetINIFloat	(float) GetINIFloat keystring:string filename:string	-	first-release	first-release	geckwiki:GetINIFloat.wiki
+lstewieal_tweaks	-	GetINISection	(array) GetINISection section:string filename:string getNumeric:1/0	-	first-release	first-release	geckwiki:GetINISection.wiki
+lstewieal_tweaks	-	GetINISectionNames	(array) GetINISectionNames filename:string	-	first-release	first-release	geckwiki:GetINISectionNames.wiki
+lstewieal_tweaks	-	GetINIString	(string) GetINIString keystring:string filename:string	-	first-release	first-release	geckwiki:GetINIString.wiki
+lstewieal_tweaks	-	GetInventoryWeight	(float) GetInventoryWeight playable:bool	-	first-release	first-release	geckwiki:GetInventoryWeight.wiki
+lstewieal_tweaks	-	GetLeftStickX	(float) GetLeftStickX	-	first-release	first-release	geckwiki:GetLeftStickX.wiki
+lstewieal_tweaks	-	GetLeftStickY	(float) GetLeftStickY	-	first-release	first-release	geckwiki:GetLeftStickY.wiki
+lstewieal_tweaks	-	GetLeftTrigger	(float) GetLeftTrigger	-	first-release	first-release	geckwiki:GetLeftTrigger.wiki
+lstewieal_tweaks	-	GetLeveledListFlags	(int) GetLeveledListFlags levelledList:baseform	-	first-release	first-release	geckwiki:GetLeveledListFlags.wiki
+lstewieal_tweaks	-	GetLevItemIndexByForm	(int) GetLevItemIndexByForm levelledList:baseform formToFind:baseform	-	first-release	first-release	geckwiki:GetLevItemIndexByForm.wiki
+lstewieal_tweaks	-	GetLevItemIndexByLevel	(int) GetLevItemIndexByLevel levelledList:baseform level:int	-	first-release	first-release	geckwiki:GetLevItemIndexByLevel.wiki
+lstewieal_tweaks	-	GetLNVersion	(int) GetLNVersion	-	first-release	first-release	geckwiki:GetLNVersion.wiki
+lstewieal_tweaks	-	GetLoadedType	(void) GetLoadedType outlist:formList typeID:int index:int noClear:bool	-	first-release	first-release	geckwiki:GetLoadedType.wiki
+lstewieal_tweaks	-	GetLoadedTypeArray	(array) GetLoadedTypeArray typeID:int index:int	-	first-release	first-release	geckwiki:GetLoadedTypeArray.wiki
+lstewieal_tweaks	-	GetLoadScreenTexture	(string) GetLoadScreenTexture screen:form	-	first-release	first-release	geckwiki:GetLoadScreenTexture.wiki
+lstewieal_tweaks	-	GetLoadScreenType	(loadScreenType:baseform) GetLoadScreenType loadScreen:baseform	-	first-release	first-release	geckwiki:GetLoadScreenType.wiki
+lstewieal_tweaks	-	GetLoadScreenTypeTextRGB	(array) GetLoadScreenTypeTextRGB loadScreenType:baseform	-	first-release	first-release	geckwiki:GetLoadScreenTypeTextRGB.wiki
+lstewieal_tweaks	-	GetLockedOut	(lockedOutState:int) GetLockedOut lockableObject:ref	-	first-release	first-release	geckwiki:GetLockedOut.wiki
+lstewieal_tweaks	-	GetMapMarkerHidden	(bool) GetMapMarkerHidden	-	first-release	first-release	geckwiki:GetMapMarkerHidden.wiki
+lstewieal_tweaks	-	GetMapMarkerName	(string) GetMapMarkerName	-	first-release	first-release	geckwiki:GetMapMarkerName.wiki
+lstewieal_tweaks	-	GetMapMarkerRep	(form) GetMapMarkerRep	-	first-release	first-release	geckwiki:GetMapMarkerRep.wiki
+lstewieal_tweaks	-	GetMapMarkerTravel	(bool) GetMapMarkerTravel	-	first-release	first-release	geckwiki:GetMapMarkerTravel.wiki
+lstewieal_tweaks	-	GetMapMarkerType	(int) GetMapMarkerType	-	first-release	first-release	geckwiki:GetMapMarkerType.wiki
+lstewieal_tweaks	-	GetMerchantContainer	(containerRef:ref) GetMerchantContainer	-	first-release	first-release	geckwiki:GetMerchantContainer.wiki
+lstewieal_tweaks	-	GetMessageDisplayTime	(float) GetMessageDisplayTime	-	first-release	first-release	geckwiki:GetMessageDisplayTime.wiki
+lstewieal_tweaks	-	GetModName	(string) GetModName index:int keepext:int	-	first-release	first-release	geckwiki:GetModName.wiki
+lstewieal_tweaks	-	GetNthLevItem	(baseform) GetNthLevItem levelledList:baseform index:int	-	first-release	first-release	geckwiki:GetNthLevItem.wiki
+lstewieal_tweaks	-	GetNthLevItemCount	(count:int) GetNthLevItemCount levelledList:baseform index:int	-	first-release	first-release	geckwiki:GetNthLevItemCount.wiki
+lstewieal_tweaks	-	GetNthLevItemLevel	(level:int) GetNthLevItemLevel levelledList:baseform index:int	-	first-release	first-release	geckwiki:GetNthLevItemLevel.wiki
+lstewieal_tweaks	-	GetNthPerkEntryForm	(ref) GetNthPerkEntryForm perk:form index:int	-	first-release	first-release	geckwiki:GetNthPerkEntryForm.wiki
+lstewieal_tweaks	-	GetNthPerkEntryFunction	(int) GetNthPerkEntryFunction perk:form index:int	-	first-release	first-release	geckwiki:GetNthPerkEntryFunction.wiki
+lstewieal_tweaks	-	GetNthPerkEntryString	(string) GetNthPerkEntryString perk:form index:int	-	first-release	first-release	geckwiki:GetNthPerkEntryString.wiki
+lstewieal_tweaks	-	GetNthPerkEntryType	(int) GetNthPerkEntryType perk:form nth:int	-	first-release	first-release	geckwiki:GetNthPerkEntryType.wiki
+lstewieal_tweaks	-	GetNthPerkEntryValue1	(float) GetNthPerkEntryValue1 perk:form index:int	-	first-release	first-release	geckwiki:GetNthPerkEntryValue1.wiki
+lstewieal_tweaks	-	GetNthPerkEntryValue2	(float) GetNthPerkEntryValue2 perk:form index:int	-	first-release	first-release	geckwiki:GetNthPerkEntryValue2.wiki
+lstewieal_tweaks	-	GetNumLevItems	(int) GetNumLevItems levelledList:baseform	-	first-release	first-release	geckwiki:GetNumLevItems.wiki
+lstewieal_tweaks	-	GetPasswordNote	(key:baseform) GetPasswordNote terminal:form	-	first-release	first-release	geckwiki:GetPasswordNote.wiki
+lstewieal_tweaks	-	GetPCCanUsePowerArmor	(canUse:bool) GetPCCanUsePowerArmor	-	first-release	first-release	geckwiki:GetPCCanUsePowerArmor.wiki
+lstewieal_tweaks	-	GetPerkEntryCount	(int) GetPerkEntryCount perk:form	-	first-release	first-release	geckwiki:GetPerkEntryCount.wiki
+lstewieal_tweaks	-	GetPerkLevel	(int) GetPerkLevel perk:form	-	first-release	first-release	geckwiki:GetPerkLevel.wiki
+lstewieal_tweaks	-	GetPickupSound	(sound:baseform) GetPickupSound object:form	-	first-release	first-release	geckwiki:GetPickupSound.wiki
+lstewieal_tweaks	-	GetPlayerRegions	(array) GetPlayerRegions	-	first-release	first-release	geckwiki:GetPlayerRegions.wiki
+lstewieal_tweaks	-	GetPressedButtons	(int) GetPressedButtons	-	first-release	first-release	geckwiki:GetPressedButtons.wiki
+lstewieal_tweaks	-	GetPutdownSound	(sound:baseform) GetPutdownSound object:form	-	first-release	first-release	geckwiki:GetPutdownSound.wiki
+lstewieal_tweaks	-	GetRadioBroadcastType	(broadcastType:int) GetRadioBroadcastType	-	first-release	first-release	geckwiki:GetRadioBroadcastType.wiki
+lstewieal_tweaks	-	GetRadioPosRef	(reference) GetRadioPosRef	-	first-release	first-release	geckwiki:GetRadioPosRef.wiki
+lstewieal_tweaks	-	GetRadioRadius	(float) GetRadioRadius	-	first-release	first-release	geckwiki:GetRadioRadius.wiki
+lstewieal_tweaks	-	GetRadioStatic	(staticPercentage:float) GetRadioStatic	-	first-release	first-release	geckwiki:GetRadioStatic.wiki
+lstewieal_tweaks	-	GetRadius	(float) GetRadius light:baseform	-	first-release	first-release	geckwiki:GetRadius.wiki
+lstewieal_tweaks	-	GetRecipeCategory	(category:baseform) GetRecipeCategory recipe:baseform	-	first-release	first-release	geckwiki:GetRecipeCategory.wiki
+lstewieal_tweaks	-	GetRecipeInputCount	(count:int) GetRecipeInputCount recipe:baseform input:baseform	-	first-release	first-release	geckwiki:GetRecipeInputCount.wiki
+lstewieal_tweaks	-	GetRecipeInputForms	(inputBaseForms:array) GetRecipeInputForms recipe:baseform	-	first-release	first-release	geckwiki:GetRecipeInputForms.wiki
+lstewieal_tweaks	-	GetRecipeOutputCount	(count:int) GetRecipeOutputCount recipe:baseform output:baseform	-	first-release	first-release	geckwiki:GetRecipeOutputCount.wiki
+lstewieal_tweaks	-	GetRecipeOutputForms	(outputBaseForms:array) GetRecipeOutputForms recipe:baseform	-	first-release	first-release	geckwiki:GetRecipeOutputForms.wiki
+lstewieal_tweaks	-	GetRecipeRequiredSkill	(actorValueCode:int) GetRecipeRequiredSkill recipe:baseform	-	first-release	first-release	geckwiki:GetRecipeRequiredSkill.wiki
+lstewieal_tweaks	-	GetRecipeRequiredSkillLevel	(skillLevel:int) GetRecipeRequiredSkillLevel recipe:baseform	-	first-release	first-release	geckwiki:GetRecipeRequiredSkillLevel.wiki
+lstewieal_tweaks	-	GetRecipeSubcategory	(recipeSubCategory:baseform) GetRecipeSubcategory recipe:baseform	-	first-release	first-release	geckwiki:GetRecipeSubcategory.wiki
+lstewieal_tweaks	-	GetReferenceFlag	(bool) GetReferenceFlag flag:int	-	first-release	first-release	geckwiki:GetReferenceFlag.wiki
+lstewieal_tweaks	-	GetRightStickX	(float) GetRightStickX	-	first-release	first-release	geckwiki:GetRightStickX.wiki
+lstewieal_tweaks	-	GetRightStickY	(float) GetRightStickY	-	first-release	first-release	geckwiki:GetRightStickY.wiki
+lstewieal_tweaks	-	GetRightTrigger	(float) GetRightTrigger	-	first-release	first-release	geckwiki:GetRightTrigger.wiki
+lstewieal_tweaks	-	GetSelfModIndex	(int) GetSelfModIndex	-	first-release	first-release	geckwiki:GetSelfModIndex.wiki
+lstewieal_tweaks	-	GetServiceFlag	(flagSet:0/1) GetServiceFlag NPC:form flagID:int	-	first-release	first-release	geckwiki:GetServiceFlag.wiki
+lstewieal_tweaks	-	GetShowQuestItems	(bool) GetShowQuestItems	-	first-release	first-release	geckwiki:GetShowQuestItems.wiki
+lstewieal_tweaks	-	GetStringSetting	(string) GetStringSetting setting:string	-	first-release	first-release	geckwiki:GetStringSetting.wiki
+lstewieal_tweaks	-	GetTerminalLock	(int) GetTerminalLock terminal:form	-	first-release	first-release	geckwiki:GetTerminalLock.wiki
+lstewieal_tweaks	-	GetTimeStamp	(dateTimeStamp:string) GetTimeStamp	-	first-release	first-release	geckwiki:GetTimeStamp.wiki
+lstewieal_tweaks	-	GetWaterFormEffect	(actorEffect:ref) GetWaterFormEffect water:ref	-	first-release	first-release	geckwiki:GetWaterFormEffect.wiki
+lstewieal_tweaks	-	GetWeaponCritFlags	(int) GetWeaponCritFlags weapon:form	-	first-release	first-release	geckwiki:GetWeaponCritFlags.wiki
+lstewieal_tweaks	-	GetWeaponImpulseDistance	(float) GetWeaponImpulseDistance weapon:form	-	first-release	first-release	geckwiki:GetWeaponImpulseDistance.wiki
+lstewieal_tweaks	-	GetWeaponKillImpulse	(float) GetWeaponKillImpulse weapon:form	-	first-release	first-release	geckwiki:GetWeaponKillImpulse.wiki
+lstewieal_tweaks	-	GetWeaponVATSEffect	(ref) GetWeaponVATSEffect weapon:form	-	first-release	first-release	geckwiki:GetWeaponVATSEffect.wiki
+lstewieal_tweaks	-	GetWorldspaceParentWorldspace	(ref) GetWorldspaceParentWorldspace worldspace:form	-	first-release	first-release	geckwiki:GetWorldspaceParentWorldspace.wiki
+lstewieal_tweaks	-	GetZone	(encounterZone:ref) GetZone	-	first-release	first-release	geckwiki:GetZone.wiki
+lstewieal_tweaks	-	GetZoneFlag	(int) GetZoneFlag EncounterZone:form ZoneFlag:int	-	first-release	first-release	geckwiki:GetZoneFlag.wiki
+lstewieal_tweaks	-	HasPerkRank	(rank:int) HasPerkRank perk:form forTeammates:1/0	-	first-release	first-release	geckwiki:HasPerkRank.wiki
+lstewieal_tweaks	-	HoldButton	(void) HoldButton button:int	-	first-release	first-release	geckwiki:HoldButton.wiki
+lstewieal_tweaks	-	HoldTrigger	(void) HoldTrigger trigger:int	-	first-release	first-release	geckwiki:HoldTrigger.wiki
+lstewieal_tweaks	-	IsButtonDisabled	(bool) IsButtonDisabled button:int	-	first-release	first-release	geckwiki:IsButtonDisabled.wiki
+lstewieal_tweaks	-	IsButtonHeld	(bool) IsButtonHeld button:int	-	first-release	first-release	geckwiki:IsButtonHeld.wiki
+lstewieal_tweaks	-	IsButtonPressed	(bool) IsButtonPressed BitMask:int	-	first-release	first-release	geckwiki:IsButtonPressed.wiki
+lstewieal_tweaks	-	IsFormOverridden	(bool) IsFormOverridden formToCheck:form	-	first-release	first-release	geckwiki:IsFormOverridden.wiki
+lstewieal_tweaks	-	IsMapMarker	(bool) IsMapMarker	-	first-release	first-release	geckwiki:IsMapMarker.wiki
+lstewieal_tweaks	-	IsParentActivateOnly	(bool) IsParentActivateOnly activator:ref	-	first-release	first-release	geckwiki:IsParentActivateOnly.wiki
+lstewieal_tweaks	-	IsRaceInList	(raceInList:0/1) IsRaceInList formList:form	-	first-release	first-release	geckwiki:IsRaceInList.wiki
+lstewieal_tweaks	-	IsRadioRef	(bool) IsRadioRef	-	first-release	first-release	geckwiki:IsRadioRef.wiki
+lstewieal_tweaks	-	IsSkillMagazine	(isMagazine:0/1) IsSkillMagazine ingestible:baseform	-	first-release	first-release	geckwiki:IsSkillMagazine.wiki
+lstewieal_tweaks	-	IsTrait	(bool) IsTrait perk:form	-	first-release	first-release	geckwiki:IsTrait.wiki
+lstewieal_tweaks	-	IsTriggerDisabled	(bool) IsTriggerDisabled trigger:int	-	first-release	first-release	geckwiki:IsTriggerDisabled.wiki
+lstewieal_tweaks	-	IsTriggerHeld	(bool) IsTriggerHeld trigger:int	-	first-release	first-release	geckwiki:IsTriggerHeld.wiki
+lstewieal_tweaks	-	LeveledListAddForm	(void) LeveledListAddForm levelledList:baseform formToAdd:baseform level:int count:int health:float	-	first-release	first-release	geckwiki:LeveledListAddForm.wiki
+lstewieal_tweaks	-	LeveledListClear	(void) LeveledListClear levelledList:baseform	-	first-release	first-release	geckwiki:LeveledListClear.wiki
+lstewieal_tweaks	-	LeveledListRemoveForm	(int) LeveledListRemoveForm levelledList:baseform formToRemove:baseform	-	first-release	first-release	geckwiki:LeveledListRemoveForm.wiki
+lstewieal_tweaks	-	LeveledListReplaceForm	(void) LeveledListReplaceForm levelledList:baseform old:form new:form	-	first-release	first-release	geckwiki:LeveledListReplaceForm.wiki
+lstewieal_tweaks	-	LNGetAggroRadius	(aggroRadius:int) LNGetAggroRadius actorBase:form	-	first-release	first-release	geckwiki:LNGetAggroRadius.wiki
+lstewieal_tweaks	-	LNGetName	(string) LNGetName object:form	-	first-release	first-release	geckwiki:LNGetName.wiki
+lstewieal_tweaks	-	LNIsPlayable	(bool) LNIsPlayable playableForm:form	-	first-release	first-release	geckwiki:LNIsPlayable.wiki
+lstewieal_tweaks	-	LNSetActorTemplate	(void) LNSetActorTemplate actorTemplate:form actorBase:form	-	first-release	first-release	geckwiki:LNSetActorTemplate.wiki
+lstewieal_tweaks	-	LNSetAggroRadius	(void) LNSetAggroRadius aggroRadius:int actorBase:form	-	first-release	first-release	geckwiki:LNSetAggroRadius.wiki
+lstewieal_tweaks	-	LNSetIsPlayable	(void) LNSetIsPlayable playable:bool form:BaseForm	-	first-release	first-release	geckwiki:LNSetIsPlayable.wiki
+lstewieal_tweaks	-	LNSetName	(void) LNSetName name:string object:form	-	first-release	first-release	geckwiki:LNSetName.wiki
+lstewieal_tweaks	-	OnCellEnter	(form) OnCellEnter UDFForm:UserDefinedFunction	-	first-release	first-release	geckwiki:OnCellEnter.wiki
+lstewieal_tweaks	-	OnCellExit	(form) OnCellExit UDFForm:UserDefinedFunction	-	first-release	first-release	geckwiki:OnCellExit.wiki
+lstewieal_tweaks	-	PlayerHasKey	(bool) PlayerHasKey	-	first-release	first-release	geckwiki:PlayerHasKey.wiki
+lstewieal_tweaks	-	ReleaseButton	(void) ReleaseButton button:int	-	first-release	first-release	geckwiki:ReleaseButton.wiki
+lstewieal_tweaks	-	ReleaseTrigger	(void) ReleaseTrigger trigger:int	-	first-release	first-release	geckwiki:ReleaseTrigger.wiki
+lstewieal_tweaks	-	RemoveINIKey	(void) RemoveINIKey keystring:string filename:string	-	first-release	first-release	geckwiki:RemoveINIKey.wiki
+lstewieal_tweaks	-	RemoveINISection	(void) RemoveINISection section:string filename:string	-	first-release	first-release	geckwiki:RemoveINISection.wiki
+lstewieal_tweaks	-	RemoveNthLevItem	(void) RemoveNthLevItem levelledList:baseform index:int	-	first-release	first-release	geckwiki:RemoveNthLevItem.wiki
+lstewieal_tweaks	-	RemoveRecipeInputForm	(void) RemoveRecipeInputForm recipe:baseform input:baseform	-	first-release	first-release	geckwiki:RemoveRecipeInputForm.wiki
+lstewieal_tweaks	-	RemoveRecipeOutputForm	(void) RemoveRecipeOutputForm recipe:form output:form	-	first-release	first-release	geckwiki:RemoveRecipeOutputForm.wiki
+lstewieal_tweaks	-	ReplaceRecipeInputForm	(void) ReplaceRecipeInputForm recipe:baseform old:baseform new:baseform	-	first-release	first-release	geckwiki:ReplaceRecipeInputForm.wiki
+lstewieal_tweaks	-	ReplaceRecipeOutputForm	(void) ReplaceRecipeOutputForm recipe:baseform old:baseform new:baseform	-	first-release	first-release	geckwiki:ReplaceRecipeOutputForm.wiki
+lstewieal_tweaks	-	RestoreHotkeys	(void) RestoreHotkeys hotKeysArrayID:array	-	first-release	first-release	geckwiki:RestoreHotkeys.wiki
+lstewieal_tweaks	-	SaveHotkeys	(hotkeys:array) SaveHotkeys	-	first-release	first-release	geckwiki:SaveHotkeys.wiki
+lstewieal_tweaks	-	search	(void) search name:string type:int	-	first-release	first-release	geckwiki:Search.wiki
+lstewieal_tweaks	-	SetActivatorPrompt	(void) SetActivatorPrompt prompt:string activator:form	-	first-release	first-release	geckwiki:SetActivatorPrompt.wiki
+lstewieal_tweaks	-	SetActivatorRadioStation	(void) SetActivatorRadioStation radioStation:form activator:form	-	first-release	first-release	geckwiki:SetActivatorRadioStation.wiki
+lstewieal_tweaks	-	SetActivatorSoundActivate	(void) SetActivatorSoundActivate sound:form activator:form	-	first-release	first-release	geckwiki:SetActivatorSoundActivate.wiki
+lstewieal_tweaks	-	SetActivatorSoundLooping	(void) SetActivatorSoundLooping sound:form activator:form	-	first-release	first-release	geckwiki:SetActivatorSoundLooping.wiki
+lstewieal_tweaks	-	SetActivatorWaterType	(void) SetActivatorWaterType waterType:form activator:form	-	first-release	first-release	geckwiki:SetActivatorWaterType.wiki
+lstewieal_tweaks	-	SetActorTemplateFlag	(void) SetActorTemplateFlag flagID:int newState:0/1 actorBase:form	-	first-release	first-release	geckwiki:SetActorTemplateFlag.wiki
+lstewieal_tweaks	-	SetAnimObjectIdle	(void) SetAnimObjectIdle animObject:form idleAnim:form	-	first-release	first-release	geckwiki:SetAnimObjectIdle.wiki
+lstewieal_tweaks	-	SetBaseForm	(void) SetBaseForm newBase:form	-	first-release	first-release	geckwiki:SetBaseForm.wiki
+lstewieal_tweaks	-	SetBaseKarma	(void) SetBaseKarma baseKarma:float actorBase:form	-	first-release	first-release	geckwiki:SetBaseKarma.wiki
+lstewieal_tweaks	-	SetBipedModelList	(void) SetBipedModelList armor:form formList:form	-	first-release	first-release	geckwiki:SetBipedModelList.wiki
+lstewieal_tweaks	-	SetCasinoBJ17Stand	(void) SetCasinoBJ17Stand casino:form value:0/1	-	first-release	first-release	geckwiki:SetCasinoBJ17Stand.wiki
+lstewieal_tweaks	-	SetCasinoBJPayout	(void) SetCasinoBJPayout casino:form payout:float	-	first-release	first-release	geckwiki:SetCasinoBJPayout.wiki
+lstewieal_tweaks	-	SetCasinoMaxWinnings	(void) SetCasinoMaxWinnings casino:form maxWinnings:int	-	first-release	first-release	geckwiki:SetCasinoMaxWinnings.wiki
+lstewieal_tweaks	-	SetCasinoNumDecks	(void) SetCasinoNumDecks casino:form numDecks:int	-	first-release	first-release	geckwiki:SetCasinoNumDecks.wiki
+lstewieal_tweaks	-	SetCasinoReelStops	(void) SetCasinoReelStops casino:form symbol:int numStops:int	-	first-release	first-release	geckwiki:SetCasinoReelStops.wiki
+lstewieal_tweaks	-	SetCasinoShufflePercent	(void) SetCasinoShufflePercent casino:form percToShuffle:float	-	first-release	first-release	geckwiki:SetCasinoShufflePercent.wiki
+lstewieal_tweaks	-	SetCellWaterHeight	(void) SetCellWaterHeight height:float cell:form	-	first-release	first-release	geckwiki:SetCellWaterHeight.wiki
+lstewieal_tweaks	-	SetChallengeFlags	(void) SetChallengeFlags challenge:form flags:int	-	first-release	first-release	geckwiki:SetChallengeFlags.wiki
+lstewieal_tweaks	-	SetChallengeForm1	(void) SetChallengeForm1 challenge:form SNAMform:form	-	first-release	first-release	geckwiki:SetChallengeForm1.wiki
+lstewieal_tweaks	-	SetChallengeForm2	(void) SetChallengeForm2 challenge:form XNAMform:form	-	first-release	first-release	geckwiki:SetChallengeForm2.wiki
+lstewieal_tweaks	-	SetChallengeInterval	(void) SetChallengeInterval challenge:baseform interval:int	-	first-release	first-release	geckwiki:SetChallengeInterval.wiki
+lstewieal_tweaks	-	SetChallengeThreshold	(void) SetChallengeThreshold challenge:form threshold:int	-	first-release	first-release	geckwiki:SetChallengeThreshold.wiki
+lstewieal_tweaks	-	SetChallengeValue1	(void) SetChallengeValue1 challenge:form value:int	-	first-release	first-release	geckwiki:SetChallengeValue1.wiki
+lstewieal_tweaks	-	SetChallengeValue2	(void) SetChallengeValue2 challenge:form value:int	-	first-release	first-release	geckwiki:SetChallengeValue2.wiki
+lstewieal_tweaks	-	SetChallengeValue3	(void) SetChallengeValue3 challenge:form value:int	-	first-release	first-release	geckwiki:SetChallengeValue3.wiki
+lstewieal_tweaks	-	SetChanceNone	(void) SetChanceNone levelledList:baseform chanceNone:int	-	first-release	first-release	geckwiki:SetChanceNone.wiki
+lstewieal_tweaks	-	SetChanceNoneGlobal	(void) SetChanceNoneGlobal levelledList:form global:form	-	first-release	first-release	geckwiki:SetChanceNoneGlobal.wiki
+lstewieal_tweaks	-	SetDefaultMessageTime	(void) SetDefaultMessageTime displayTime:float	-	first-release	first-release	geckwiki:SetDefaultMessageTime.wiki
+lstewieal_tweaks	-	SetEquippedData	(void) SetEquippedData equippedData:array_var noUnequip:0/1 noMessage:0/1	-	first-release	first-release	geckwiki:SetEquippedData.wiki
+lstewieal_tweaks	-	SetEventHandler "OnButtonDown:int"	(int) SetEventHandler "OnButtonDown:int" myUDF:userDefinedFunction	-	first-release	first-release	geckwiki:OnButtonDown.wiki
+lstewieal_tweaks	-	SetEventHandler "OnButtonUp:int"	(int) SetEventHandler "OnButtonUp:int" myUDF:userDefinedFunction	-	first-release	first-release	geckwiki:OnButtonUp.wiki
+lstewieal_tweaks	-	SetEventHandler "OnControlDown:int"	(void) SetEventHandler "OnControlDown:int" myUDF:userDefinedFunction	-	first-release	first-release	geckwiki:OnControlDown.wiki
+lstewieal_tweaks	-	SetEventHandler "OnControlUp:int"	(void) SetEventHandler "OnControlUp:int" myUDF:userDefinedFunction	-	first-release	first-release	geckwiki:OnControlUp.wiki
+lstewieal_tweaks	-	SetEventHandler "OnCrosshairOff"	(ref) SetEventHandler "OnCrosshairOff" myUDF:userDefinedFunction	-	first-release	first-release	geckwiki:OnCrosshairOff.wiki
+lstewieal_tweaks	-	SetEventHandler "OnCrosshairOn"	(ref) SetEventHandler "OnCrosshairOn" myUDF:userDefinedFunction	-	first-release	first-release	geckwiki:OnCrosshairOn.wiki
+lstewieal_tweaks	-	SetEventHandler "OnKeyDown:int"	(void) SetEventHandler "OnKeyDown:int" myUDF:userDefinedFunction	-	first-release	first-release	geckwiki:OnKeyDown.wiki
+lstewieal_tweaks	-	SetEventHandler "OnKeyUp:int"	(void) SetEventHandler "OnKeyUp:int" myUDF:userDefinedFunction	-	first-release	first-release	geckwiki:OnKeyUp.wiki
+lstewieal_tweaks	-	SetEventHandler "OnPlayerGrab"	(ref) SetEventHandler "OnPlayerGrab" myUDF:userDefinedFunction	-	first-release	first-release	geckwiki:OnPlayerGrab.wiki
+lstewieal_tweaks	-	SetEventHandler "OnPlayerRelease"	(ref) SetEventHandler "OnPlayerRelease" myUDF:userDefinedFunction	-	first-release	first-release	geckwiki:OnPlayerRelease.wiki
+lstewieal_tweaks	-	SetFormFlag	(void) SetFormFlag form:form flag:int value:bool	-	first-release	first-release	geckwiki:SetFormFlag.wiki
+lstewieal_tweaks	-	SetGlobalValue	(float) SetGlobalValue global:string value:float	-	first-release	first-release	geckwiki:SetGlobalValue.wiki
+lstewieal_tweaks	-	SetHotkey	(void) SetHotkey index:int item:form health:float modflags:int	-	first-release	first-release	geckwiki:SetHotkey.wiki
+lstewieal_tweaks	-	SetIdleAnimPath	(void) SetIdleAnimPath idleAnim:form filePath:string	-	first-release	first-release	geckwiki:SetIdleAnimPath.wiki
+lstewieal_tweaks	-	SetIngestibleFlag	(void) SetIngestibleFlag ingestible:form flag:int value:bool	-	first-release	first-release	geckwiki:SetIngestibleFlag.wiki
+lstewieal_tweaks	-	SetINIFloat	(void) SetINIFloat keystring:string value:float filename:string	-	first-release	first-release	geckwiki:SetINIFloat.wiki
+lstewieal_tweaks	-	SetINISection	(void) SetINISection section:string keysValuesArrayID:array filename:string	-	first-release	first-release	geckwiki:SetINISection.wiki
+lstewieal_tweaks	-	SetINIString	(void) SetINIString keystring:string value:string filename:string	-	first-release	first-release	geckwiki:SetINIString.wiki
+lstewieal_tweaks	-	SetLeveledListFlags	(void) SetLeveledListFlags levelledList:baseform flags:int	-	first-release	first-release	geckwiki:SetLeveledListFlags.wiki
+lstewieal_tweaks	-	SetLoadScreenTexture	(void) SetLoadScreenTexture screen:form path:string	-	first-release	first-release	geckwiki:SetLoadScreenTexture.wiki
+lstewieal_tweaks	-	SetLoadScreenType	(void) SetLoadScreenType loadscreen:baseform loadScreenType:baseform	-	first-release	first-release	geckwiki:SetLoadScreenType.wiki
+lstewieal_tweaks	-	SetLoadScreenTypeTextRGB	(void) SetLoadScreenTypeTextRGB loadScreenType:baseform red:float green:float blue:float	-	first-release	first-release	geckwiki:SetLoadScreenTypeTextRGB.wiki
+lstewieal_tweaks	-	SetLockedOut	(void) SetLockedOut lockedOutState:int lockableObject:ref	-	first-release	first-release	geckwiki:SetLockedOut.wiki
+lstewieal_tweaks	-	SetMapMarkerHidden	(void) SetMapMarkerHidden isHidden:bool	-	first-release	first-release	geckwiki:SetMapMarkerHidden.wiki
+lstewieal_tweaks	-	SetMapMarkerName	(void) SetMapMarkerName name:string	-	first-release	first-release	geckwiki:SetMapMarkerName.wiki
+lstewieal_tweaks	-	SetMapMarkerRep	(void) SetMapMarkerRep reputation:form	-	first-release	first-release	geckwiki:SetMapMarkerRep.wiki
+lstewieal_tweaks	-	SetMapMarkerTravel	(void) SetMapMarkerTravel canTravel:bool	-	first-release	first-release	geckwiki:SetMapMarkerTravel.wiki
+lstewieal_tweaks	-	SetMapMarkerType	(void) SetMapMarkerType typeID:int	-	first-release	first-release	geckwiki:SetMapMarkerType.wiki
+lstewieal_tweaks	-	SetMapMarkerVisible	(void) SetMapMarkerVisible visible:bool	-	first-release	first-release	geckwiki:SetMapMarkerVisible.wiki
+lstewieal_tweaks	-	SetNthLevItem	(void) SetNthLevItem levelledList:baseform nthItem:int newForm:baseform	-	first-release	first-release	geckwiki:SetNthLevItem.wiki
+lstewieal_tweaks	-	SetNthLevItemCount	(void) SetNthLevItemCount levelledList:baseform index:int count:int	-	first-release	first-release	geckwiki:SetNthLevItemCount.wiki
+lstewieal_tweaks	-	SetNthLevItemLevel	(void) SetNthLevItemLevel levelledList:baseform index:int level:int	-	first-release	first-release	geckwiki:SetNthLevItemLevel.wiki
+lstewieal_tweaks	-	SetNthPerkEntryForm	(void) SetNthPerkEntryForm perk:form index:int value:form	-	first-release	first-release	geckwiki:SetNthPerkEntryForm.wiki
+lstewieal_tweaks	-	SetNthPerkEntryFunction	(void) SetNthPerkEntryFunction perk:form index:int code:int	-	first-release	first-release	geckwiki:SetNthPerkEntryFunction.wiki
+lstewieal_tweaks	-	SetNthPerkEntryString	(void) SetNthPerkEntryString perk:form index:int value:string	-	first-release	first-release	geckwiki:SetNthPerkEntryString.wiki
+lstewieal_tweaks	-	SetNthPerkEntryValue1	(void) SetNthPerkEntryValue1 perk:form index:int value:float	-	first-release	first-release	geckwiki:SetNthPerkEntryValue1.wiki
+lstewieal_tweaks	-	SetNthPerkEntryValue2	(void) SetNthPerkEntryValue2 perk:form index:int value:float	-	first-release	first-release	geckwiki:SetNthPerkEntryValue2.wiki
+lstewieal_tweaks	-	SetPasswordNote	(void) SetPasswordNote note:form terminal:form	-	first-release	first-release	geckwiki:SetPasswordNote.wiki
+lstewieal_tweaks	-	SetPerkRank	(void) SetPerkRank perk:form rank:int forTeammates:1/0	-	first-release	first-release	geckwiki:SetPerkRank.wiki
+lstewieal_tweaks	-	SetPickupSound	(void) SetPickupSound object:form sound:form	-	first-release	first-release	geckwiki:SetPickupSound.wiki
+lstewieal_tweaks	-	SetPutdownSound	(void) SetPutdownSound object:form sound:form	-	first-release	first-release	geckwiki:SetPutdownSound.wiki
+lstewieal_tweaks	-	SetRace	(void) SetRace NPC:form race:form	-	first-release	first-release	geckwiki:SetRace.wiki
+lstewieal_tweaks	-	SetRadioBroadcastType	(void) SetRadioBroadcastType broadcastType:int	-	first-release	first-release	geckwiki:SetRadioBroadcastType.wiki
+lstewieal_tweaks	-	SetRadioPosRef	(void) SetRadioPosRef positionReference:ref	-	first-release	first-release	geckwiki:SetRadioPosRef.wiki
+lstewieal_tweaks	-	SetRadioRadius	(void) SetRadioRadius radius:float	-	first-release	first-release	geckwiki:SetRadioRadius.wiki
+lstewieal_tweaks	-	SetRadioStatic	(void) SetRadioStatic percent:float	-	first-release	first-release	geckwiki:SetRadioStatic.wiki
+lstewieal_tweaks	-	SetRadius	(void) SetRadius radius:float light:baseform	-	first-release	first-release	geckwiki:SetRadius.wiki
+lstewieal_tweaks	-	SetRecipeCategory	(void) SetRecipeCategory recipe:baseform category:baseform	-	first-release	first-release	geckwiki:SetRecipeCategory.wiki
+lstewieal_tweaks	-	SetRecipeInputCount	(void) SetRecipeInputCount recipe:baseform input:baseform count:int	-	first-release	first-release	geckwiki:SetRecipeInputCount.wiki
+lstewieal_tweaks	-	SetRecipeOutputCount	(void) SetRecipeOutputCount recipe:baseform output:baseform count:int	-	first-release	first-release	geckwiki:SetRecipeOutputCount.wiki
+lstewieal_tweaks	-	SetRecipeRequiredSkill	(void) SetRecipeRequiredSkill recipe:baseform actorValueCode:int	-	first-release	first-release	geckwiki:SetRecipeRequiredSkill.wiki
+lstewieal_tweaks	-	SetRecipeRequiredSkillLevel	(void) SetRecipeRequiredSkillLevel recipe:baseform skillLevel:int	-	first-release	first-release	geckwiki:SetRecipeRequiredSkillLevel.wiki
+lstewieal_tweaks	-	SetRecipeSubcategory	(void) SetRecipeSubcategory recipe:baseform category:baseform	-	first-release	first-release	geckwiki:SetRecipeSubcategory.wiki
+lstewieal_tweaks	-	SetReferenceFlag	(void) SetReferenceFlag flag:int value:bool	-	first-release	first-release	geckwiki:SetReferenceFlag.wiki
+lstewieal_tweaks	-	SetServiceFlag	(void) SetServiceFlag NPC:form flagID:int doSet:1/0	-	first-release	first-release	geckwiki:SetServiceFlag.wiki
+lstewieal_tweaks	-	SetStringSetting	(void) SetStringSetting settingName:string newValue:string	-	first-release	first-release	geckwiki:SetStringSetting.wiki
+lstewieal_tweaks	-	SetVariableFloat	(float) SetVariableFloat varname:string value:float quest:quest	-	first-release	first-release	geckwiki:SetVariableFloat.wiki
+lstewieal_tweaks	-	SetWeaponCritFlags	(void) SetWeaponCritFlags weapon:form flags:int	-	first-release	first-release	geckwiki:SetWeaponCritFlags.wiki
+lstewieal_tweaks	-	SetWeaponImpulseDistance	(void) SetWeaponImpulseDistance weapon:form value:float	-	first-release	first-release	geckwiki:SetWeaponImpulseDistance.wiki
+lstewieal_tweaks	-	SetWeaponKillImpulse	(void) SetWeaponKillImpulse weapon:form value:float	-	first-release	first-release	geckwiki:SetWeaponKillImpulse.wiki
+lstewieal_tweaks	-	SetWeaponVATSEffect	(void) SetWeaponVATSEffect weapon:form effect:form	-	first-release	first-release	geckwiki:SetWeaponVATSEffect.wiki
+lstewieal_tweaks	-	SetZoneFlag	(void) SetZoneFlag EncounterZone:form ZoneFlag:int NewZoneFlagValue:int	-	first-release	first-release	geckwiki:SetZoneFlag.wiki
+lstewieal_tweaks	-	SortFormsByType	(array) SortFormsByType formsArrayID:array typesArrayID:array	-	first-release	first-release	geckwiki:SortFormsByType.wiki

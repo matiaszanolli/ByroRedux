@@ -98,6 +98,7 @@ a working checkout and want to understand or change engine internals.
 | [GPU-Driven Rendering — PRD](../prd/gpu-driven-rendering.md) | renderer | PROPOSED (2026-11-05). M52: mesh/task shaders, GPU culling, GPU-generated indirect draws |
 | [Virtual Geometry — PRD](../prd/virtual-geometry.md) | renderer, nif | PROPOSED (2026-11-01). M53: cluster mesh format with simplification chain and GPU cluster selection |
 | [MCM Host](mcm-host.md) | scripting, native-ui, save, byroredux | DESIGN (2026-11-23), LMC-UI-002. One engine-owned Mod Configuration Menu model: an engine `SKI_ConfigBase` serving SkyUI's Papyrus contract, a native Mod Configuration page, `mcm.*` console driving; slice 1 (quest-script `OnInit`) built |
+| [Extender Catalog and Version Probes](extender-catalog.md) | scripting, sdk, byroredux | DESIGN (2026-11-23), LMC-SCR-004/005/010. The per-function SKSE64 / F4SE / NVSE-family / OBSE catalog with introduced-in versions and measured engine coverage (slice 1 built), the eager script scan, and per-mod version-probe answers |
 | [Sandboxed Linked Mods](sandboxed-linked-mods.md) | mod-runtime; plugin, scripting, core, save, ui (planned links) | Implemented isolated Component Model host foundation plus requirements for typed engine/mod links, C++ portability, ECS barriers, persistence, and high-count profiles |
 | [ESM Records](esm-records.md) | plugin | Cell loading, items, NPCs, factions, leveled lists |
 | [Asset Pipeline](asset-pipeline.md) | byroredux, nif, bsa | TextureProvider, mesh cache, NIF→ECS import, BGSM/BGEM material merge |

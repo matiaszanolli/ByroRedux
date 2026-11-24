@@ -1,0 +1,5 @@
+family	script	function	signature	global	introduced	introduced_source	source
+knvse	-	ForcePlayIdle	(void) ForcePlayIdle idleAnim:ref playerPOV (optional):1/2	-	first-release	first-release	geckwiki:ForcePlayIdle.wiki
+knvse	-	ForceStopIdle	(void) ForceStopIdle playerPOV (optional):1/2	-	first-release	first-release	geckwiki:ForceStopIdle.wiki
+knvse	-	SetActorAnimationPath	(success:0/1) SetActorAnimationPath firstPerson:0/1 enable:0/1 path:string pollConditionFunction:0/1 conditionFunction:UDF/function	-	first-release	first-release	geckwiki:SetActorAnimationPath.wiki
+knvse	-	SetWeaponAnimationPath	(success:0/1) SetWeaponAnimationPath weapon:baseForm firstPerson:0/1 enable:0/1 path:string	-	first-release	first-release	geckwiki:SetWeaponAnimationPath.wiki

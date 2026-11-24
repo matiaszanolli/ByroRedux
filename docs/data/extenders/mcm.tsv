@@ -1,0 +1,5 @@
+family	script	function	signature	global	introduced	introduced_source	source
+mcm	-	Child	(float) Child Child:int Grandchild:int Setting:string	-	first-release	first-release	geckwiki:GetMCMFloat.wiki
+mcm	-	GetModINISetting	(varies) GetModINISetting fileNameSectionKey:string	-	first-release	first-release	geckwiki:GetModINISetting.wiki
+mcm	-	SetMCMString	(void) SetMCMString Child:int Grandchild:int Setting:int text:formattedString	-	first-release	first-release	geckwiki:SetMCMString.wiki
+mcm	-	SetModINISetting	(void) SetModINISetting fileNameSectionKey:string value:varies	-	first-release	first-release	geckwiki:SetModINISetting.wiki

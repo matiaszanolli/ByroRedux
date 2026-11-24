@@ -1,0 +1,566 @@
+family	script	function	signature	global	introduced	introduced_source	source
+xnvse	-	ActorValueToString	(string) ActorValueToString ActorValue:string	-	first-release	first-release	geckwiki:ActorValueToString.wiki
+xnvse	-	ActorValueToStringC	(string) ActorValueToStringC AVCode:int typeFilter:int	-	first-release	first-release	geckwiki:ActorValueToStringC.wiki
+xnvse	-	AddItemHealthPercentOwner	(void) AddItemHealthPercentOwner Item:ObjectID Count:int HealthPercent:float Owner:NPC/Faction Rank:int	-	first-release	first-release	geckwiki:AddItemHealthPercentOwner.wiki
+xnvse	-	AddItemOwnership	(void) AddItemOwnership Item:ObjectID Count:int Owner:NPC/Faction Rank:int	-	first-release	first-release	geckwiki:AddItemOwnership.wiki
+xnvse	-	AddPackageAt	(int:index) AddPackageAt package:baseform index:int actor:reference	-	first-release	first-release	geckwiki:AddPackageAt.wiki
+xnvse	-	AddSpellNS	(void) AddSpellNS spell:baseform	-	first-release	first-release	geckwiki:AddSpellNS.wiki
+xnvse	-	animName	(void) animName animName:string baseActor:form	-	first-release	first-release	geckwiki:AddAnimation.wiki
+xnvse	-	ar_All	(0/1) ar_All source:array conditionFunction:function/lambda	-	6.2.1	wiki:originVersion	geckwiki:Ar All.wiki
+xnvse	-	ar_Any	(0/1) ar_Any source:array conditionFunction:function/lambda	-	6.2.1	wiki:originVersion	geckwiki:Ar Any.wiki
+xnvse	-	Ar_Append	(None) Ar_Append list:array element:multi	-	first-release	first-release	geckwiki:Ar Append.wiki
+xnvse	-	Ar_BadNumericIndex	(-99999:int) Ar_BadNumericIndex	-	first-release	first-release	geckwiki:Ar BadNumericIndex.wiki
+xnvse	-	Ar_BadStringIndex	("":str) Ar_BadStringIndex	-	first-release	first-release	geckwiki:Ar BadStringIndex.wiki
+xnvse	-	Ar_Construct	(Array) Ar_Construct type:string	-	first-release	first-release	geckwiki:Ar Construct.wiki
+xnvse	-	Ar_Copy	(array) Ar_Copy Source:array	-	first-release	first-release	geckwiki:Ar Copy.wiki
+xnvse	-	Ar_CustomSort	(array) Ar_CustomSort Source:array ComparisonUDF:script <i>ReverseSort</i>:<i>bool</i>	-	first-release	first-release	geckwiki:Ar CustomSort.wiki
+xnvse	-	Ar_DeepCopy	(array) Ar_DeepCopy Source:array	-	first-release	first-release	geckwiki:Ar DeepCopy.wiki
+xnvse	-	Ar_DeepEquals	(bool) Ar_DeepEquals array1:array_var array2:array_var	-	6.2.1	wiki:originVersion	geckwiki:Ar DeepEquals.wiki
+xnvse	-	Ar_Dump	(None) Ar_Dump ToDump:array	-	first-release	first-release	geckwiki:Ar Dump.wiki
+xnvse	-	Ar_DumpF	(None) Ar_DumpF ToDump:array fileName:string bAppend:bool	-	6.1	wiki:originVersion	geckwiki:Ar DumpF.wiki
+xnvse	-	Ar_DumpID	(None) Ar_DumpID ArrayID:int	-	first-release	first-release	geckwiki:Ar DumpID.wiki
+xnvse	-	Ar_Erase	(int) Ar_Erase Parent:array ToErase:index-or-range	-	first-release	first-release	geckwiki:Ar Erase.wiki
+xnvse	-	Ar_Filter	(array) Ar_Filter source:array filter:function/lambda	-	6.1.6	wiki:originVersion	geckwiki:Ar Filter.wiki
+xnvse	-	Ar_Find	(int-OR-string) Ar_Find Value:multi ToSearch:array Subrange:range	-	first-release	first-release	geckwiki:Ar Find.wiki
+xnvse	-	Ar_FindWhere	(multi) Ar_FindWhere Source:array FindFunction:function/lambda	-	6.1.6	wiki:originVersion	geckwiki:Ar FindWhere.wiki
+xnvse	-	Ar_First	(key:int-or-float-or-string) Ar_First Source:array	-	first-release	first-release	geckwiki:Ar First.wiki
+xnvse	-	Ar_ForEach	(void) Ar_ForEach source:array function:function/lambda	-	6.2.1	wiki:originVersion	geckwiki:Ar ForEach.wiki
+xnvse	-	Ar_Generate	(array) Ar_Generate numElems:int valueGenerator:function/lambda keyGenerator:function/lambda	-	6.1.7	wiki:originVersion	geckwiki:Ar Generate.wiki
+xnvse	-	Ar_HasKey	(bool) Ar_HasKey ToCheck:array Key:arraykey	-	first-release	first-release	geckwiki:Ar HasKey.wiki
+xnvse	-	ar_Init	(array) ar_Init numElems:int elem:anyType	-	6.1.7	wiki:originVersion	geckwiki:Ar Init.wiki
+xnvse	-	Ar_Insert	(bool) Ar_Insert Array:array Index:int Element:multi	-	first-release	first-release	geckwiki:Ar Insert.wiki
+xnvse	-	Ar_InsertRange	(bool) Ar_InsertRange Array:array Index:int ToInsert:array	-	first-release	first-release	geckwiki:Ar InsertRange.wiki
+xnvse	-	Ar_Keys	(array) Ar_Keys Source:array	-	first-release	first-release	geckwiki:Ar Keys.wiki
+xnvse	-	Ar_Last	(key:int-or-float-or-string) Ar_Last Source:array	-	first-release	first-release	geckwiki:Ar Last.wiki
+xnvse	-	Ar_List	(Array) Ar_List entry0:multi entry1:multi ...entry19:multi	-	first-release	first-release	geckwiki:Ar List.wiki
+xnvse	-	Ar_Map	(array) Ar_Map Key(int/float/string)::Value(multi) ...Key(int/float/string)::Value(multi)	-	first-release	first-release	geckwiki:Ar Map.wiki
+xnvse	-	Ar_MapTo	(array) Ar_MapTo Source:array MapFunction:function/lambda	-	6.1.6	wiki:originVersion	geckwiki:Ar MapTo.wiki
+xnvse	-	Ar_Next	(key:int/float/string) Ar_Next Source:array Key:int/float/string	-	first-release	first-release	geckwiki:Ar Next.wiki
+xnvse	-	Ar_Null	(NullArray:array) Ar_Null	-	first-release	first-release	geckwiki:Ar Null.wiki
+xnvse	-	Ar_Packed	(bool) Ar_Packed Target:array	-	5.0.1	wiki:text	geckwiki:Ar Packed.wiki
+xnvse	-	Ar_Prev	(key:int-or-float-or-string) Ar_Prev Source:array Next:key	-	first-release	first-release	geckwiki:Ar Prev.wiki
+xnvse	-	Ar_Range	(array) Ar_Range Start:int End:int <i>step</i>:<i>int</i>	-	first-release	first-release	geckwiki:Ar Range.wiki
+xnvse	-	Ar_Resize	(bool) Ar_Resize List:array NewSize:int PadValue:multi	-	first-release	first-release	geckwiki:Ar Resize.wiki
+xnvse	-	Ar_Size	(int) Ar_Size ToCheck:array	-	first-release	first-release	geckwiki:Ar Size.wiki
+xnvse	-	Ar_Sort	(array) Ar_Sort Source:anyarray <i>SortDescending</i>:<i>bool</i>	-	first-release	first-release	geckwiki:Ar Sort.wiki
+xnvse	-	Ar_SortAlpha	(array) Ar_SortAlpha Source:anyarray <i>SortDescending</i>:<i>bool</i>	-	first-release	first-release	geckwiki:Ar SortAlpha.wiki
+xnvse	-	Ar_Unique	(array) Ar_Unique source:array_var	-	6.2.3	wiki:originVersion	geckwiki:Ar Unique.wiki
+xnvse	-	AsciiToChar	(string) AsciiToChar ASCIICode:int (Decimal)	-	first-release	first-release	geckwiki:AsciiToChar.wiki
+xnvse	-	baseActor	(void) baseActor baseActor:form	-	first-release	first-release	geckwiki:DelAnimations.wiki
+xnvse	-	Break	(void) Break	-	first-release	first-release	geckwiki:Break.wiki
+xnvse	-	BuildRef	(form) BuildRef ModIndex:int DecimalFormID:int	-	first-release	first-release	geckwiki:BuildRef.wiki
+xnvse	-	Call	(multi) Call function:script multi:arg1 multi:arg2 multi:arg3 multi:arg4 multi:arg5 multi:arg6 multi:arg7 multi:arg8 multi:arg9 multi:arg10 multi:arg11 multi:arg12 multi:arg13 multi:arg14 multi:arg15	-	first-release	first-release	geckwiki:Call.wiki
+xnvse	-	CallAfterFrames	(void) CallAfterFrames frames:float udf:script bRunInMenuMode:0/1 flags:int multi:arg(up to 15)	-	6.2.8	wiki:originVersion	geckwiki:CallAfterFrames.wiki
+xnvse	-	CallAfterSeconds	(void) CallAfterSeconds seconds:float udf:script bRunInMenuMode:0/1 multi:arg(up to 15)	-	6.1	wiki:originVersion	geckwiki:CallAfterSeconds.wiki
+xnvse	-	CallForSeconds	(void) CallForSeconds seconds:float udf:script bRunInMenuMode:0/1 multi:arg(up to 15)	-	6.1	wiki:originVersion	geckwiki:CallForSeconds.wiki
+xnvse	-	CallWhen	(void) CallWhen udf:script condition:script flags:int multi:arg(up to 15)	-	6.2.4	wiki:originVersion	geckwiki:CallWhen.wiki
+xnvse	-	CallWhile	(void) CallWhile udf:script condition:script flags:int multi:arg(up to 15)	-	6.1	wiki:originVersion	geckwiki:CallWhile.wiki
+xnvse	-	CallWhilePerSeconds	(void) CallWhilePerSeconds timeInterval:float udf:script condition:script flags:int multi:arg1 multi:arg2 multi:arg3 multi:arg4 multi:arg5 multi:arg6 multi:arg7 multi:arg8 multi:arg9 multi:arg10 multi:arg11 multi:arg12 multi:arg13 multi:arg14 multi:arg15	-	6.2.8	wiki:originVersion	geckwiki:CallWhilePerSeconds.wiki
+xnvse	-	Ceil	(float) Ceil float:float	-	first-release	first-release	geckwiki:Ceil.wiki
+xnvse	-	CharToASCII	(ASCIICode:int) CharToASCII SourceCharacter:string	-	first-release	first-release	geckwiki:CharToAscii.wiki
+xnvse	-	ClearBit	(int) ClearBit ValueToChange:int BitToClear:int	-	first-release	first-release	geckwiki:ClearBit.wiki
+xnvse	-	ClearHotkey	(none) ClearHotkey WhichHotKey:int	-	first-release	first-release	geckwiki:ClearHotkey.wiki
+xnvse	-	CompareNames	(float) CompareNames secondForm:baseForm firstForm:baseForm	-	first-release	first-release	geckwiki:CompareNames.wiki
+xnvse	-	CompareScripts	(bool) CompareScripts Script:script Script:script	-	first-release	first-release	geckwiki:CompareScripts.wiki
+xnvse	-	con_CloseAllMenus	(void) con_CloseAllMenus	-	first-release	first-release	geckwiki:Con CloseAllMenus.wiki
+xnvse	-	con_GetINISetting	(void) con_GetINISetting settingName:string	-	first-release	first-release	geckwiki:Con GetINISetting.wiki
+xnvse	-	Con_Inv	(None) Con_Inv	-	first-release	first-release	geckwiki:Con Inv.wiki
+xnvse	-	con_LoadGame	(void) con_LoadGame filename:string Integer:int	-	first-release	first-release	geckwiki:Con LoadGame.wiki
+xnvse	-	con_QuitGame	(void) con_QuitGame	-	first-release	first-release	geckwiki:Con QuitGame.wiki
+xnvse	-	con_RefreshINI	(void) con_RefreshINI	-	first-release	first-release	geckwiki:Con RefreshINI.wiki
+xnvse	-	con_Save	(void) con_Save saveName:string Integer:int	-	first-release	first-release	geckwiki:Con Save.wiki
+xnvse	-	con_SaveINI	(void) con_SaveINI	-	first-release	first-release	geckwiki:Con SaveINI.wiki
+xnvse	-	Con_SCOF	(none) Con_SCOF FileName:string	-	first-release	first-release	geckwiki:Con SCOF.wiki
+xnvse	-	con_SetCameraFOV	(void) con_SetCameraFOV Float:float Float:float	-	first-release	first-release	geckwiki:Con SetCameraFOV.wiki
+xnvse	-	con_SetGameSetting	(void) con_SetGameSetting settingName:string newValue:string	-	first-release	first-release	geckwiki:Con SetGameSetting.wiki
+xnvse	-	con_SetINISetting	(void) con_SetINISetting setting:string newValue:string	-	first-release	first-release	geckwiki:Con SetINISetting.wiki
+xnvse	-	Con_SetUFOCamSpeedMult	(None) Con_SetUFOCamSpeedMult SpeedMult:float	-	first-release	first-release	geckwiki:Con SetUFOCamSpeedMult.wiki
+xnvse	-	con_SetVel	(void) con_SetVel Axis:string Float:float	-	first-release	first-release	geckwiki:Con SetVel.wiki
+xnvse	-	Con_ShowVars	(None) Con_ShowVars :	-	first-release	first-release	geckwiki:Con ShowVars.wiki
+xnvse	-	Con_SQV	(None) Con_SQV ToShowVarsOf:Quest	-	4	wiki:text	geckwiki:Con SQV.wiki
+xnvse	-	Con_TCL	(None) Con_TCL	-	first-release	first-release	geckwiki:Con TCL.wiki
+xnvse	-	Con_TDT	(None) Con_TDT	-	first-release	first-release	geckwiki:Con TDT.wiki
+xnvse	-	Con_TFC	(None) Con_TFC	-	first-release	first-release	geckwiki:Con TFC.wiki
+xnvse	-	Con_TFIK	(none) Con_TFIK	-	first-release	first-release	geckwiki:Con TFIK.wiki
+xnvse	-	Con_ToggleMenus	(None) Con_ToggleMenus	-	first-release	first-release	geckwiki:Con ToggleMenus.wiki
+xnvse	-	Continue	(void) Continue	-	4	wiki:text	geckwiki:Continue.wiki
+xnvse	-	CopyIR	(Success:bool) CopyIR Location:Container	-	first-release	first-release	geckwiki:CopyIR.wiki
+xnvse	-	CreateTempRef	(ref) CreateTempRef ToReference:form	-	first-release	first-release	geckwiki:CreateTempRef.wiki
+xnvse	-	DebugPrint	(void) DebugPrint Message:string Formatting:	-	first-release	first-release	geckwiki:DebugPrint.wiki
+xnvse	-	DecompileScript	(array) DecompileScript Script:form FileExtension:string (optional)	-	6.1.6	wiki:originVersion	geckwiki:DecompileScript.wiki
+xnvse	-	DisableControl	(void) DisableControl controlCode:int	-	first-release	first-release	geckwiki:DisableControl.wiki
+xnvse	-	DisableKey	(void) DisableKey scanCode:int	-	first-release	first-release	geckwiki:DisableKey.wiki
+xnvse	-	DispatchEvent	(void) DispatchEvent eventID:string infomap:stringmap AlternativeSenderString:string	-	first-release	first-release	geckwiki:DispatchEvent.wiki
+xnvse	-	DispatchEventAlt	(success:bool) DispatchEventAlt eventName:string multi:arg1 multi:arg2 multi:arg3 multi:arg4 multi:arg5 multi:arg6 multi:arg7 multi:arg8 multi:arg9 multi:arg10 multi:arg11 multi:arg12 multi:arg13 multi:arg14 multi:arg15	-	6.2.8	wiki:originVersion	geckwiki:DispatchEventAlt.wiki
+xnvse	-	DumpEventHanders	(void) DumpEventHanders eventNameFilter:string handlerFilter:[[UDF]] priorityFilter:int	-	6.2.9	wiki:originVersion	geckwiki:DumpEventHanders.wiki
+xnvse	-	EnableControl	(void) EnableControl controlCode:int	-	first-release	first-release	geckwiki:EnableControl.wiki
+xnvse	-	EnableKey	(void) EnableKey scanCode:int	-	first-release	first-release	geckwiki:EnableKey.wiki
+xnvse	-	EndVATScam	(none) EndVATScam	-	first-release	first-release	geckwiki:EndVATScam.wiki
+xnvse	-	EquipItem2	(none) EquipItem2 Object:ref NoUnequipFlag:bool HideEquipMessageFlag:bool	-	first-release	first-release	geckwiki:EquipItem2.wiki
+xnvse	-	EquipMe	(none) EquipMe	-	first-release	first-release	geckwiki:EquipMe.wiki
+xnvse	-	eval	(boolean) eval AnyReducable:expression	-	first-release	first-release	geckwiki:Eval.wiki
+xnvse	-	Exp	(float) Exp float:float	-	first-release	first-release	geckwiki:Exp.wiki
+xnvse	-	Floor	(float) Floor float:float	-	first-release	first-release	geckwiki:Floor.wiki
+xnvse	-	fmod	(float) fmod x:float n:float offset:float	-	first-release	first-release	geckwiki:Fmod.wiki
+xnvse	-	ForEach	(void) ForEach	-	first-release	first-release	geckwiki:ForEach.wiki
+xnvse	-	ForEachInList	(void) ForEachInList source:formList function:udf/lambda	-	6.2.5	wiki:originVersion	geckwiki:ForEachInList.wiki
+xnvse	-	GenericAddForm	(none) GenericAddForm ListCode:int Target:object ToAdd:form Index:int	-	first-release	first-release	geckwiki:GenericAddForm.wiki
+xnvse	-	GenericDeleteForm	(RemovedForm:ref) GenericDeleteForm ListCode:int Target:object Index:int	-	first-release	first-release	geckwiki:GenericDeleteForm.wiki
+xnvse	-	GenericGetForm	(form) GenericGetForm ListCode:int Target:object Index:int	-	first-release	first-release	geckwiki:GenericGetForm.wiki
+xnvse	-	GenericReplaceForm	(OldForm:ref) GenericReplaceForm ListCode:int Target:object New:form Index:int	-	first-release	first-release	geckwiki:GenericReplaceForm.wiki
+xnvse	-	GetActiveFactions	(array) GetActiveFactions Target:actor	-	first-release	first-release	geckwiki:GetActiveFactions.wiki
+xnvse	-	GetActiveRanks	(array) GetActiveRanks Target:Actor	-	first-release	first-release	geckwiki:GetActiveRanks.wiki
+xnvse	-	GetActorBaseFlagsHigh	(int) GetActorBaseFlagsHigh NPC:BaseForm	-	first-release	first-release	geckwiki:GetActorBaseFlagsHigh.wiki
+xnvse	-	GetActorBaseFlagsLow	(int) GetActorBaseFlagsLow actor:BaseForm	-	first-release	first-release	geckwiki:GetActorBaseFlagsLow.wiki
+xnvse	-	GetAgeClass	(int) GetAgeClass actor:reference	-	first-release	first-release	geckwiki:GetAgeClass.wiki
+xnvse	-	GetAllModLocalData	(stringmap) GetAllModLocalData	-	first-release	first-release	geckwiki:GetAllModLocalData.wiki
+xnvse	-	GetAltControl	(int) GetAltControl controlCode:int	-	first-release	first-release	geckwiki:GetAltControl.wiki
+xnvse	-	GetAltPerkRank	(int) GetAltPerkRank Target:perk	-	first-release	first-release	geckwiki:GetAltPerkRank.wiki
+xnvse	-	GetAmmoCasing	(form) GetAmmoCasing Ammo:form	-	first-release	first-release	geckwiki:GetAmmoCasing.wiki
+xnvse	-	GetAmmoConsumedPercent	(float) GetAmmoConsumedPercent Ammo:form	-	first-release	first-release	geckwiki:GetAmmoConsumedPercent.wiki
+xnvse	-	GetAmmoSpeed	(float) GetAmmoSpeed Ammo:form	-	first-release	first-release	geckwiki:GetAmmoSpeed.wiki
+xnvse	-	GetArmorArmorRating	(int) GetArmorArmorRating item:baseform	-	first-release	first-release	geckwiki:GetArmorArmorRating.wiki
+xnvse	-	GetArmorDT	(int) GetArmorDT Armor:form	-	first-release	first-release	geckwiki:GetArmorDT.wiki
+xnvse	-	GetArrayVariable	(array) GetArrayVariable VarName:string Parent:Object	-	first-release	first-release	geckwiki:GetArrayVariable.wiki
+xnvse	-	GetAttackDamage	(int) GetAttackDamage	-	first-release	first-release	geckwiki:GetAttackDamage.wiki
+xnvse	-	GetBaseFactions	(array) GetBaseFactions Target:actor	-	first-release	first-release	geckwiki:GetBaseFactions.wiki
+xnvse	-	GetBaseForm	(form) GetBaseForm	-	first-release	first-release	geckwiki:GetBaseForm.wiki
+xnvse	-	GetBaseHealth	(int) GetBaseHealth form:baseform	-	first-release	first-release	geckwiki:GetBaseHealth.wiki
+xnvse	-	GetBaseNthFaction	(faction) GetBaseNthFaction NthFaction:int Target:actor-character-creature	-	first-release	first-release	geckwiki:GetBaseNthFaction.wiki
+xnvse	-	GetBaseNthRank	(int) GetBaseNthRank NthFaction:int Target:actor-character-creature	-	first-release	first-release	geckwiki:GetBaseNthRank.wiki
+xnvse	-	GetBaseNumFactions	(int) GetBaseNumFactions Target:NPC	-	first-release	first-release	geckwiki:GetBaseNumFactions.wiki
+xnvse	-	GetBaseObject	(form) GetBaseObject	-	first-release	first-release	geckwiki:GetBaseObject.wiki
+xnvse	-	GetBasePackages	(array) GetBasePackages Target:actor	-	first-release	first-release	geckwiki:GetBasePackages.wiki
+xnvse	-	GetBaseRanks	(array) GetBaseRanks Target:NPC-or-Actor	-	first-release	first-release	geckwiki:GetBaseRanks.wiki
+xnvse	-	GetBaseSpellListLevSpells	(array) GetBaseSpellListLevSpells Target:actor	-	first-release	first-release	geckwiki:GetBaseSpellListLevSpells.wiki
+xnvse	-	GetBaseSpellListSpells	(array) GetBaseSpellListSpells Target:actor	-	first-release	first-release	geckwiki:GetBaseSpellListSpells.wiki
+xnvse	-	GetBipedIconPath	(Path:string) GetBipedIconPath BipedPathCode:int Object:form	-	first-release	first-release	geckwiki:GetBipedIconPath.wiki
+xnvse	-	GetBipedModelPath	(Path:string) GetBipedModelPath BipedPathCode:int Object:form	-	first-release	first-release	geckwiki:GetBipedModelPath.wiki
+xnvse	-	GetBit	(bool) GetBit BitMask:int BitIndex:int	-	first-release	first-release	geckwiki:GetBit.wiki
+xnvse	-	GetCallingScript	(script) GetCallingScript :	-	first-release	first-release	geckwiki:GetCallingScript.wiki
+xnvse	-	GetClass	(class) GetClass Actor:NPC	-	first-release	first-release	geckwiki:GetClass.wiki
+xnvse	-	GetCommandOpcode	(int) GetCommandOpcode CommandName:string	-	6.1.6	wiki:originVersion	geckwiki:GetCommandOpcode.wiki
+xnvse	-	GetConsoleEcho	(EchoState:bool) GetConsoleEcho	-	first-release	first-release	geckwiki:GetConsoleEcho.wiki
+xnvse	-	GetConsoleOutputFilename	(FileName:string) GetConsoleOutputFilename	-	first-release	first-release	geckwiki:GetConsoleOutputFileName.wiki
+xnvse	-	GetControl	(KeyCode:int) GetControl controlCode:int	-	first-release	first-release	geckwiki:GetControl.wiki
+xnvse	-	GetCrosshairRef	(ref) GetCrosshairRef	-	first-release	first-release	geckwiki:GetCrosshairRef.wiki
+xnvse	-	GetCurrentEventName	(EventName) GetCurrentEventName	-	first-release	first-release	geckwiki:GetCurrentEventName.wiki
+xnvse	-	GetCurrentHealth	(float) GetCurrentHealth	-	first-release	first-release	geckwiki:GetCurrentHealth.wiki
+xnvse	-	GetCurrentObjective	(int) GetCurrentObjective	-	first-release	first-release	geckwiki:GetCurrentObjective.wiki
+xnvse	-	GetCurrentPackage	(package) GetCurrentPackage Target:actorREF	-	first-release	first-release	geckwiki:GetCurrentPackage.wiki
+xnvse	-	GetCurrentQuest	(ref) GetCurrentQuest	-	first-release	first-release	geckwiki:GetCurrentQuest.wiki
+xnvse	-	GetCurrentQuestObjectiveTeleportLinks	(array) GetCurrentQuestObjectiveTeleportLinks	-	first-release	first-release	geckwiki:GetCurrentQuestObjectiveTeleportLinks.wiki
+xnvse	-	GetCurrentScript	(script) GetCurrentScript :	-	first-release	first-release	geckwiki:GetCurrentScript.wiki
+xnvse	-	GetDebugMode	(int) GetDebugMode modIndex:int	-	first-release	first-release	geckwiki:GetDebugMode.wiki
+xnvse	-	GetDebugSelection	(Selection:reference) GetDebugSelection	-	first-release	first-release	geckwiki:GetDebugSelection.wiki
+xnvse	-	GetDefaultForms	(array) GetDefaultForms :	-	first-release	first-release	geckwiki:GetDefaultForms.wiki
+xnvse	-	GetDialogueSpeaker	(ref) GetDialogueSpeaker <i>Actor</i>:<i>reference</i>	-	first-release	first-release	geckwiki:GetDialogueSpeaker.wiki
+xnvse	-	GetDialogueSubject	(reference) GetDialogueSubject Actor:reference	-	first-release	first-release	geckwiki:GetDialogueSubject.wiki
+xnvse	-	GetDialogueTarget	(reference) GetDialogueTarget	-	first-release	first-release	geckwiki:GetDialogueTarget.wiki
+xnvse	-	GetEquipmentBipedMask	(Mask:int) GetEquipmentBipedMask ToGetMaskOf:armor	-	first-release	first-release	geckwiki:GetEquipmentBipedMask.wiki
+xnvse	-	GetEquipmentSlotsMask	(BitMask:int) GetEquipmentSlotsMask ToGetMaskOf:form	-	first-release	first-release	geckwiki:GetEquipmentSlotsMask.wiki
+xnvse	-	GetEquippedCurrentHealth	(float) GetEquippedCurrentHealth equipmentSlotID:int	-	first-release	first-release	geckwiki:GetEquippedCurrentHealth.wiki
+xnvse	-	GetEquippedObject	(BaseForm) GetEquippedObject SlotID:int	-	first-release	first-release	geckwiki:GetEquippedObject.wiki
+xnvse	-	GetEquippedWeaponModFlags	(BitMask:int) GetEquippedWeaponModFlags	-	first-release	first-release	geckwiki:GetEquippedWeaponModFlags.wiki
+xnvse	-	GetEquipType	(int) GetEquipType item:baseform	-	first-release	first-release	geckwiki:GetEquipType.wiki
+xnvse	-	GetEventHandlers	(array) GetEventHandlers eventNameFilter:string handlerFilter:[[UDF]] priorityFilter:int	-	6.2.9	wiki:originVersion	geckwiki:GetEventHandlers.wiki
+xnvse	-	GetEyes	(eyes:BaseForm) GetEyes	-	first-release	first-release	geckwiki:GetEyes.wiki
+xnvse	-	GetEyesFlags	(int) GetEyesFlags eyes:BaseForm	-	first-release	first-release	geckwiki:GetEyesFlags.wiki
+xnvse	-	GetFactionRankFemaleNames	(array) GetFactionRankFemaleNames Target:actor	-	first-release	first-release	geckwiki:GetFactionRankFemaleNames.wiki
+xnvse	-	GetFactionRankNames	(array) GetFactionRankNames Target:faction	-	first-release	first-release	geckwiki:GetFactionRankNames.wiki
+xnvse	-	GetFalloutDirectory	(string) GetFalloutDirectory	-	first-release	first-release	geckwiki:GetFalloutDirectory.wiki
+xnvse	-	GetFirstRef	(reference) GetFirstRef FormTypeID:int CellDepth:int IncludeTakenRefs:bool	-	first-release	first-release	geckwiki:GetFirstRef.wiki
+xnvse	-	GetFirstRefForItem	(ref) GetFirstRefForItem Type:object	-	first-release	first-release	geckwiki:GetFirstRefForItem.wiki
+xnvse	-	GetFirstRefInCell	(reference) GetFirstRefInCell Cell:baseform FormTypeID:int CellDepth:int IncludeTakenRefs:bool	-	first-release	first-release	geckwiki:GetFirstRefInCell.wiki
+xnvse	-	GetFlagsHigh	(Mask:int) GetFlagsHigh Target:form	-	first-release	first-release	geckwiki:GetFlagsHigh.wiki
+xnvse	-	GetFlagsLow	(Mask:int) GetFlagsLow Target:form	-	first-release	first-release	geckwiki:GetFlagsLow.wiki
+xnvse	-	GetFormIDString	(string) GetFormIDString ToGet:form	-	first-release	first-release	geckwiki:GetFormIDString.wiki
+xnvse	-	GetFOSEBeta	(int) GetFOSEBeta	-	first-release	first-release	geckwiki:GetFOSEBeta.wiki
+xnvse	-	GetFOSERevision	(int) GetFOSERevision	-	first-release	first-release	geckwiki:GetFOSERevision.wiki
+xnvse	-	GetFOSEVersion	(int) GetFOSEVersion	-	first-release	first-release	geckwiki:GetFOSEVersion.wiki
+xnvse	-	GetGameLoaded	(int) GetGameLoaded	-	first-release	first-release	geckwiki:GetGameLoaded.wiki
+xnvse	-	GetGameRestarted	(int) GetGameRestarted	-	first-release	first-release	geckwiki:GetGameRestarted.wiki
+xnvse	-	GetGridsToLoad	(int) GetGridsToLoad	-	first-release	first-release	geckwiki:GetGridsToLoad.wiki
+xnvse	-	GetHair	(baseForm) GetHair	-	first-release	first-release	geckwiki:GetHair.wiki
+xnvse	-	GetHairColor	(int) GetHairColor ColorCode:int Actor:NPC	-	first-release	first-release	geckwiki:GetHairColor.wiki
+xnvse	-	GetHairFlags	(int) GetHairFlags hair:BaseForm	-	first-release	first-release	geckwiki:GetHairFlags.wiki
+xnvse	-	GetHairLength	(float) GetHairLength	-	first-release	first-release	geckwiki:GetHairLength.wiki
+xnvse	-	GetHeadParts	(array) GetHeadParts Target:NPC	-	first-release	first-release	geckwiki:GetHeadParts.wiki
+xnvse	-	GetHigherPriorityEventHandlers	(array) GetHigherPriorityEventHandlers eventName:string handler:[[UDF]] startPriority:int scriptsToIgnore:scriptOrFormlist pluginsToIgnore:array pluginHandlersToIgnore:array	-	6.2.9	wiki:originVersion	geckwiki:GetHigherPriorityEventHandlers.wiki
+xnvse	-	GetHotkeyItem	(BaseForm) GetHotkeyItem hotkey:int	-	first-release	first-release	geckwiki:GetHotkeyItem.wiki
+xnvse	-	GetIconPath	(Path:string) GetIconPath Object:form	-	first-release	first-release	geckwiki:GetIconPath.wiki
+xnvse	-	GetInGrid	(bool) GetInGrid Target:reference CellDepth:int IncludeTakenRefs:bool	-	first-release	first-release	geckwiki:GetInGrid.wiki
+xnvse	-	GetInGridInCell	(bool) GetInGridInCell Center:cell Target:reference CellDepth:int IncludeTakenRefs:bool	-	first-release	first-release	geckwiki:GetInGridInCell.wiki
+xnvse	-	GetInventoryObject	(baseform) GetInventoryObject index:int	-	first-release	first-release	geckwiki:GetInventoryObject.wiki
+xnvse	-	GetInvRefsForItem	(array) GetInvRefsForItem Type:baseform	-	first-release	first-release	geckwiki:GetInvRefsForItem.wiki
+xnvse	-	GetItemValue	(int) GetItemValue item:baseForm	-	first-release	first-release	geckwiki:GetItemValue.wiki
+xnvse	-	GetKeyName	(string) GetKeyName KeyCode:int	-	first-release	first-release	geckwiki:GetKeyName.wiki
+xnvse	-	GetKeyPress	(int) GetKeyPress index:int	-	first-release	first-release	geckwiki:GetKeyPress.wiki
+xnvse	-	GetLevCharacterRefs	(array) GetLevCharacterRefs Source:LeveledCharacter	-	first-release	first-release	geckwiki:GetLevCharacterRefs.wiki
+xnvse	-	GetLevCreatureRefs	(array) GetLevCreatureRefs Source:LeveledCreature	-	first-release	first-release	geckwiki:GetLevCreatureRefs.wiki
+xnvse	-	GetLinkedDoor	(reference) GetLinkedDoor	-	first-release	first-release	geckwiki:GetLinkedDoor.wiki
+xnvse	-	GetListForms	(array) GetListForms ToMatch:formlist	-	first-release	first-release	geckwiki:GetListForms.wiki
+xnvse	-	GetLocalRefIndex	(int) GetLocalRefIndex Target:object	-	first-release	first-release	geckwiki:GetLocalRefIndex.wiki
+xnvse	-	GetLowerPriorityEventHandlers	(array) GetLowerPriorityEventHandlers eventName:string handler:[[UDF]] startPriority:int scriptsToIgnore:scriptOrFormlist pluginsToIgnore:array pluginHandlersToIgnore:array	-	6.2.9	wiki:originVersion	geckwiki:GetLowerPriorityEventHandlers.wiki
+xnvse	-	GetModelPath	(Path:string) GetModelPath Object:form	-	first-release	first-release	geckwiki:GetModelPath.wiki
+xnvse	-	GetModIndex	(int) GetModIndex modName:string	-	first-release	first-release	geckwiki:GetModIndex.wiki
+xnvse	-	GetModLocalData	(Multi) GetModLocalData Key:string	-	first-release	first-release	geckwiki:GetModLocalData.wiki
+xnvse	-	GetMouseButtonPress	(FixMe) GetMouseButtonPress index:int	-	first-release	first-release	geckwiki:GetMouseButtonPress.wiki
+xnvse	-	GetName	(string) GetName Named:object	-	first-release	first-release	geckwiki:GetName.wiki
+xnvse	-	GetNameOfClass	(string) GetNameOfClass Actor:NPC	-	first-release	first-release	geckwiki:GetNameOfClass.wiki
+xnvse	-	GetNextRef	(reference) GetNextRef	-	first-release	first-release	geckwiki:GetNextRef.wiki
+xnvse	-	GetNextRefForItem	(temp ref) GetNextRefForItem Type:object	-	first-release	first-release	geckwiki:GetNextRefForItem.wiki
+xnvse	-	GetNPCHeight	(float) GetNPCHeight Actor:NPC	-	first-release	first-release	geckwiki:GetNPCHeight.wiki
+xnvse	-	GetNPCWeight	(float) GetNPCWeight Actor:NPC	-	first-release	first-release	geckwiki:GetNPCWeight.wiki
+xnvse	-	GetNthDefaultForm	(form) GetNthDefaultForm Index:int	-	first-release	first-release	geckwiki:GetNthDefaultForm.wiki
+xnvse	-	GetNthExplicitRef	(ref) GetNthExplicitRef Index:int Script:script	-	first-release	first-release	geckwiki:GetNthExplicitRef.wiki
+xnvse	-	GetNthFactionRankName	(RankName:string) GetNthFactionRankName Target:faction WhichRank:int Female:bool	-	first-release	first-release	geckwiki:GetNthFactionRankName.wiki
+xnvse	-	GetNthModName	(string) GetNthModName ModIndex:int	-	first-release	first-release	geckwiki:GetNthModName.wiki
+xnvse	-	GetNthPackage	(void) GetNthPackage	-	first-release	first-release	geckwiki:GetNthPackage.wiki
+xnvse	-	GetNthQuestObjective	(int) GetNthQuestObjective QuestID:baseform index:int	-	first-release	first-release	geckwiki:GetNthQuestObjective.wiki
+xnvse	-	GetNumericGameSetting	(IntegerOrFloat) GetNumericGameSetting settingName:string	-	first-release	first-release	geckwiki:GetNumericGameSetting.wiki
+xnvse	-	GetNumericINISetting	(IntegerOrFloat) GetNumericINISetting settingName:string	-	first-release	first-release	geckwiki:GetNumericINISetting.wiki
+xnvse	-	GetNumExplicitRefs	(NumRefs:int) GetNumExplicitRefs Script:script	-	first-release	first-release	geckwiki:GetNumExplicitRefs.wiki
+xnvse	-	GetNumItems	(int) GetNumItems	-	first-release	first-release	geckwiki:GetNumItems.wiki
+xnvse	-	GetNumKeysPressed	(int) GetNumKeysPressed	-	first-release	first-release	geckwiki:GetNumKeysPressed.wiki
+xnvse	-	GetNumLoadedMods	(int) GetNumLoadedMods	-	first-release	first-release	geckwiki:GetNumLoadedMods.wiki
+xnvse	-	GetNumMouseButtonsPressed	(int) GetNumMouseButtonsPressed	-	first-release	first-release	geckwiki:GetNumMouseButtonsPressed.wiki
+xnvse	-	GetNumRanks	(int) GetNumRanks Target:faction	-	first-release	first-release	geckwiki:GetNumRanks.wiki
+xnvse	-	GetNumRefs	(int) GetNumRefs formType:int cellDepth:int includeTakenRefs:0/1	-	first-release	first-release	geckwiki:GetNumRefs.wiki
+xnvse	-	GetNumRefsInCell	(int) GetNumRefsInCell cell:baseform formtype:int cellDepth:int includeTakenRefs:0/1	-	first-release	first-release	geckwiki:GetNumRefsInCell.wiki
+xnvse	-	GetNVSEBeta	(int) GetNVSEBeta	-	first-release	first-release	geckwiki:GetNVSEBeta.wiki
+xnvse	-	GetNVSERevision	(int) GetNVSERevision	-	first-release	first-release	geckwiki:GetNVSERevision.wiki
+xnvse	-	GetNVSEVersion	(int) GetNVSEVersion	-	4	wiki:text	geckwiki:GetNVSEVersion.wiki
+xnvse	-	GetObjectEffect	(baseForm) GetObjectEffect item:baseform	-	first-release	first-release	geckwiki:GetObjectEffect.wiki
+xnvse	-	GetObjectType	(TypeCode:int) GetObjectType	-	first-release	first-release	geckwiki:GetObjectType.wiki
+xnvse	-	GetOpenKey	(baseForm) GetOpenKey	-	first-release	first-release	geckwiki:GetOpenKey.wiki
+xnvse	-	GetOwner	(baseForm) GetOwner	-	first-release	first-release	geckwiki:GetOwner.wiki
+xnvse	-	GetOwningFactionRequiredRank	(int) GetOwningFactionRequiredRank	-	first-release	first-release	geckwiki:GetOwningFactionRequiredRank.wiki
+xnvse	-	GetPackageCount	(void) GetPackageCount	-	first-release	first-release	geckwiki:GetPackageCount.wiki
+xnvse	-	GetPackageLocation	(ref) GetPackageLocation ToCheck:package	-	first-release	first-release	geckwiki:GetPackageLocation.wiki
+xnvse	-	GetPackageLocationRadius	(float) GetPackageLocationRadius package:form	-	first-release	first-release	geckwiki:GetPackageLocationRadius.wiki
+xnvse	-	GetPackageTargetDistance	(int) GetPackageTargetDistance package:form	-	first-release	first-release	geckwiki:GetPackageTargetDistance.wiki
+xnvse	-	GetPaired	(bool) GetPaired Token:baseform Another:actor	-	first-release	first-release	geckwiki:GetPaired.wiki
+xnvse	-	GetParentCell	(BaseForm) GetParentCell	-	first-release	first-release	geckwiki:GetParentCell.wiki
+xnvse	-	GetParentCellOwner	(BaseForm) GetParentCellOwner	-	first-release	first-release	geckwiki:GetParentCellOwner.wiki
+xnvse	-	GetParentCellOwningFactionRequiredRank	(int) GetParentCellOwningFactionRequiredRank	-	first-release	first-release	geckwiki:GetParentCellOwningFactionRequiredRank.wiki
+xnvse	-	GetParentWorldspace	(baseForm) GetParentWorldspace	-	first-release	first-release	geckwiki:GetParentWorldspace.wiki
+xnvse	-	GetPerkRank	(int) GetPerkRank Target:perk	-	first-release	first-release	geckwiki:GetPerkRank.wiki
+xnvse	-	GetPermanent	(bool) GetPermanent ItemOrActor:Ref	-	first-release	first-release	geckwiki:GetPermanent.wiki
+xnvse	-	GetPlayerCurrentAmmo	(Ammo:baseform) GetPlayerCurrentAmmo	-	first-release	first-release	geckwiki:GetPlayerCurrentAmmo.wiki
+xnvse	-	GetPlayerCurrentAmmoRounds	(int) GetPlayerCurrentAmmoRounds	-	first-release	first-release	geckwiki:GetPlayerCurrentAmmoRounds.wiki
+xnvse	-	GetPluginVersion	(float) GetPluginVersion PluginName:string	-	first-release	first-release	geckwiki:GetPluginVersion.wiki
+xnvse	-	GetQuestObjectiveCount	(int) GetQuestObjectiveCount Quest:baseform	-	first-release	first-release	geckwiki:GetQuestObjectiveCount.wiki
+xnvse	-	GetRace	(race) GetRace Actor:NPC	-	first-release	first-release	geckwiki:GetRace.wiki
+xnvse	-	GetRaceEyes	(array) GetRaceEyes Target:race	-	first-release	first-release	geckwiki:GetRaceEyes.wiki
+xnvse	-	GetRaceHairs	(array) GetRaceHairs Target:race	-	first-release	first-release	geckwiki:GetRaceHairs.wiki
+xnvse	-	GetRaceName	(string) GetRaceName Actor:NPC	-	first-release	first-release	geckwiki:GetRaceName.wiki
+xnvse	-	GetRawFormIDString	(string) GetRawFormIDString ToGet:Multi	-	first-release	first-release	geckwiki:GetRawFormIDString.wiki
+xnvse	-	GetRefCount	(int) GetRefCount	-	first-release	first-release	geckwiki:GetRefCount.wiki
+xnvse	-	GetRefs	(array) GetRefs FormTypeCode:int CellDepth:int IncludeTakenRefs:bool maxDistance:float	-	first-release	first-release	geckwiki:GetRefs.wiki
+xnvse	-	GetRefsInCell	(array) GetRefsInCell Target:Cell FormTypeCode:int CellDepth:int IncludeTakenRefs:bool maxDistance:float	-	first-release	first-release	geckwiki:GetRefsInCell.wiki
+xnvse	-	GetRefVariable	(form) GetRefVariable VarName:string Parent:Object	-	4.5.6	wiki:text	geckwiki:GetRefVariable.wiki
+xnvse	-	GetRepairList	(baseForm) GetRepairList item:baseform	-	first-release	first-release	geckwiki:GetRepairList.wiki
+xnvse	-	GetScopeModelPath	(string) GetScopeModelPath ToGetScopeOf:weapon	-	first-release	first-release	geckwiki:GetScopeModelPath.wiki
+xnvse	-	GetScript	(BaseForm) GetScript ScriptableObject:baseform	-	first-release	first-release	geckwiki:GetScript.wiki
+xnvse	-	GetSelfAlt	(void) GetSelfAlt	-	6.2.8	wiki:originVersion	geckwiki:GetSelfAlt.wiki
+xnvse	-	GetSoldItemInvRef	(soldItem:reference) GetSoldItemInvRef	-	6.2.8	wiki:originVersion	geckwiki:GetSoldItemInvRef.wiki
+xnvse	-	GetSourceModIndex	(int) GetSourceModIndex item:baseform	-	first-release	first-release	geckwiki:GetSourceModIndex.wiki
+xnvse	-	GetStringGameSetting	(string) GetStringGameSetting SettingName:string	-	first-release	first-release	geckwiki:GetStringGameSetting.wiki
+xnvse	-	GetStringIniSetting	(string) GetStringIniSetting Setting:string	-	first-release	first-release	geckwiki:GetStringINISetting.wiki
+xnvse	-	GetTeleportCell	(baseForm) GetTeleportCell	-	first-release	first-release	geckwiki:GetTeleportCell.wiki
+xnvse	-	GetTexturePath	(Path:string) GetTexturePath Object:form	-	first-release	first-release	geckwiki:GetTexturePath.wiki
+xnvse	-	GetTFC	(int) GetTFC	-	first-release	first-release	geckwiki:GetTFC.wiki
+xnvse	-	GetTokenRef	(form) GetTokenRef Token:baseform	-	first-release	first-release	geckwiki:GetTokenRef.wiki
+xnvse	-	GetTokenValue	(float) GetTokenValue Token:baseform	-	first-release	first-release	geckwiki:GetTokenValue.wiki
+xnvse	-	GetUIFloat	(float) GetUIFloat traitName:string	-	first-release	first-release	geckwiki:GetUIFloat.wiki
+xnvse	-	GetUIFloatAlt	(float) GetUIFloatAlt traitName:string	-	6.0.8	wiki:originVersion	geckwiki:GetUIFloatAlt.wiki
+xnvse	-	GetUserTime	(StringMap) GetUserTime	-	first-release	first-release	geckwiki:GetUserTime.wiki
+xnvse	-	GetVariable	(float) GetVariable VarName:string Parent:Object	-	first-release	first-release	geckwiki:GetVariable.wiki
+xnvse	-	GetWeaponActionPoints	(float) GetWeaponActionPoints weapon:baseForm	-	first-release	first-release	geckwiki:GetWeaponActionPoints.wiki
+xnvse	-	GetWeaponAimArc	(float) GetWeaponAimArc weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponAimArc.wiki
+xnvse	-	GetWeaponAmmo	(baseForm) GetWeaponAmmo weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponAmmo.wiki
+xnvse	-	GetWeaponAmmoUse	(float) GetWeaponAmmoUse weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponAmmoUse.wiki
+xnvse	-	GetWeaponAnimAttackMult	(float) GetWeaponAnimAttackMult weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponAnimAttackMult.wiki
+xnvse	-	GetWeaponAnimJamTime	(float) GetWeaponAnimJamTime weapon:[[BaseForm]]	-	first-release	first-release	geckwiki:GetWeaponAnimJamTime.wiki
+xnvse	-	GetWeaponAnimMult	(float) GetWeaponAnimMult weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponAnimMult.wiki
+xnvse	-	GetWeaponAnimReloadTime	(float) GetWeaponAnimReloadTime weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponAnimReloadTime.wiki
+xnvse	-	GetWeaponAnimShotsPerSec	(float) GetWeaponAnimShotsPerSec weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponAnimShotsPerSec.wiki
+xnvse	-	GetWeaponAttackAnimation	(int) GetWeaponAttackAnimation weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponAttackAnimation.wiki
+xnvse	-	GetWeaponBaseVATSChance	(int) GetWeaponBaseVATSChance weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponBaseVATSChance.wiki
+xnvse	-	GetWeaponClipRounds	(int) GetWeaponClipRounds weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponClipRounds.wiki
+xnvse	-	GetWeaponCritChance	(float) GetWeaponCritChance weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponCritChance.wiki
+xnvse	-	GetWeaponCritDamage	(float) GetWeaponCritDamage weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponCritDamage.wiki
+xnvse	-	GetWeaponCritEffect	(baseForm) GetWeaponCritEffect weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponCritEffect.wiki
+xnvse	-	GetWeaponFireDelayMax	(float) GetWeaponFireDelayMax weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponFireDelayMax.wiki
+xnvse	-	GetWeaponFireDelayMin	(float) GetWeaponFireDelayMin weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponFireDelayMin.wiki
+xnvse	-	GetWeaponFireRate	(float) GetWeaponFireRate weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponFireRate.wiki
+xnvse	-	GetWeaponFlags1	(Mask:int) GetWeaponFlags1 Weapon:form	-	first-release	first-release	geckwiki:GetWeaponFlags1.wiki
+xnvse	-	GetWeaponFlags2	(Mask:int) GetWeaponFlags2 Weapon:form	-	first-release	first-release	geckwiki:GetWeaponFlags2.wiki
+xnvse	-	GetWeaponHandGrip	(0-6) GetWeaponHandGrip weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponHandGrip.wiki
+xnvse	-	GetWeaponHasScope	(0/1) GetWeaponHasScope item:baseform	-	first-release	first-release	geckwiki:GetWeaponHasScope.wiki
+xnvse	-	GetWeaponIsAutomatic	(0/1) GetWeaponIsAutomatic weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponIsAutomatic.wiki
+xnvse	-	GetWeaponItemMod	(form) GetWeaponItemMod ItemMod:int Weapon:form	-	first-release	first-release	geckwiki:GetWeaponItemMod.wiki
+xnvse	-	GetWeaponItemModEffect	(effect:int) GetWeaponItemModEffect modSlot:int(1-3) weapon:form	-	first-release	first-release	geckwiki:GetWeaponItemModEffect.wiki
+xnvse	-	GetWeaponItemModValue1	(EffectCode:int) GetWeaponItemModValue1 ModSlot:int Weapon:form	-	first-release	first-release	geckwiki:GetWeaponItemModValue1.wiki
+xnvse	-	GetWeaponItemModValue2	(EffectCode:int) GetWeaponItemModValue2 ModSlot:int Weapon:form	-	first-release	first-release	geckwiki:GetWeaponItemModValue2.wiki
+xnvse	-	GetWeaponLimbDamageMult	(float) GetWeaponLimbDamageMult weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponLimbDamageMult.wiki
+xnvse	-	GetWeaponLongBursts	(float) GetWeaponLongBursts Weapon:form	-	first-release	first-release	geckwiki:GetWeaponLongBursts.wiki
+xnvse	-	GetWeaponMaxRange	(float) GetWeaponMaxRange weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponMaxRange.wiki
+xnvse	-	GetWeaponMinRange	(float) GetWeaponMinRange weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponMinRange.wiki
+xnvse	-	GetWeaponMinSpread	(float) GetWeaponMinSpread weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponMinSpread.wiki
+xnvse	-	GetWeaponNumProjectiles	(int) GetWeaponNumProjectiles weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponNumProjectiles.wiki
+xnvse	-	GetWeaponProjectile	(projectile:baseForm) GetWeaponProjectile weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponProjectile.wiki
+xnvse	-	GetWeaponReach	(reach:float) GetWeaponReach weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponReach.wiki
+xnvse	-	GetWeaponRegenRate	(float) GetWeaponRegenRate weapon:baseform	-	6.2.1	wiki:originVersion	geckwiki:GetWeaponRegenRate.wiki
+xnvse	-	GetWeaponReloadAnim	(int{0-22) GetWeaponReloadAnim weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponReloadAnim.wiki
+xnvse	-	GetWeaponRequiredStrength	(int) GetWeaponRequiredStrength Weapon:form	-	first-release	first-release	geckwiki:GetWeaponRequiredStrength.wiki
+xnvse	-	GetWeaponResistType	(int) GetWeaponResistType weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponResistType.wiki
+xnvse	-	GetWeaponRumbleDuration	(float) GetWeaponRumbleDuration weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponRumbleDuration.wiki
+xnvse	-	GetWeaponRumbleLeftMotor	(float) GetWeaponRumbleLeftMotor weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponRumbleLeftMotor.wiki
+xnvse	-	GetWeaponRumbleRightMotor	(float) GetWeaponRumbleRightMotor weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponRumbleRightMotor.wiki
+xnvse	-	GetWeaponRumbleWaveLength	(float) GetWeaponRumbleWaveLength weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponRumbleWaveLength.wiki
+xnvse	-	GetWeaponSightFOV	(float) GetWeaponSightFOV weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponSightFOV.wiki
+xnvse	-	GetWeaponSightUsage	(float) GetWeaponSightUsage item:baseform	-	first-release	first-release	geckwiki:GetWeaponSightUsage.wiki
+xnvse	-	GetWeaponSkill	(int) GetWeaponSkill weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponSkill.wiki
+xnvse	-	GetWeaponSpread	(float) GetWeaponSpread weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponSpread.wiki
+xnvse	-	GetWeaponType	(int) GetWeaponType weapon:baseform	-	first-release	first-release	geckwiki:GetWeaponType.wiki
+xnvse	-	GetWeight	(float) GetWeight item:baseform	-	first-release	first-release	geckwiki:GetWeight.wiki
+xnvse	-	Goto	(void) Goto labelID:int	-	first-release	first-release	geckwiki:Goto.wiki
+xnvse	-	HasConsoleOutputFileName	(bool) HasConsoleOutputFileName	-	first-release	first-release	geckwiki:HasConsoleOutputFileName.wiki
+xnvse	-	HasOwnership	(bool) HasOwnership Item:ref	-	first-release	first-release	geckwiki:HasOwnership.wiki
+xnvse	-	HasScriptCommand	(success:0/1) HasScriptCommand CommandOpcode:int Script/Form:form EventID:int (optional)	-	6.1.6	wiki:originVersion	geckwiki:HasScriptCommand.wiki
+xnvse	-	HasVariable	(bool) HasVariable VarName:string Parent:Object	-	4.5.6	wiki:text	geckwiki:HasVariable.wiki
+xnvse	-	HoldKey	(none) HoldKey scanCode:int	-	first-release	first-release	geckwiki:HoldKey.wiki
+xnvse	-	index	(string_var) index index:int baseActor:form	-	first-release	first-release	geckwiki:GetNthAnimation.wiki
+xnvse	-	IntToBin	(string) IntToBin ToConvert:int WidthToPadTo:int AddPrefix:bool	-	6.2.9	wiki:originVersion	geckwiki:IntToBin.wiki
+xnvse	-	IsClonedForm	(0/1) IsClonedForm form:baseForm	-	first-release	first-release	geckwiki:IsClonedForm.wiki
+xnvse	-	IsControl	(int) IsControl scanCode:int	-	first-release	first-release	geckwiki:IsControl.wiki
+xnvse	-	IsControlDisabled	(int) IsControlDisabled controlCode:int	-	first-release	first-release	geckwiki:IsControlDisabled.wiki
+xnvse	-	IsControlPressed	(int) IsControlPressed controlCode:int	-	first-release	first-release	geckwiki:IsControlPressed.wiki
+xnvse	-	IsDigit	(bool) IsDigit SourceCharacter:int	-	first-release	first-release	geckwiki:IsDigit.wiki
+xnvse	-	IsEquipped	(bool) IsEquipped	-	first-release	first-release	geckwiki:IsEquipped.wiki
+xnvse	-	IsEventHandlerFirst	(bool) IsEventHandlerFirst eventName:string handler:[[UDF]] startPriority:int scriptsToIgnore:scriptOrFormlist pluginsToIgnore:array pluginHandlersToIgnore:array	-	6.2.9	wiki:originVersion	geckwiki:IsEventHandlerFirst.wiki
+xnvse	-	IsEventHandlerLast	(bool) IsEventHandlerLast eventName:string handler:[[UDF]] startPriority:int scriptsToIgnore:scriptOrFormlist pluginsToIgnore:array pluginHandlersToIgnore:array	-	6.2.9	wiki:originVersion	geckwiki:IsEventHandlerLast.wiki
+xnvse	-	IsFormValid	(bool) IsFormValid refVar:ref	-	first-release	first-release	geckwiki:IsFormValid.wiki
+xnvse	-	IsKeyDisabled	(int) IsKeyDisabled scanCode:int	-	first-release	first-release	geckwiki:IsKeyDisabled.wiki
+xnvse	-	IsKeyPressed	(int) IsKeyPressed scanCode:int IgnoreKeyStatus:int	-	first-release	first-release	geckwiki:IsKeyPressed.wiki
+xnvse	-	IsLetter	(bool) IsLetter SourceCharacter:int	-	first-release	first-release	geckwiki:IsLetter.wiki
+xnvse	-	IsLoadDoor	(bool) IsLoadDoor	-	first-release	first-release	geckwiki:IsLoadDoor.wiki
+xnvse	-	IsModLoaded	(bool) IsModLoaded modName:string	-	first-release	first-release	geckwiki:IsModLoaded.wiki
+xnvse	-	IsOwned	(bool) IsOwned Owner:ref	-	first-release	first-release	geckwiki:IsOwned.wiki
+xnvse	-	IsPersistent	(bool) IsPersistent	-	first-release	first-release	geckwiki:IsPersistent.wiki
+xnvse	-	IsPlayable	(bool) IsPlayable ToCheck:form	-	4.2	wiki:text	geckwiki:IsPlayable.wiki
+xnvse	-	IsPlayerSwimming	(bool) IsPlayerSwimming	-	first-release	first-release	geckwiki:IsPlayerSwimming.wiki
+xnvse	-	IsPluginInstalled	(bool) IsPluginInstalled PluginName:string	-	first-release	first-release	geckwiki:IsPluginInstalled.wiki
+xnvse	-	IsPowerArmor	(0/1) IsPowerArmor form:baseform	-	first-release	first-release	geckwiki:IsPowerArmor.wiki
+xnvse	-	IsPrintable	(bool) IsPrintable SourceCharacter:int	-	first-release	first-release	geckwiki:IsPrintable.wiki
+xnvse	-	IsPunctuation	(bool) IsPunctuation SourceCharacter:int	-	first-release	first-release	geckwiki:IsPunctuation.wiki
+xnvse	-	IsQuestItem	(bool) IsQuestItem Item:Object	-	first-release	first-release	geckwiki:IsQuestItem.wiki
+xnvse	-	IsReference	(bool) IsReference reference:ref	-	first-release	first-release	geckwiki:IsReference.wiki
+xnvse	-	IsRefInList	(Index:int) IsRefInList ToCheck:formlist For:anyform	-	first-release	first-release	geckwiki:IsRefInList.wiki
+xnvse	-	IsScripted	(bool) IsScripted ScriptableForm:baseForm	-	first-release	first-release	geckwiki:IsScripted.wiki
+xnvse	-	IsUpperCase	(bool) IsUpperCase SourceCharacter:int	-	first-release	first-release	geckwiki:IsUpperCase.wiki
+xnvse	-	Label	(void) Label labelID:int	-	first-release	first-release	geckwiki:Label.wiki
+xnvse	-	LeftShift	(int) LeftShift Value:int ShiftAmount:int	-	first-release	first-release	geckwiki:LeftShift.wiki
+xnvse	-	let	(assignment) let Variable:Any Operator:Any Value:Any	-	first-release	first-release	geckwiki:Let.wiki
+xnvse	-	ListAddForm	(int) ListAddForm formlist:baseform formToAdd:form index:int checkForDupes:bool	-	first-release	first-release	geckwiki:ListAddForm.wiki
+xnvse	-	ListAddReference	(int) ListAddReference formlist:baseform index:int checkForDupes:bool	-	first-release	first-release	geckwiki:ListAddReference.wiki
+xnvse	-	ListClear	(None) ListClear ToClear:FormList	-	first-release	first-release	geckwiki:ListClear.wiki
+xnvse	-	ListGetCount	(Count:int) ListGetCount formlist:baseForm	-	first-release	first-release	geckwiki:ListGetCount.wiki
+xnvse	-	ListGetFormIndex	(int) ListGetFormIndex formlist:baseform form:ref	-	first-release	first-release	geckwiki:ListGetFormIndex.wiki
+xnvse	-	ListGetNthForm	(reference/BaseForm) ListGetNthForm formlist:baseform index:int	-	first-release	first-release	geckwiki:ListGetNthForm.wiki
+xnvse	-	ListRemoveForm	(int) ListRemoveForm formlist:baseform form:ref	-	first-release	first-release	geckwiki:ListRemoveForm.wiki
+xnvse	-	ListRemoveNthForm	(ref) ListRemoveNthForm formlist:baseform index:int	-	first-release	first-release	geckwiki:ListRemoveNthForm.wiki
+xnvse	-	ListReplaceForm	(int) ListReplaceForm formlist:baseform replaceWith:ref formToReplace:ref	-	first-release	first-release	geckwiki:ListReplaceForm.wiki
+xnvse	-	ListReplaceNthForm	(ref) ListReplaceNthForm formlist:baseform replaceWith:ref formIndex:int	-	first-release	first-release	geckwiki:ListReplaceNthForm.wiki
+xnvse	-	Log10	(float) Log10 float:float	-	first-release	first-release	geckwiki:Log10.wiki
+xnvse	-	LogicalAnd	(int) LogicalAnd int:int int:int	-	first-release	first-release	geckwiki:LogicalAnd.wiki
+xnvse	-	LogicalNot	(int) LogicalNot int:int	-	first-release	first-release	geckwiki:LogicalNot.wiki
+xnvse	-	LogicalOr	(int) LogicalOr int:int int:int	-	first-release	first-release	geckwiki:LogicalOr.wiki
+xnvse	-	LogicalXor	(int) LogicalXor int:int int:int	-	first-release	first-release	geckwiki:LogicalXor.wiki
+xnvse	-	Loop	(void) Loop	-	first-release	first-release	geckwiki:Loop.wiki
+xnvse	-	MenuHoldKey	(void) MenuHoldKey scanCode:int	-	first-release	first-release	geckwiki:MenuHoldKey.wiki
+xnvse	-	MenuReleaseKey	(void) MenuReleaseKey scanCode:int	-	first-release	first-release	geckwiki:MenuReleaseKey.wiki
+xnvse	-	MenuTapKey	(void) MenuTapKey scanCode:int	-	first-release	first-release	geckwiki:MenuTapKey.wiki
+xnvse	-	MessageBoxEx	(none) MessageBoxEx string:formatable	-	first-release	first-release	geckwiki:MessageBoxEx.wiki
+xnvse	-	MessageEx	(none) MessageEx string:formatable	-	first-release	first-release	geckwiki:MessageEx.wiki
+xnvse	-	ModLocalDataExists	(Exists:bool) ModLocalDataExists Key:string	-	first-release	first-release	geckwiki:ModLocalDataExists.wiki
+xnvse	-	NumToHex	(string) NumToHex ToConvert:int WidthToPadTo:int AddPrefix:bool	-	first-release	first-release	geckwiki:NumToHex.wiki
+xnvse	-	OutputLocalMapPicturesOverride	(void) OutputLocalMapPicturesOverride	-	first-release	first-release	geckwiki:OutputLocalMapPicturesOverride.wiki
+xnvse	-	PickOneOf	(form) PickOneOf Intersection:formlist	-	first-release	first-release	geckwiki:PickOneOf.wiki
+xnvse	-	Pow	(float) Pow num1:float num2:float	-	first-release	first-release	geckwiki:Pow.wiki
+xnvse	-	Print	(none) Print string:expression	-	first-release	first-release	geckwiki:Print.wiki
+xnvse	-	PrintActiveTile	(void) PrintActiveTile	-	first-release	first-release	geckwiki:PrintActiveTile.wiki
+xnvse	-	PrintDebug	(none) PrintDebug string:expression	-	first-release	first-release	geckwiki:PrintDebug.wiki
+xnvse	-	PrintDebugF	(none) PrintDebugF OutputFileName:string OutputText:string	-	first-release	first-release	geckwiki:PrintDebugF.wiki
+xnvse	-	PrintF	(none) PrintF OutputFileName:string OutputText:string	-	first-release	first-release	geckwiki:PrintF.wiki
+xnvse	-	PrintToConsole	(void) PrintToConsole Message:string Formatting ...:	-	first-release	first-release	geckwiki:PrintToConsole.wiki
+xnvse	-	PrintVar	(none) PrintVar variableName:variable	-	6.1	wiki:originVersion	geckwiki:PrintVar.wiki
+xnvse	-	QFromAxisAngle	(none) QFromAxisAngle Out_W:string Out_X:string Out_Y:string Out_Z:string Axis_X:float Axis_Y:float Axis_Z:float Angle:float	-	first-release	first-release	geckwiki:QFromAxisAngle.wiki
+xnvse	-	QFromEuler	(none) QFromEuler Out_W:string Out_X:string Out_Y:string Out_Z:string Elevation:float Bank:float Heading:float OptionZX:bool	-	first-release	first-release	geckwiki:QFromEuler.wiki
+xnvse	-	QInterpolate	(none) QInterpolate Out_W:string Out_X:string Out_Y:string Out_Z:string QuatA_W:float QuatA_X:float QuatA_Y:float QuatA_Z:float QuatB_W:float QuatB_X:float QuatB_Y:float QuatB_Z:float Ratio:float UseSLI:bool	-	first-release	first-release	geckwiki:QInterpolate.wiki
+xnvse	-	QMultQuatQuat	(none) QMultQuatQuat Out_W:string Out_X:string Out_Y:string Out_Z:string QuatA_W:float QuatA_X:float QuatA_Y:float QuatA_Z:float QuatB_W:float QuatB_X:float QuatB_Y:float QuatB_Z:float	-	first-release	first-release	geckwiki:QMultQuatQuat.wiki
+xnvse	-	QMultQuatVector3	(none) QMultQuatVector3 Out_X:string Out_Y:string Out_Z:string Quat_W:float Quat_X:float Quat_Y:float Quat_Z:float Vector_X:float Vector_Y:float Vector_Z:float	-	first-release	first-release	geckwiki:QMultQuatVector3.wiki
+xnvse	-	QNormalize	(none) QNormalize Out_W:string Out_X:string Out_Y:string Out_Z:string Quat_W:float Quat_X:float Quat_Y:float Quat_Z:float	-	first-release	first-release	geckwiki:QNormalize.wiki
+xnvse	-	QToEuler	(none) QToEuler Elevation:string Bank:string Heading:string Quat_W:float Quat_X:float Quat_Y:float Quat_Z:float UseSLI:bool	-	first-release	first-release	geckwiki:QToEuler.wiki
+xnvse	-	Rand	(float) Rand Minimum:float Maximum:float	-	first-release	first-release	geckwiki:Rand.wiki
+xnvse	-	ReleaseKey	(none) ReleaseKey scanCode:int	-	first-release	first-release	geckwiki:ReleaseKey.wiki
+xnvse	-	RemoveAllPackages	(void) RemoveAllPackages	-	first-release	first-release	geckwiki:RemoveAllPackages.wiki
+xnvse	-	RemoveEventHandler	(bool) RemoveEventHandler eventID:string FunctionScript:ref Filter1:pair Filter2:pair Priority:pair	-	first-release	first-release	geckwiki:RemoveEventHandler.wiki
+xnvse	-	RemoveMeIR	(void) RemoveMeIR Transfer:Container	-	first-release	first-release	geckwiki:RemoveMeIR.wiki
+xnvse	-	RemoveModLocalData	(Existed:bool) RemoveModLocalData Key:string	-	first-release	first-release	geckwiki:RemoveModLocalData.wiki
+xnvse	-	RemovePackageAt	(newPackage:form) RemovePackageAt index:int actor:reference	-	first-release	first-release	geckwiki:RemovePackageAt.wiki
+xnvse	-	RemoveScript	(Script:baseForm) RemoveScript ScriptableObject:baseForm	-	first-release	first-release	geckwiki:RemoveScript.wiki
+xnvse	-	ResetAllVariables	(none) ResetAllVariables	-	first-release	first-release	geckwiki:ResetAllVariables.wiki
+xnvse	-	RightShift	(int) RightShift int:int int:int	-	first-release	first-release	geckwiki:RightShift.wiki
+xnvse	-	RunScript	(bool) RunScript Script:Script-or-ScriptedForm	-	first-release	first-release	geckwiki:RunScript.wiki
+xnvse	-	SetActorBaseFlagsHigh	(none) SetActorBaseFlagsHigh FlagsMask:int NPC:BaseForm	-	first-release	first-release	geckwiki:SetActorBaseFlagsHigh.wiki
+xnvse	-	SetActorBaseFlagsLow	(none) SetActorBaseFlagsLow FlagsMask:int NPC:BaseForm	-	first-release	first-release	geckwiki:SetActorBaseFlagsLow.wiki
+xnvse	-	SetAltControl	(void) SetAltControl controlCode:int scanCode:int	-	first-release	first-release	geckwiki:SetAltControl.wiki
+xnvse	-	SetArmorArmorRating	(none) SetArmorArmorRating newDR:int Armor:form	-	first-release	first-release	geckwiki:SetArmorArmorRating.wiki
+xnvse	-	SetArmorDT	(none) SetArmorDT DT:float Armor:form	-	first-release	first-release	geckwiki:SetArmorDT.wiki
+xnvse	-	SetAttackDamage	(void) SetAttackDamage damage:[[int]]	-	first-release	first-release	geckwiki:SetAttackDamage.wiki
+xnvse	-	SetBaseItemValue	(void) SetBaseItemValue form:baseform newValue:int	-	first-release	first-release	geckwiki:SetBaseItemValue.wiki
+xnvse	-	SetBipedIconPathEx	(nothing) SetBipedIconPathEx NewPath:string <i>Formatting</i>: BipedPathCode:int Object:form	-	first-release	first-release	geckwiki:SetBipedIconPathEx.wiki
+xnvse	-	SetBipedModelPathEx	(nothing) SetBipedModelPathEx NewPath:string <i>Formatting</i>: BipedPathCode:int Object:form	-	first-release	first-release	geckwiki:SetBipedModelPathEx.wiki
+xnvse	-	SetBit	(int) SetBit Target:int BitToSet:int NewBitValue:bool	-	first-release	first-release	geckwiki:SetBit.wiki
+xnvse	-	SetConsoleEcho	(PreviousEchoState:bool) SetConsoleEcho EchoState:bool	-	first-release	first-release	geckwiki:SetConsoleEcho.wiki
+xnvse	-	SetControl	(void) SetControl controlCode:int scanCode:int	-	first-release	first-release	geckwiki:SetControl.wiki
+xnvse	-	SetCurrentHealth	(none) SetCurrentHealth NewHealth:float	-	first-release	first-release	geckwiki:SetCurrentHealth.wiki
+xnvse	-	SetCurrentQuest	(void) SetCurrentQuest quest:form	-	first-release	first-release	geckwiki:SetCurrentQuest.wiki
+xnvse	-	SetDebugMode	(void) SetDebugMode bEnableDebugMessages:int modIndex:int	-	first-release	first-release	geckwiki:SetDebugMode.wiki
+xnvse	-	SetDoorTeleport	(none) SetDoorTeleport TargetDoor:reference X:float Y:float Z:float Rotation:float	-	first-release	first-release	geckwiki:SetDoorTeleport.wiki
+xnvse	-	SetEditorID	(void) SetEditorID form:form editor id:string	-	6.2.6	wiki:originVersion	geckwiki:SetEditorID.wiki
+xnvse	-	SetEquipmentBipedMask	(none) SetEquipmentBipedMask NewBitMask:int ToModify:armor	-	first-release	first-release	geckwiki:SetEquipmentBipedMask.wiki
+xnvse	-	SetEquipmentSlotsMask	(BitMask:int) SetEquipmentSlotsMask BitMask:int ToSetSlotsOf:form	-	first-release	first-release	geckwiki:SetEquipmentSlotsMask.wiki
+xnvse	-	SetEquippedCurrentHealth	(void) SetEquippedCurrentHealth newHealth:float equipmentSlotID:int	-	first-release	first-release	geckwiki:SetEquippedCurrentHealth.wiki
+xnvse	-	SetEquippedWeaponModFlags	(none) SetEquippedWeaponModFlags NewMask:int	-	first-release	first-release	geckwiki:SetEquippedWeaponModFlags.wiki
+xnvse	-	SetEventHandler	(success:bool) SetEventHandler eventID:string functionScript:form filters(up to 2):pair priority:pair	-	first-release	first-release	geckwiki:SetEventHandler.wiki
+xnvse	-	SetEventHandlerAlt	(success:bool) SetEventHandlerAlt eventName:string handlerFunction:[[UDF]] filters(up-to-16):pair priority:pair	-	6.2.8	wiki:originVersion	geckwiki:SetEventHandlerAlt.wiki
+xnvse	-	SetEyes	(bool) SetEyes Eyes:baseForm	-	first-release	first-release	geckwiki:SetEyes.wiki
+xnvse	-	SetEyesFlags	(none) SetEyesFlags eyes:BaseForm FlagsMask:int	-	first-release	first-release	geckwiki:SetEyesFlags.wiki
+xnvse	-	SetFlagsHigh	(none) SetFlagsHigh FlagsBitMask:int Target:form	-	first-release	first-release	geckwiki:SetFlagsHigh.wiki
+xnvse	-	SetFlagsLow	(none) SetFlagsLow FlagsBitMask:int Target:form	-	first-release	first-release	geckwiki:SetFlagsLow.wiki
+xnvse	-	SetFunctionValue	(None) SetFunctionValue UDFReturnValue:multi	-	first-release	first-release	geckwiki:SetFunctionValue.wiki
+xnvse	-	SetHair	(bool) SetHair NewHair:form NPC:BaseForm	-	first-release	first-release	geckwiki:SetHair.wiki
+xnvse	-	SetHairColor	(none) SetHairColor NewRGB:int Actor:NPC	-	first-release	first-release	geckwiki:SetHairColor.wiki
+xnvse	-	SetHairFlags	(none) SetHairFlags hair:BaseForm FlagsMask:int	-	first-release	first-release	geckwiki:SetHairFlags.wiki
+xnvse	-	SetHairLength	(none) SetHairLength HairLength:float NPC:BaseForm	-	first-release	first-release	geckwiki:SetHairLength.wiki
+xnvse	-	SetHotkeyItem	(none) SetHotkeyItem WhichHotKey:int Item:ref	-	first-release	first-release	geckwiki:SetHotkeyItem.wiki
+xnvse	-	SetIconPath	(none) SetIconPath NewPath:string Object:form	-	first-release	first-release	geckwiki:SetIconPath.wiki
+xnvse	-	SetIconPathEx	(none) SetIconPathEx NewPath:string <i>Formatting</i>: Object:form	-	first-release	first-release	geckwiki:SetIconPathEx.wiki
+xnvse	-	SetIsControl	(int) SetIsControl scanCode:int isControl:int	-	first-release	first-release	geckwiki:SetIsControl.wiki
+xnvse	-	SetIsPlayable	(none) SetIsPlayable IsPlayable:bool Item:Object	-	first-release	first-release	geckwiki:SetIsPlayable.wiki
+xnvse	-	SetIsPowerArmor	(void) SetIsPowerArmor isPA:0/1 form:baseForm	-	first-release	first-release	geckwiki:SetIsPowerArmor.wiki
+xnvse	-	SetModelPathEx	(none) SetModelPathEx NewPath:string Object:baseform	-	first-release	first-release	geckwiki:SetModelPathEx.wiki
+xnvse	-	SetModLocalData	(Success:bool) SetModLocalData Key:string Data:multi	-	first-release	first-release	geckwiki:SetModLocalData.wiki
+xnvse	-	SetName	(void) SetName name:string form:baseform	-	first-release	first-release	geckwiki:SetName.wiki
+xnvse	-	SetNameEx	(None) SetNameEx NewName:string ToRename:ref	-	first-release	first-release	geckwiki:SetNameEx.wiki
+xnvse	-	SetNPCHeight	(float) SetNPCHeight NewHeight:float Actor:NPC	-	first-release	first-release	geckwiki:SetNPCHeight.wiki
+xnvse	-	SetNPCWeight	(none) SetNPCWeight NewWeight:float Actor:NPC	-	first-release	first-release	geckwiki:SetNPCWeight.wiki
+xnvse	-	SetNthDefaultForm	(none) SetNthDefaultForm Index:int New:form	-	first-release	first-release	geckwiki:SetNthDefaultForm.wiki
+xnvse	-	SetNthFactionRankNameEx	(none) SetNthFactionRankNameEx NewName:string <i>Formatting</i>: Target:faction WhichRank:int Female:bool	-	first-release	first-release	geckwiki:SetNthFactionRankNameEx.wiki
+xnvse	-	SetNthPackage	(void) SetNthPackage	-	first-release	first-release	geckwiki:SetNthPackage.wiki
+xnvse	-	SetNumericGameSetting	(int) SetNumericGameSetting settingName:string float:float	-	first-release	first-release	geckwiki:SetNumericGameSetting.wiki
+xnvse	-	SetNumericINISetting	(int) SetNumericINISetting settingName:string newValue:float	-	first-release	first-release	geckwiki:SetNumericINISetting.wiki
+xnvse	-	SetObjectHealth	(void) SetObjectHealth newHealth:int form:baseform	-	first-release	first-release	geckwiki:SetObjectHealth.wiki
+xnvse	-	SetOpenKey	(void) SetOpenKey keyItem:baseform	-	first-release	first-release	geckwiki:SetOpenKey.wiki
+xnvse	-	SetOutputLocalMapPicturesGrids	(void) SetOutputLocalMapPicturesGrids uGridsOverride:int	-	first-release	first-release	geckwiki:SetOutputLocalMapPicturesGrids.wiki
+xnvse	-	SetOwningFactionRequiredRank	(void) SetOwningFactionRequiredRank Rank:int	-	first-release	first-release	geckwiki:SetOwningFactionRequiredRank.wiki
+xnvse	-	SetPackageLocationRadius	(none) SetPackageLocationRadius package:form radius:float	-	first-release	first-release	geckwiki:SetPackageLocationRadius.wiki
+xnvse	-	SetPackageLocationReference	(none) SetPackageLocationReference package:form target:ref	-	first-release	first-release	geckwiki:SetPackageLocationReference.wiki
+xnvse	-	SetPackageTargetDistance	(none) SetPackageTargetDistance package:form value:int	-	first-release	first-release	geckwiki:SetPackageTargetDistance.wiki
+xnvse	-	SetPackageTargetReference	(none) SetPackageTargetReference package:form target:ref	-	first-release	first-release	geckwiki:SetPackageTargetReference.wiki
+xnvse	-	SetPermanent	(void) SetPermanent ItemOrActor:Ref	-	first-release	first-release	geckwiki:SetPermanent.wiki
+xnvse	-	SetPlayerCurrentAmmoRounds	(none) SetPlayerCurrentAmmoRounds count:int	-	first-release	first-release	geckwiki:SetPlayerCurrentAmmoRounds.wiki
+xnvse	-	SetQuestItem	(none) SetQuestItem QuestFlag:bool Item:Object	-	first-release	first-release	geckwiki:SetQuestItem.wiki
+xnvse	-	SetRefCount	(void) SetRefCount NewCount:int	-	first-release	first-release	geckwiki:SetRefCount.wiki
+xnvse	-	SetRefVariable	(none) SetRefVariable VarName:string NewValue:form Parent:Object	-	first-release	first-release	geckwiki:SetRefVariable.wiki
+xnvse	-	SetRepairList	(void) SetRepairList repairFormList:baseform itemForm:baseForm	-	first-release	first-release	geckwiki:SetRepairList.wiki
+xnvse	-	SetScopeModelPath	(none) SetScopeModelPath ModelPath:string ToSetFor:weapon	-	first-release	first-release	geckwiki:SetScopeModelPath.wiki
+xnvse	-	SetScript	(previousScript:baseForm) SetScript NewScript:baseForm ScriptableObject:baseForm	-	first-release	first-release	geckwiki:SetScript.wiki
+xnvse	-	SetStringGameSettingEx	(none) SetStringGameSettingEx SettingName-and-NewValue:string <i>Formatting</i>:	-	first-release	first-release	geckwiki:SetStringGameSettingEx.wiki
+xnvse	-	SetStringIniSetting	(none) SetStringIniSetting Setting:string NewValue:string	-	first-release	first-release	geckwiki:SetStringINISetting.wiki
+xnvse	-	SetTexturePath	(none) SetTexturePath NewPath:string Object:form	-	first-release	first-release	geckwiki:SetTexturePath.wiki
+xnvse	-	SetTokenRef	(none) SetTokenRef Token:baseform NewValue:anyform	-	first-release	first-release	geckwiki:SetTokenRef.wiki
+xnvse	-	SetTokenValue	(none) SetTokenValue Token:baseform NewValue:float	-	first-release	first-release	geckwiki:SetTokenValue.wiki
+xnvse	-	SetTokenValueAndRef	(none) SetTokenValueAndRef Token:baseform NewValue:float NewValue:form	-	first-release	first-release	geckwiki:SetTokenValueAndRef.wiki
+xnvse	-	SetUIFloat	(void) SetUIFloat traitName:string newValue:float	-	first-release	first-release	geckwiki:SetUIFloat.wiki
+xnvse	-	SetUIFloatAlt	(bool) SetUIFloatAlt traitName:string newValue:float	-	6.0.8	wiki:originVersion	geckwiki:SetUIFloatAlt.wiki
+xnvse	-	SetUIString	(void) SetUIString traitName:string newValue:string	-	first-release	first-release	geckwiki:SetUIString.wiki
+xnvse	-	SetUIStringAlt	(bool) SetUIStringAlt TraitName:string NewValue:string <i>Formatting</i>:	-	6.0.8	wiki:originVersion	geckwiki:SetUIStringAlt.wiki
+xnvse	-	SetUIStringEx	(None) SetUIStringEx TraitName:string NewValue:string <i>Formatting</i>:	-	first-release	first-release	geckwiki:SetUIStringEx.wiki
+xnvse	-	SetVariable	(none) SetVariable VarName:string NewValue:float Parent:Object	-	first-release	first-release	geckwiki:SetVariable.wiki
+xnvse	-	SetWeaponActionPoints	(void) SetWeaponActionPoints float:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponActionPoints.wiki
+xnvse	-	SetWeaponAimArc	(void) SetWeaponAimArc aimArc:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponAimArc.wiki
+xnvse	-	SetWeaponAmmo	(void) SetWeaponAmmo newAmmo:baseform weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponAmmo.wiki
+xnvse	-	SetWeaponAmmoUse	(void) SetWeaponAmmoUse ammoUse:int weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponAmmoUse.wiki
+xnvse	-	SetWeaponAnimAttackMult	(void) SetWeaponAnimAttackMult animAttackMult:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponAnimAttackMult.wiki
+xnvse	-	SetWeaponAnimMult	(void) SetWeaponAnimMult animMult:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponAnimMult.wiki
+xnvse	-	SetWeaponAttackAnimation	(void) SetWeaponAttackAnimation attackAnimation:int weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponAttackAnimation.wiki
+xnvse	-	SetWeaponBaseVATSChance	(void) SetWeaponBaseVATSChance newVATSChance:int weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponBaseVATSChance.wiki
+xnvse	-	SetWeaponClipRounds	(void) SetWeaponClipRounds clipRounds:int weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponClipRounds.wiki
+xnvse	-	SetWeaponCritChance	(void) SetWeaponCritChance critChance:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponCritChance.wiki
+xnvse	-	SetWeaponCritDamage	(void) SetWeaponCritDamage critDam:int weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponCritDamage.wiki
+xnvse	-	SetWeaponCritEffect	(void) SetWeaponCritEffect magicItem:baseform weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponCritEffect.wiki
+xnvse	-	SetWeaponFireRate	(none) SetWeaponFireRate FireRate:int Weapon:form	-	first-release	first-release	geckwiki:SetWeaponFireRate.wiki
+xnvse	-	SetWeaponFlags1	(Mask:int) SetWeaponFlags1 FlagsMask:int Weapon:form	-	first-release	first-release	geckwiki:SetWeaponFlags1.wiki
+xnvse	-	SetWeaponFlags2	(none) SetWeaponFlags2 FlagsMask:int Weapon:form	-	first-release	first-release	geckwiki:SetWeaponFlags2.wiki
+xnvse	-	SetWeaponHandGrip	(void) SetWeaponHandGrip handGrip:int weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponHandGrip.wiki
+xnvse	-	SetWeaponIsAutomatic	(void) SetWeaponIsAutomatic isAutomatic:0/1 weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponIsAutomatic.wiki
+xnvse	-	SetWeaponLimbDamageMult	(void) SetWeaponLimbDamageMult limbDamageMult:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponLimbDamageMult.wiki
+xnvse	-	SetWeaponLongBursts	(none) SetWeaponLongBursts LongBursts:float Weapon:form	-	first-release	first-release	geckwiki:SetWeaponLongBursts.wiki
+xnvse	-	SetWeaponMaxRange	(void) SetWeaponMaxRange maxRange:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponMaxRange.wiki
+xnvse	-	SetWeaponMinRange	(void) SetWeaponMinRange minRange:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponMinRange.wiki
+xnvse	-	SetWeaponMinSpread	(void) SetWeaponMinSpread minSpread:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponMinSpread.wiki
+xnvse	-	SetWeaponNumProjectiles	(void) SetWeaponNumProjectiles numProjectiles:int weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponNumProjectiles.wiki
+xnvse	-	SetWeaponProjectile	(void) SetWeaponProjectile newProjectile:baseForm weapon:baseForm	-	first-release	first-release	geckwiki:SetWeaponProjectile.wiki
+xnvse	-	SetWeaponReach	(void) SetWeaponReach reach:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponReach.wiki
+xnvse	-	SetWeaponRegenRate	(bool) SetWeaponRegenRate regenRate:float weapon:baseform	-	6.2.1	wiki:originVersion	geckwiki:SetWeaponRegenRate.wiki
+xnvse	-	SetWeaponReloadAnim	(void) SetWeaponReloadAnim reloadAnim:int weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponReloadAnim.wiki
+xnvse	-	SetWeaponRequiredSkill	(int) SetWeaponRequiredSkill Weapon:form	-	first-release	first-release	geckwiki:GetWeaponRequiredSkill.wiki
+xnvse	-	SetWeaponRequiredStrength	(none) SetWeaponRequiredStrength NewStrength:int Weapon:form	-	first-release	first-release	geckwiki:SetWeaponRequiredStrength.wiki
+xnvse	-	SetWeaponResistType	(none) SetWeaponResistType ResistanceCode:int weapon:baseForm	-	first-release	first-release	geckwiki:SetWeaponResistType.wiki
+xnvse	-	SetWeaponSightFOV	(void) SetWeaponSightFOV sightFOV:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponSightFOV.wiki
+xnvse	-	SetWeaponSightUsage	(void) SetWeaponSightUsage sightUsage:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponSightUsage.wiki
+xnvse	-	SetWeaponSkill	(none) SetWeaponSkill SkillAVCode:int Weapon:form	-	first-release	first-release	geckwiki:SetWeaponSkill.wiki
+xnvse	-	SetWeaponSpread	(void) SetWeaponSpread spread:float weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponSpread.wiki
+xnvse	-	SetWeaponType	(void) SetWeaponType weaponType:int weapon:baseform	-	first-release	first-release	geckwiki:SetWeaponType.wiki
+xnvse	-	SetWeight	(void) SetWeight float:float item:baseform	-	first-release	first-release	geckwiki:SetWeight.wiki
+xnvse	-	ShowLevelUpMenu	(void) ShowLevelUpMenu	-	first-release	first-release	geckwiki:ShowLevelUpMenu.wiki
+xnvse	-	SortUIListBox	(void) SortUIListBox pathName:string sortSpec:string	-	first-release	first-release	geckwiki:SortUIListBox.wiki
+xnvse	-	Sv_Compare	(int) Sv_Compare Formatable:string <i>Formatting</i>: ToCompareWith:string_var CaseSensitive:bool	-	first-release	first-release	geckwiki:Sv Compare.wiki
+xnvse	-	Sv_Construct	(string_var) Sv_Construct Literal:string <i>Formatting</i>:	-	first-release	first-release	geckwiki:Sv Construct.wiki
+xnvse	-	Sv_Count	(int) Sv_Count toFind:string 20xOptional:formatting within:string_var startPos:int numChars:int caseSensitiveFlag:int	-	first-release	first-release	geckwiki:Sv Count.wiki
+xnvse	-	Sv_Destruct	(None) Sv_Destruct ToDestruct:string_var optional-1:string_var ...: optional-9:string_var	-	first-release	first-release	geckwiki:Sv Destruct.wiki
+xnvse	-	Sv_Erase	(none) Sv_Erase Source:string_var StartPos:int <i>HowMany:int</i>	-	first-release	first-release	geckwiki:Sv Erase.wiki
+xnvse	-	Sv_Find	(int) Sv_Find toFind:string 20xOptional:formatting within:string_var startPos:int numChars:int caseSensitiveFlag:int	-	first-release	first-release	geckwiki:Sv Find.wiki
+xnvse	-	Sv_GetChar	(ASCIICode:int) Sv_GetChar Source:string_var Position:int	-	first-release	first-release	geckwiki:Sv GetChar.wiki
+xnvse	-	Sv_Insert	(none) Sv_Insert Insertion:string <i>Formatting</i>: Target:string Position:int	-	first-release	first-release	geckwiki:Sv Insert.wiki
+xnvse	-	Sv_Length	(int) Sv_Length ToMeasure:string_var	-	first-release	first-release	geckwiki:Sv Length.wiki
+xnvse	-	sv_Percentify	(string) sv_Percentify Source:string	-	first-release	first-release	geckwiki:Sv Percentify.wiki
+xnvse	-	Sv_Replace	(NumReplaced:int) Sv_Replace <i>Formatting</i>: Source:string_var StartPos:int SearchLen:int CaseSensitive:bool MaxReplacements:int	-	first-release	first-release	geckwiki:Sv Replace.wiki
+xnvse	-	Sv_Set	(none) Sv_Set Literal:string <i>Formatting</i>: Target:string_var	-	first-release	first-release	geckwiki:Sv Set.wiki
+xnvse	-	Sv_Split	(array) Sv_Split ToSplit:string Delimiters:string	-	first-release	first-release	geckwiki:Sv Split.wiki
+xnvse	-	Sv_SubString	(string) Sv_SubString Source:string_var StartPos:int HowMany:int	-	first-release	first-release	geckwiki:Sv SubString.wiki
+xnvse	-	sv_ToLower	(string) sv_ToLower Source:string	-	first-release	first-release	geckwiki:Sv ToLower.wiki
+xnvse	-	Sv_ToNumeric	(float) Sv_ToNumeric ToConvert:string_var	-	first-release	first-release	geckwiki:Sv ToNumeric.wiki
+xnvse	-	sv_ToUpper	(string) sv_ToUpper Source:string	-	first-release	first-release	geckwiki:Sv ToUpper.wiki
+xnvse	-	TapControl	(void) TapControl controlCode:int	-	first-release	first-release	geckwiki:TapControl.wiki
+xnvse	-	TapKey	(void) TapKey scanCode:int	-	first-release	first-release	geckwiki:TapKey.wiki
+xnvse	-	TempCloneForm	(Clone:baseForm) TempCloneForm ToClone:baseForm indexToCallingScript:bool	-	first-release	first-release	geckwiki:TempCloneForm.wiki
+xnvse	-	TestExpr	(Result:bool) TestExpr AnyLine:expression	-	4.1	wiki:text	geckwiki:TestExpr.wiki
+xnvse	-	ToLower	(LowerCharacter:int) ToLower SourceCharacter:int	-	first-release	first-release	geckwiki:ToLower.wiki
+xnvse	-	ToNumber	(float) ToNumber ToConvert:string hexidecimal:bool reportError:bool	-	6.2.9	wiki:text	geckwiki:ToNumber.wiki
+xnvse	-	ToString	(string) ToString ToConvert:exp	-	first-release	first-release	geckwiki:ToString.wiki
+xnvse	-	ToUpper	(UpperCharacter:int) ToUpper SourceCharacter:int	-	first-release	first-release	geckwiki:ToUpper.wiki
+xnvse	-	traitName	(bool) traitName traitName:string newValue:float	-	6.2.5	wiki:originVersion	geckwiki:ModUIFloat.wiki
+xnvse	-	TypeOf	(string) TypeOf expression:multi	-	first-release	first-release	geckwiki:TypeOf.wiki
+xnvse	-	UnequipMe	(none) UnequipMe	-	first-release	first-release	geckwiki:UnequipMe.wiki
+xnvse	-	Update3D	(none) Update3D	-	first-release	first-release	geckwiki:Update3D.wiki
+xnvse	-	V3Crossproduct	(none) V3Crossproduct Out_X:string Out_Y:string Out_Z:string VectorA_X:float VectorA_Y:float VectorA_Z:float VectorB_X:float VectorB_Y:float VectorB_Z:float	-	first-release	first-release	geckwiki:V3Crossproduct.wiki
+xnvse	-	V3Length	(Length:float) V3Length Vector_X:float Vector_Y:float Vector_Z:float	-	first-release	first-release	geckwiki:V3Length.wiki
+xnvse	-	V3Normalize	(none) V3Normalize Out_X:string Out_Y:string Out_Z:string Vector_X:float Vector_Y:float Vector_Z:float	-	first-release	first-release	geckwiki:V3Normalize.wiki
+xnvse	-	ValidateRegex	(match:0/1) ValidateRegex regEx:string outErrorStrVar:string_var	-	6.2.9	wiki:originVersion	geckwiki:ValidateRegex.wiki
+xnvse	-	while	(void) while Condition:expression	-	first-release	first-release	geckwiki:While.wiki
