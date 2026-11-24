@@ -28,6 +28,8 @@ pub fn remove_items(
     }
     let mut removed = 0u32;
     let mut emptied: Vec<InventoryIndex> = Vec::new();
+    // Rows a removal left with items, and how many: a row in both hands that drops below two keeps one (#7405).
+    let mut reduced: Vec<(InventoryIndex, u32)> = Vec::new();
     let mut freed_instances = Vec::new();
     {
         let Some(mut inventories) = world.query_mut::<Inventory>() else {
@@ -77,6 +79,9 @@ pub fn remove_items(
                 }
             } else {
                 stack.count -= take;
+                if let Ok(row) = u32::try_from(index) {
+                    reduced.push((InventoryIndex(row), stack.count));
+                }
                 if destination.is_some() {
                     moved.push(ItemStack::new(item_form_id, take));
                 }
@@ -103,6 +108,14 @@ pub fn remove_items(
     // damage in `attack_damage` until a reload, and a removed armor stayed
     // on the NPC for the session.
     let mut unequipped: Vec<crate::EquipmentChange> = Vec::new();
+    if !reduced.is_empty()
+        && let Some(mut equipment) = world.query_mut::<EquipmentSlots>()
+        && let Some(slots) = equipment.get_mut(source)
+    {
+        for &(index, count) in &reduced {
+            slots.settle_hands_for_count(index, count);
+        }
+    }
     if !emptied.is_empty() {
         if let Some(mut equipment) = world.query_mut::<EquipmentSlots>()
             && let Some(slots) = equipment.get_mut(source) {
@@ -444,5 +457,41 @@ mod leveled_add_tests {
         add_items(&world, player, ITEM, 2);
         assert_eq!(world.get::<Inventory>(player).unwrap().count_of(ITEM), 2);
         assert_eq!(world.get::<crate::ItemEventBatch>(player).map(|batch| batch.0.len()), Some(1));
+    }
+}
+
+#[cfg(test)]
+mod dual_wield_removal_tests {
+    use super::*;
+    use byroredux_core::ecs::components::InventoryIndex;
+
+    /// #7405 — the hand rules let one row sit in both hands only while it holds two or more. A removal that takes
+    /// the row down to one (a sale, a script's `RemoveItem`) must not leave that one item in both hands: the left
+    /// hand is released and the right keeps it. While two remain, both hands keep the row.
+    #[test]
+    fn removing_from_a_dual_wielded_stack_keeps_one_item_in_one_hand() {
+        const DAGGER: u32 = 0x0001_397E;
+        let mut world = World::new();
+        world.register::<Inventory>();
+        world.register::<EquipmentSlots>();
+        let actor = world.spawn();
+        let mut inventory = Inventory::new();
+        inventory.push(ItemStack::new(DAGGER, 3));
+        world.insert(actor, inventory);
+        let mut slots = EquipmentSlots::default();
+        slots.equip_weapon(InventoryIndex(0));
+        slots.equip_left_hand(InventoryIndex(0));
+        world.insert(actor, slots);
+        let hands = |world: &World| {
+            let slots = world.get::<EquipmentSlots>(actor).unwrap();
+            (slots.weapon, slots.left_hand)
+        };
+
+        remove_items(&world, actor, DAGGER, 1, None);
+        assert_eq!(hands(&world), (Some(InventoryIndex(0)), Some(InventoryIndex(0))), "two left: both hands keep the row");
+
+        remove_items(&world, actor, DAGGER, 1, None);
+        assert_eq!(world.get::<Inventory>(actor).unwrap().count_of(DAGGER), 1);
+        assert_eq!(hands(&world), (Some(InventoryIndex(0)), None), "one left: the right hand keeps it, the left is empty");
     }
 }
