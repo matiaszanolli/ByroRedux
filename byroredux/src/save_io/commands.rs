@@ -392,6 +392,11 @@ impl SaveCommand {
                 if is_quicksave {
                     world.resource_mut::<SaveState>().ring.advance();
                 }
+                // LMC Q5 — PapyrusUtil writes a mod's changed JsonUtil files when the game saves
+                // (`JsonUtil.psc`), once the save itself is committed.
+                let json_files = world
+                    .try_resource_mut::<byroredux_scripting::json_util::JsonUtilStore>()
+                    .map_or(0, |mut store| store.save_modified());
                 if let Err(error) = crate::extensions::queue_session_event(
                     world,
                     byroredux_sdk::event::SessionEvent {
@@ -403,7 +408,7 @@ impl SaveCommand {
                         "save slot {slot} committed, but its extension lifecycle event was not queued: {error}"
                     );
                 }
-                CommandOutput::lines(vec![
+                let mut lines = vec![
                     format!("saved slot {slot} → {}", path.display()),
                     format!(
                         "  {} entities-worth of rows across {} component columns, {} resource(s); \
@@ -417,7 +422,11 @@ impl SaveCommand {
                         bytes.len(),
                         snapshot.next_entity
                     ),
-                ])
+                ];
+                if json_files > 0 {
+                    lines.push(format!("  {json_files} JsonUtil file(s) written"));
+                }
+                CommandOutput::lines(lines)
             }
             Err(e) => CommandOutput::error(format!("write failed: {e}")),
         }

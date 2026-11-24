@@ -302,12 +302,13 @@ pub(super) fn script_member_type(script: &Script, name: &str) -> Option<Type> {
     })
 }
 
-/// `Game` / `Utility` / `Debug` / `Math` — the global-function classes.
+/// `Game` / `Utility` / `Debug` / `Math` — the global-function classes, and the engine-served PapyrusUtil
+/// `JsonUtil` / `StorageUtil` (its file functions).
 pub(super) fn static_class(e: &Expr) -> Option<&str> {
     let Expr::Ident(name) = e else {
         return None;
     };
-    ["game", "utility", "debug", "math", "weather", "mcmhost", "mcmhelper"]
+    ["game", "utility", "debug", "math", "weather", "mcmhost", "mcmhelper", "jsonutil", "storageutil"]
         .into_iter()
         .find(|class| name.0.eq_ignore_ascii_case(class))
 }

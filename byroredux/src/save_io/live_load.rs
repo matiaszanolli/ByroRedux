@@ -878,6 +878,11 @@ pub fn execute_pending_save_loads(
     if let Some(mut host) = world.try_resource_mut::<byroredux_scripting::mcm::McmHost>() {
         host.reset_session();
     }
+    // LMC Q5 — a load discards JsonUtil changes the outgoing session did not save (`JsonUtil.psc`: "the loaded
+    // data will be discarded and revert back to whatever the contents of the current saved file are").
+    if let Some(mut store) = world.try_resource_mut::<byroredux_scripting::json_util::JsonUtilStore>() {
+        store.discard();
+    }
 
     // The cell/session replacement invalidates every transient SDK entity
     // handle even when the restored population happens to reuse the same raw

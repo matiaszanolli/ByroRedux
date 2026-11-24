@@ -30,6 +30,7 @@ mod favor;
 mod form_list;
 mod forms;
 mod game_utility;
+mod json_util;
 mod linked_refs;
 mod location;
 mod mcm;

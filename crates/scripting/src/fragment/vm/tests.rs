@@ -7014,6 +7014,101 @@ fn equip_spell_and_equip_item_ex_reach_the_hands() {
     );
 }
 
+/// LMC Q5 / LMC-ID-005: a mod script reads a shipped `JsonUtil` file, writes values, lists and a form in
+/// PapyrusUtil's format, reaches `StorageUtil`'s file functions (`../StorageUtil.json`), and reads SKSE's
+/// load-order functions; the changes are written when the game saves.
+#[test]
+fn json_util_storage_util_files_and_mod_index_reads() {
+    use crate::json_util::{tests::MemoryJsonFiles, JsonUtilStore};
+    use byroredux_core::form_id::PluginId;
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    use byroredux_sdk::content::{ContentCatalog, PluginInfo, PluginKind};
+    const SWORD: u32 = 0x0001_2EB7;
+    let script = parsed_source(
+        "ScriptName QF_VmJson extends Quest\n\
+         Weapon Property Sword Auto\n\
+         Int Property Results Auto\n\
+         Int Property Difficulty Auto\n\
+         Int Property Duplicate Auto\n\
+         Function Fragment_1()\n\
+           Difficulty = JsonUtil.GetIntValue(\"MyMod/Settings\", \"Difficulty\", 1)\n\
+           JsonUtil.SetIntValue(\"MyMod/Settings\", \"Visits\", 2)\n\
+           JsonUtil.IntListAdd(\"MyMod/Settings\", \"Levels\", 3)\n\
+           Duplicate = JsonUtil.IntListAdd(\"MyMod/Settings\", \"Levels\", 3, false)\n\
+           If JsonUtil.IntListCount(\"MyMod/Settings\", \"levels\") == 1\n Results += 1\n EndIf\n\
+           JsonUtil.SetFormValue(\"MyMod/Settings\", \"Item\", Sword)\n\
+           If JsonUtil.GetFormValue(\"MyMod/Settings\", \"item\") == Sword\n Results += 10\n EndIf\n\
+           StorageUtil.FileSetStringValue(\"Name\", \"Lydia\")\n\
+           If StorageUtil.FileGetStringValue(\"name\") == \"Lydia\"\n Results += 100\n EndIf\n\
+           If Game.GetModByName(\"Skyrim.esm\") == 0 && Game.GetModByName(\"Missing.esp\") == 255\n Results += 1000\n EndIf\n\
+           If Game.IsPluginInstalled(\"Update.esm\") && !Game.IsPluginInstalled(\"Missing.esp\")\n Results += 10000\n EndIf\n\
+           If Game.GetModName(1) == \"Update.esm\" && Game.GetModCount() == 2\n Results += 100000\n EndIf\n\
+         EndFunction\n",
+    );
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Skyrim));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    let plugin = |name: &str| PluginInfo::new(name, PluginId::from_filename(name).0.to_be_bytes(), PluginKind::Regular).unwrap();
+    crate::set_legacy_obscript_content_catalog(
+        &world,
+        std::sync::Arc::new(ContentCatalog::new(vec![plugin("Skyrim.esm"), plugin("Update.esm")]).unwrap()),
+    );
+    world.insert_resource(crate::LoadOrderIdentity::new(vec![
+        (GlobalSlot::Regular(0), PluginId::from_filename("Skyrim.esm")),
+        (GlobalSlot::Regular(1), PluginId::from_filename("Update.esm")),
+    ]));
+    let files = std::sync::Arc::new(MemoryJsonFiles {
+        shipped: std::collections::HashMap::from([(
+            "storageutildata/mymod/settings.json".to_owned(),
+            r#"{ "int": { "difficulty": 4 } }"#.to_owned(),
+        )]),
+        ..Default::default()
+    });
+    world.insert_resource(JsonUtilStore::new(files.clone()));
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    let vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "QF_VmJson".into(),
+            status: 0,
+            properties: vec![ScriptProperty { name: "Sword".into(), status: 1, value: PropertyValue::Object { form_id: SWORD, alias: -1 } }],
+        }],
+    };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret { script: "QF_VmJson".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) {
+        panic!("{why}")
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(quest_property(&world, "Difficulty"), Some(4.0), "the shipped file's value, its key in any case");
+    assert_eq!(quest_property(&world, "Duplicate"), Some(-1.0), "no duplicate when not allowed");
+    assert_eq!(quest_property(&world, "Results"), Some(111_111.0), "every read answered");
+    assert!(files.profile.lock().unwrap().is_empty(), "nothing written before the game saves");
+
+    assert_eq!(world.resource_mut::<JsonUtilStore>().save_modified(), 2);
+    let profile = files.profile.lock().unwrap();
+    let settings: serde_json::Value = serde_json::from_str(&profile["storageutildata/mymod/settings.json"]).unwrap();
+    assert_eq!(settings["int"], serde_json::json!({ "difficulty": 4, "visits": 2 }));
+    assert_eq!(settings["intList"]["levels"], serde_json::json!([3]));
+    assert_eq!(settings["form"]["item"], serde_json::json!("0x12eb7|Skyrim.esm"), "PapyrusUtil's form string");
+    let storage: serde_json::Value = serde_json::from_str(&profile["storageutil.json"]).unwrap();
+    assert_eq!(storage["string"]["name"], serde_json::json!("Lydia"));
+}
+
 /// The second native wave: `SetScale` scales a reference, `SetRestrained` restrains an actor other than
 /// the player, and `MoveToNode` puts a reference on the named node of another's 3D (its position and
 /// rotation), as the CK pages give them.

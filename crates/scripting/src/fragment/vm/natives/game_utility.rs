@@ -50,6 +50,16 @@ impl Vm<'_> {
         if class == "mcmhelper" {
             return self.read_mcm_helper(frame, name, args);
         }
+        // LMC Q5 — PapyrusUtil's file-backed values; `StorageUtil` serves only its `File*` functions.
+        if class == "jsonutil" {
+            return self.read_json_util(frame, name, args, false);
+        }
+        if class == "storageutil" {
+            return match name.strip_prefix("file") {
+                Some(rest) => self.read_json_util(frame, rest, args, true),
+                None => stop(format!("StorageUtil.{name}")),
+            };
+        }
         Ok(match (class, name) {
             ("game", "getplayer") => Some(Value::Form(PLAYER_REF)),
             // CK *ShakeCamera - Game*: shakes the camera "from the specified
@@ -195,6 +205,38 @@ impl Vm<'_> {
                     .and_then(|identity| identity.form_from_file(form_id as u32, plugin));
                 Some(form.map_or(Value::None, Value::Form))
             }
+            // SKSE `Game`'s load-order reads (`ianpatt/skse64` `scripts/modified/Game.psc`; LMC-ID-005), from the
+            // session's content catalog through the SDK's adapters, which number plugins as the game does: a
+            // regular index, `0x100` plus a light plugin's for `GetModByName`, 255 for an absent plugin.
+            ("game", "getmodcount" | "getlightmodcount" | "getmodbyname" | "getlightmodbyname" | "isplugininstalled"
+                | "getmodname" | "getlightmodname" | "getmoddependencycount" | "getlightmoddependencycount"
+                | "getnthlightmoddependency") => {
+                use byroredux_sdk::compatibility as sdk;
+                let values = self.eval_args(frame, args)?;
+                let Some(catalog) = self.world.try_resource::<crate::LegacyObscriptContentCatalog>().map(|catalog| catalog.0.clone())
+                else {
+                    return stop(format!("Game.{name} without the content catalog"));
+                };
+                let text = |i: usize| values.get(i).map(Value::text).unwrap_or_default();
+                let index = |i: usize| match values.get(i) {
+                    Some(Value::Int(index)) => i64::from(*index),
+                    other => other.and_then(Value::number).map_or(-1, |n| n as i64),
+                };
+                Some(match name {
+                    "getmodcount" => Value::Int(sdk::adapt_papyrus_game_get_mod_count(&catalog)),
+                    "getlightmodcount" => Value::Int(sdk::adapt_papyrus_game_get_light_mod_count(&catalog)),
+                    "getmodbyname" => Value::Int(sdk::adapt_papyrus_game_get_mod_by_name(&catalog, &text(0))),
+                    "getlightmodbyname" => Value::Int(sdk::adapt_papyrus_game_get_light_mod_by_name(&catalog, &text(0))),
+                    "isplugininstalled" => Value::Bool(sdk::adapt_papyrus_game_is_plugin_installed(&catalog, &text(0))),
+                    "getmodname" => Value::Str(sdk::adapt_papyrus_game_get_mod_name(&catalog, index(0))),
+                    "getlightmodname" => Value::Str(sdk::adapt_papyrus_game_get_light_mod_name(&catalog, index(0))),
+                    "getmoddependencycount" => Value::Int(sdk::adapt_papyrus_game_get_mod_dependency_count(&catalog, index(0))),
+                    "getlightmoddependencycount" => {
+                        Value::Int(sdk::adapt_papyrus_game_get_light_mod_dependency_count(&catalog, index(0)))
+                    }
+                    _ => Value::Int(sdk::adapt_papyrus_game_get_nth_light_mod_dependency(&catalog, index(0), index(1))),
+                })
+            }
             _ => None,
         })
     }
@@ -216,6 +258,9 @@ impl Checker<'_> {
         }
         if class == "mcmhelper" {
             return self.check_mcm_helper(name);
+        }
+        if class == "jsonutil" || class == "storageutil" {
+            return self.check_json_util(class, name);
         }
         if class == "game" && name == "getplayer" {
             return Some(Kind::Player);
@@ -245,6 +290,22 @@ impl Checker<'_> {
         }
         if class == "game" && matches!(name, "getcaps" | "getcredits") && arg_kinds.is_empty() {
             return Some(Kind::Object);
+        }
+        // SKSE `Game`'s load-order reads (LMC-ID-005).
+        let text_arg = |a: &Arg| matches!(a, Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str));
+        if class == "game" {
+            let served = match (name, arg_kinds) {
+                ("getmodcount" | "getlightmodcount", []) => Some(Kind::Num),
+                ("getmodbyname" | "getlightmodbyname", [a]) if text_arg(a) => Some(Kind::Num),
+                ("isplugininstalled", [a]) if text_arg(a) => Some(Kind::Bool),
+                ("getmodname" | "getlightmodname", [a]) if numeric_arg(a) => Some(Kind::Str),
+                ("getmoddependencycount" | "getlightmoddependencycount", [a]) if numeric_arg(a) => Some(Kind::Num),
+                ("getnthlightmoddependency", [a, b]) if numeric_arg(a) && numeric_arg(b) => Some(Kind::Num),
+                _ => None,
+            };
+            if served.is_some() {
+                return served;
+            }
         }
         if class == "game"
             && name == "getformfromfile"

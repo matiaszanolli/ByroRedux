@@ -126,7 +126,7 @@ call set per family. The preflight reports those calls that are not covered.
 
 | Family | Functions | Dated by a changelog or wiki | VM | SDK | Served |
 |---|---|---|---|---|---|
-| SKSE64 | 804 | 67 | 5 | 21 | 26 |
+| SKSE64 | 804 | 67 | 15 | 21 | 26 |
 | F4SE | 227 | 13 | 1 | 3 | 4 |
 | xNVSE | 565 | 50 | 0 | 4 | 4 |
 | JIP LN | 733 | 0 | 0 | 0 | 0 |

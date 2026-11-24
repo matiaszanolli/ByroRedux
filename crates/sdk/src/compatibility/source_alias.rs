@@ -412,7 +412,7 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
     if provider.eq_ignore_ascii_case("JsonUtil") {
         return Some(unsupported(
             ExtenderFamily::PapyrusUtil,
-            "arbitrary host-file JSON access is outside the sandbox; use principal storage or packaged content",
+            "arbitrary host-file JSON access is outside the sandbox; use principal storage or packaged content (a legacy mod script's JsonUtil calls are served by the engine's Papyrus VM, confined to the profile's moddata directory: LMC Q5)",
         ));
     }
     if matches_ignore_ascii_case(

@@ -414,7 +414,7 @@ mod tests {
     #[test]
     fn coverage_counts_are_the_published_ones() {
         let published: [(&str, Coverage); 11] = [
-            ("skse64", Coverage { functions: 804, dated: 67, vm: 5, sdk: 21, served: 26 }),
+            ("skse64", Coverage { functions: 804, dated: 67, vm: 15, sdk: 21, served: 26 }),
             ("f4se", Coverage { functions: 227, dated: 13, vm: 1, sdk: 3, served: 4 }),
             ("xnvse", Coverage { functions: 565, dated: 50, vm: 0, sdk: 4, served: 4 }),
             ("jip_ln", Coverage { functions: 733, dated: 0, vm: 0, sdk: 0, served: 0 }),

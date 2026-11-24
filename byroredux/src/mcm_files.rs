@@ -94,11 +94,12 @@ fn path_safe(name: &str) -> String {
     }
 }
 
-/// The profile's settings directory under `settings_dir`, for the game whose base master is `base_master`.
-fn profile_dir(settings_dir: &Path, base_master: &str, profile: Option<&str>) -> PathBuf {
+/// The profile's directory for `area` (`mcm`, `moddata`) under `settings_dir`, for the game whose base master is
+/// `base_master`.
+fn profile_dir(settings_dir: &Path, area: &str, base_master: &str, profile: Option<&str>) -> PathBuf {
     let game = base_master.rsplit_once('.').map_or(base_master, |(stem, _)| stem).to_ascii_lowercase();
     let profile = profile.map(str::trim).filter(|name| !name.is_empty()).unwrap_or("default");
-    settings_dir.join("mcm").join(path_safe(&game)).join(path_safe(profile))
+    settings_dir.join(area).join(path_safe(&game)).join(path_safe(profile))
 }
 
 /// Install the session's [`McmHelperStore`] over the active load order: its plugins name each config
@@ -119,7 +120,7 @@ pub(crate) fn install(world: &mut byroredux_core::ecs::world::World) {
     let profile = crate::cli_args::parse_string_arg(&args, PROFILE_NAME_FLAG);
     let files = McmFiles {
         sources: LayeredSources::over(Vec::new(), &args, &["mcm\\"], &[]),
-        profile_dir: profile_dir(&settings_dir, plugins.first().map_or("", String::as_str), profile.as_deref()),
+        profile_dir: profile_dir(&settings_dir, "mcm", plugins.first().map_or("", String::as_str), profile.as_deref()),
     };
     log::debug!("MCM: {} loose tier(s); settings in {}", files.sources.tier_count(), files.profile_dir.display());
     // Fallout 4 MCM's menus are folders, not scripts (`docs/engine/mcm-host.md` §5.2): the configs under the
@@ -134,6 +135,73 @@ pub(crate) fn install(world: &mut byroredux_core::ecs::world::World) {
         store
     };
     world.insert_resource(store);
+}
+
+/// PapyrusUtil `JsonUtil`'s files (LMC PRD Q5, [`byroredux_scripting::json_util`]): the profile's own copy under
+/// `<settings.toml's directory>/moddata/<base master>/<profile>/skse/plugins/`, written when the game saves, over a
+/// mod root's shipped `SKSE/Plugins/…` file (loose files, as PapyrusUtil reads them).
+struct JsonFiles {
+    sources: LayeredSources,
+    plugins_dir: PathBuf,
+}
+
+impl JsonFiles {
+    /// The profile's copy of a resolved path (lowercase, `/`-separated, never above `skse/plugins/`).
+    fn profile_path(&self, path: &str) -> PathBuf {
+        path.split('/').fold(self.plugins_dir.clone(), |dir, part| dir.join(part))
+    }
+}
+
+impl byroredux_scripting::json_util::JsonUtilFiles for JsonFiles {
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.profile_path(path)).ok().or_else(|| self.sources.extract(&format!("skse\\plugins\\{}", path.replace('/', "\\"))))
+    }
+    fn write(&self, path: &str, text: &str) -> Result<(), String> {
+        let target = self.profile_path(path);
+        write_atomically(&target, text).map_err(|error| format!("{}: {error}", target.display()))
+    }
+    fn list(&self, folder: &str) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(self.profile_path(folder))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .chain(
+                self.sources
+                    .list(&format!("skse\\plugins\\{}\\", folder.replace('/', "\\")))
+                    .iter()
+                    .filter_map(|path| path.rsplit_once('\\').map(|(dir, name)| (dir.to_owned(), name.to_owned())))
+                    .filter(|(dir, _)| dir.eq_ignore_ascii_case(&format!("skse\\plugins\\{}", folder.replace('/', "\\"))))
+                    .map(|(_, name)| name),
+            )
+            .filter(|name| name.to_ascii_lowercase().ends_with(".json"))
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+}
+
+/// Install the session's PapyrusUtil `JsonUtil` store (LMC PRD Q5) for the active load order's game and the
+/// session's profile.
+pub(crate) fn install_json_util(world: &mut byroredux_core::ecs::world::World) {
+    let Some(base_master) = world
+        .try_resource::<crate::cell_loader::load_order::ActiveLoadOrder>()
+        .and_then(|order| order.0.first().map(|name| Path::new(name).file_name().map_or_else(|| name.clone(), |file| file.to_string_lossy().into_owned())))
+    else {
+        return;
+    };
+    let args = crate::cli_args::effective_args();
+    let settings = crate::settings_io::SettingsPersistence::discover();
+    let settings_dir = settings.path().parent().map(Path::to_path_buf).unwrap_or_default();
+    let profile = crate::cli_args::parse_string_arg(&args, PROFILE_NAME_FLAG);
+    let files = JsonFiles {
+        sources: LayeredSources::over(Vec::new(), &args, &["skse\\plugins\\"], &[]),
+        plugins_dir: profile_dir(&settings_dir, "moddata", &base_master, profile.as_deref()).join("skse").join("plugins"),
+    };
+    log::debug!("JsonUtil: {} loose tier(s); files in {}", files.sources.tier_count(), files.plugins_dir.display());
+    world.insert_resource(byroredux_scripting::json_util::JsonUtilStore::new(Arc::new(files)));
 }
 
 /// The folders under `mcm\config\` that hold a `config.json`, from the listed paths.
@@ -156,10 +224,28 @@ mod tests {
     #[test]
     fn the_profile_directory_is_per_game_and_named_profile() {
         let root = Path::new("/home/u/.config/byroredux");
-        assert_eq!(profile_dir(root, "Skyrim.esm", None), root.join("mcm/skyrim/default"));
-        assert_eq!(profile_dir(root, "FalloutNV.esm", Some("Survival")), root.join("mcm/falloutnv/Survival"));
-        assert_eq!(profile_dir(root, "Fallout3.esm", Some("  ")), root.join("mcm/fallout3/default"));
-        assert_eq!(profile_dir(root, "Skyrim.esm", Some("../evil")), root.join("mcm/skyrim/.._evil"), "no escape from the directory");
+        assert_eq!(profile_dir(root, "mcm", "Skyrim.esm", None), root.join("mcm/skyrim/default"));
+        assert_eq!(profile_dir(root, "mcm", "FalloutNV.esm", Some("Survival")), root.join("mcm/falloutnv/Survival"));
+        assert_eq!(profile_dir(root, "mcm", "Fallout3.esm", Some("  ")), root.join("mcm/fallout3/default"));
+        assert_eq!(profile_dir(root, "mcm", "Skyrim.esm", Some("../evil")), root.join("mcm/skyrim/.._evil"), "no escape from the directory");
+    }
+
+    /// LMC Q5 — JsonUtil's files live in the profile's own `moddata` directory, under `skse/plugins/`, by the
+    /// resolved path; a written file reads back and lists with its folder.
+    #[test]
+    fn json_util_files_write_and_list_in_the_profile_directory() {
+        use byroredux_scripting::json_util::{resolve, resolve_folder, JsonUtilFiles};
+        let root = std::env::temp_dir().join(format!("byro-jsonutil-{}", std::process::id()));
+        let plugins_dir = profile_dir(&root, "moddata", "Skyrim.esm", Some("Main")).join("skse").join("plugins");
+        assert_eq!(plugins_dir, root.join("moddata/skyrim/Main/skse/plugins"));
+        let files = JsonFiles { sources: LayeredSources::over(Vec::new(), &[], &["skse\\plugins\\"], &[]), plugins_dir: plugins_dir.clone() };
+        let path = resolve("MyMod/Settings").unwrap();
+        assert!(files.read(&path).is_none());
+        files.write(&path, "{\"int\":{\"a\":1}}").unwrap();
+        assert_eq!(files.read(&path).as_deref(), Some(&b"{\"int\":{\"a\":1}}"[..]));
+        assert!(plugins_dir.join("storageutildata/mymod/settings.json").is_file());
+        assert_eq!(files.list(&resolve_folder("MyMod").unwrap()), vec!["settings.json".to_owned()]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
