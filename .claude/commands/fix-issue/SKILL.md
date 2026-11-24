@@ -1,12 +1,16 @@
 ---
 description: "Fetch a GitHub issue, investigate, plan, implement, test, and commit the fix"
 argument-hint: "<issue-number>"
+model: sonnet
 ---
 
 # Fix Issue Pipeline
 
 ## Phase 1: Fetch
-If `.claude/issues/$ARGUMENTS/ISSUE.md` already exists (`/audit-publish` writes a curated one), read it and skip the fetch; never overwrite it.
+`$ARGUMENTS` is one issue number. If it lists several or a range, work them one at a time, in order:
+run Phases 1–8 for each, with its own commit and close, before reading the next. Use
+`.claude/issues/<number>/ISSUE.md` for each, never the whole argument string.
+If `.claude/issues/<number>/ISSUE.md` already exists (`/audit-publish` writes a curated one), read it and skip the fetch; never overwrite it.
 ```bash
 gh issue view $ARGUMENTS --repo matiaszanolli/ByroRedux --json title,body,labels,state
 ```

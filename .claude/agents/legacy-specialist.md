@@ -2,7 +2,7 @@
 name: legacy-specialist
 description: Gamebryo 2.3 / Creation Engine architecture, NIF format, compatibility mapping
 tools: Read, Grep, Glob, Bash
-model: opus
+model: sonnet
 maxTurns: 25
 ---
 

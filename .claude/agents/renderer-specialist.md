@@ -2,7 +2,7 @@
 name: renderer-specialist
 description: Vulkan renderer, graphics pipeline, GPU memory, synchronization, shaders
 tools: Read, Grep, Glob, Bash, LSP
-model: opus
+model: sonnet
 maxTurns: 20
 ---
 

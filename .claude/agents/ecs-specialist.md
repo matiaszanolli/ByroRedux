@@ -2,7 +2,7 @@
 name: ecs-specialist
 description: ECS architecture, storage backends, queries, systems, resources, world
 tools: Read, Grep, Glob, Bash, LSP
-model: opus
+model: sonnet
 maxTurns: 20
 ---
 
