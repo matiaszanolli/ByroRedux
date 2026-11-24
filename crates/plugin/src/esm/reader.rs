@@ -619,6 +619,19 @@ impl FormIdRemap {
         slot.compose(raw)
     }
 
+    /// Whether `raw`, a FormID as this plugin wrote it, names one of the plugin's own records with an object id its
+    /// light or medium slot cannot hold (above `0xFFF` or `0xFFFF`), so [`GlobalSlot::compose`] masks it and it may
+    /// land on another record's id (LMC-ID-008). Always false for a regular plugin, and for an id written in the
+    /// `0xFE` / `0xFD` spaces, whose object bits are inside the space by construction.
+    pub fn is_outside_own_object_space(&self, raw: u32) -> bool {
+        let object_bits = match self.plugin_slot {
+            GlobalSlot::Regular(_) => return false,
+            GlobalSlot::Light(_) => 0x0000_0FFF,
+            GlobalSlot::Medium(_) => 0x0000_FFFF,
+        };
+        raw >> 24 < 0xFD && raw & 0x00FF_FFFF & !object_bits != 0 && self.remap(raw) == self.plugin_slot.compose(raw)
+    }
+
     /// [`FormIdScheme::Starfield`]: route `raw` by the space its top byte
     /// names, counting masters of that kind only (#6118).
     fn remap_starfield(&self, raw: u32) -> u32 {
@@ -767,6 +780,46 @@ pub struct FileHeader {
     /// load-order sub-index + a 16-bit object id ([`GlobalSlot::Medium`]).
     /// On every other game `0x400` is unrelated and this stays false.
     pub medium_master: bool,
+    /// The TES4 record's flags as written. `light_master` and `medium_master` read them as the file's own header
+    /// game would; a profile reads them as the profile's game instead ([`ProfileGame`], LMC-REC-009).
+    pub record_flags: u32,
+}
+
+/// The game a plugin profile is loaded as (PRD legacy-mod-compatibility LMC-REC-009): the base master's game, and
+/// whether that game has light plugins. Every plugin of the profile is read in this game's dialect, and its TES4
+/// light and medium bits are read as this game defines them, whatever game the plugin's own header bands as; xEdit
+/// does the same, testing a file's light bit against the game it is loaded as (`TwbMainRecordStructFlags.IsLight`:
+/// `gcLightPlugins in aGameDef.Capabilities` and the game's `LightFlag`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProfileGame {
+    pub kind: GameKind,
+    /// Skyrim SE, Fallout 4 and Starfield have light plugins (xEdit `wbIsLightSupported` = SSE / FO4 / SF1).
+    pub light_plugins: bool,
+}
+
+impl ProfileGame {
+    /// The profile game a master with this header game and HEDR version names. Skyrim LE and SE are one
+    /// [`GameKind`]; only SE has light plugins, and only SE stamps HEDR 1.6 and above (LE stamps 0.94).
+    pub fn of_header(kind: GameKind, hedr_version: f32) -> Self {
+        let light_plugins = match kind {
+            GameKind::Starfield | GameKind::Fallout4 => true,
+            GameKind::Skyrim => hedr_version >= 1.6,
+            _ => false,
+        };
+        Self { kind, light_plugins }
+    }
+
+    /// Whether TES4 record flags `flags` mark a light (small) plugin in this game: `0x100` on Starfield, where
+    /// `0x200` is *Update*, and `0x200` on Skyrim SE and Fallout 4 (#4639).
+    pub fn is_light(self, flags: u32) -> bool {
+        let bit = if self.kind == GameKind::Starfield { 0x0100 } else { 0x0200 };
+        self.light_plugins && flags & bit != 0
+    }
+
+    /// Whether TES4 record flags `flags` mark a medium plugin: Starfield's `0x400`, unrelated on every other game.
+    pub fn is_medium(self, flags: u32) -> bool {
+        self.kind == GameKind::Starfield && flags & 0x0400 != 0
+    }
 }
 
 impl<'a> EsmReader<'a> {
@@ -875,38 +928,48 @@ impl<'a> EsmReader<'a> {
         want: Option<&[u8; 4]>,
         mut f: impl FnMut(&RecordHeader, Vec<SubRecord>),
     ) -> Result<()> {
-        fn walk(
-            reader: &mut EsmReader,
-            end: usize,
-            want: Option<&[u8; 4]>,
-            f: &mut impl FnMut(&RecordHeader, Vec<SubRecord>),
-            depth: u32,
-        ) -> Result<()> {
-            while reader.position() < end && reader.remaining() > 0 {
-                if reader.is_group() {
-                    let sub_group = reader.read_group_header()?;
-                    let Some(sub_end) = reader.bounded_group_content_end(
-                        &sub_group,
-                        depth,
-                        end,
-                        "for_each_record",
-                    ) else {
-                        continue;
-                    };
-                    walk(reader, sub_end, want, f, depth + 1)?;
-                    continue;
-                }
-                let header = reader.read_record_header()?;
-                if want.is_none_or(|want| &header.record_type == want) {
-                    let subs = reader.read_sub_records(&header)?;
-                    f(&header, subs);
-                } else {
-                    reader.skip_record(&header);
-                }
+        self.walk_records(end, 0, &mut |reader, header| {
+            if want.is_none_or(|want| &header.record_type == want) {
+                let subs = reader.read_sub_records(header)?;
+                f(header, subs);
+            } else {
+                reader.skip_record(header);
             }
             Ok(())
+        })
+    }
+
+    /// [`Self::for_each_record`] for the record headers alone: `f(header)` for every record, its sub-records skipped
+    /// unread (LMC-ID-008's object-space count reads only FormIDs).
+    pub fn for_each_record_header(&mut self, end: usize, mut f: impl FnMut(&RecordHeader)) -> Result<()> {
+        self.walk_records(end, 0, &mut |reader, header| {
+            f(header);
+            reader.skip_record(header);
+            Ok(())
+        })
+    }
+
+    /// The bounded walk both visits share: every record to `end`, recursing into groups through the depth-checked
+    /// `bounded_group_content_end`; `visit` reads or skips each record's body.
+    fn walk_records(
+        &mut self,
+        end: usize,
+        depth: u32,
+        visit: &mut impl FnMut(&mut EsmReader<'a>, &RecordHeader) -> Result<()>,
+    ) -> Result<()> {
+        while self.position() < end && self.remaining() > 0 {
+            if self.is_group() {
+                let sub_group = self.read_group_header()?;
+                let Some(sub_end) = self.bounded_group_content_end(&sub_group, depth, end, "for_each_record") else {
+                    continue;
+                };
+                self.walk_records(sub_end, depth + 1, visit)?;
+                continue;
+            }
+            let header = self.read_record_header()?;
+            visit(self, &header)?;
         }
-        walk(self, end, want, &mut f, 0)
+        Ok(())
     }
 
     pub fn remaining(&self) -> usize {
@@ -1349,21 +1412,10 @@ impl<'a> EsmReader<'a> {
         // small-master bit (`0x100`, carried by 16 official masters)
         // unread — each took one of the 254 regular slots instead, and
         // `allocate_global_slot` hard-errors past `0xFD`.
-        let game = GameKind::from_header(self.variant, hedr_version, record_version);
-        // Skyrim SE supports ESL (0x0200); Skyrim LE does not. The two
-        // are one GameKind, so SE-ness keys on HEDR: only SE stamps
-        // 1.6+ (the `from_header` SE band), LE is 0.94.
-        let se_era_skyrim = game == GameKind::Skyrim && hedr_version >= 1.6;
-        let light_master = match game {
-            GameKind::Starfield => header.flags & 0x0100 != 0,
-            GameKind::Fallout4 => header.flags & 0x0200 != 0,
-            GameKind::Skyrim => se_era_skyrim && header.flags & 0x0200 != 0,
-            // Oblivion / FO3 / FNV / FO76: no light-master support.
-            _ => false,
-        };
-        // Starfield-only medium-master bit; `0x400` means something
-        // unrelated on every other game.
-        let medium_master = game == GameKind::Starfield && header.flags & 0x0400 != 0;
+        // The file read as its own game; a profile re-reads `record_flags` as the profile's game (LMC-REC-009).
+        let own = ProfileGame::of_header(GameKind::from_header(self.variant, hedr_version, record_version), hedr_version);
+        let light_master = own.is_light(header.flags);
+        let medium_master = own.is_medium(header.flags);
 
         Ok(FileHeader {
             master_files: masters,
@@ -1373,6 +1425,7 @@ impl<'a> EsmReader<'a> {
             localized,
             light_master,
             medium_master,
+            record_flags: header.flags,
         })
     }
 
@@ -1474,6 +1527,22 @@ mod tests {
         // Self-references (top byte = 0 = master_count) pass through.
         assert_eq!(remap.remap(0x0001_2345), 0x0001_2345);
         assert_eq!(remap.remap(0x00CA_FEBA), 0x00CA_FEBA);
+    }
+
+    /// LMC-ID-008 — only a light or medium plugin's own records past its object space are flagged: not its masters'
+    /// records, not ids written in the `0xFE` / `0xFD` spaces, and never a regular plugin's.
+    #[test]
+    fn own_records_past_the_object_space_are_flagged() {
+        let light = FormIdRemap { plugin_slot: GlobalSlot::Light(2), master_slots: vec![GlobalSlot::Regular(0)], scheme: Default::default() };
+        assert!(light.is_outside_own_object_space(0x0100_1000));
+        assert!(!light.is_outside_own_object_space(0x0100_0FFF));
+        assert!(!light.is_outside_own_object_space(0x0000_5000), "the master's record");
+        assert!(!light.is_outside_own_object_space(0xFE00_1FFF), "written in the light space");
+        let medium = FormIdRemap { plugin_slot: GlobalSlot::Medium(1), ..light.clone() };
+        assert!(medium.is_outside_own_object_space(0x0101_0000));
+        assert!(!medium.is_outside_own_object_space(0x0100_FFFF));
+        let regular = FormIdRemap { plugin_slot: GlobalSlot::Regular(1), ..light };
+        assert!(!regular.is_outside_own_object_space(0x01FF_FFFF));
     }
 
     #[test]
@@ -1870,6 +1939,10 @@ mod tests {
         assert!(!tes4(1.34, 2, 0x0200).light_master, "FNV");
         assert!(!tes4(280.0, 210, 0x0200).light_master, "FO76");
         assert!(!tes4(0.94, 40, 0x0200).light_master, "Skyrim LE");
+        // LMC-REC-009 — a profile reads the bits as its own game: the same LE-era header is light in an SE profile.
+        let se = ProfileGame::of_header(GameKind::Skyrim, 1.71);
+        assert!(se.is_light(tes4(0.94, 40, 0x0200).record_flags));
+        assert!(!ProfileGame::of_header(GameKind::Skyrim, 0.94).is_light(0x0200), "an LE profile has no light plugins");
         // Oblivion's 20-byte-header variant never enters the Tes5Plus
         // table (variant-dispatched to GameKind::Oblivion).
     }

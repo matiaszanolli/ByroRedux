@@ -39,7 +39,7 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    and every disabled plugin (with the chain back to the missing master) is logged as a warning and kept for
    `plugins.activation`. The `--esm` must activate and stay last, or boot stops with the report: a missing master of
    its own names the `--master` to add.
-3. **The fold (LMC-REC-002, -005, -007).** `parse_record_indexes_in_load_order` walks the plugins in parallel and folds
+3. **The fold (LMC-REC-002, -005, -007, -009; LMC-ID-008).** `parse_record_indexes_in_load_order` walks the plugins in parallel and folds
    them in load order with `EsmIndex::merge_from`, the last carrier of a record winning it whole (the `legacy` policy;
    `merge`, LMC-REC-003, combines records with lists, item 6). Before each plugin's merge, `FoldProvenance::note_plugin`
    (`crates/plugin/src/esm/records/provenance.rs`) notes, from the record headers the walk traced, every form that
@@ -51,6 +51,12 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    index's included (cells, modelled base objects, pack-ins, texture sets, material swaps), and a deleted reference
    leaves its cell; `load_order_deletion_tests.rs` measures this on FNV, Skyrim SE and Fallout 4 + UFO4P against a raw
    record walk.
+   Every plugin is read as the profile's game, the base master's (`ProfileGame`, LMC-REC-009): its TES4 light and
+   medium bits mean what that game defines (xEdit tests them against the game it loads, not the file's own header), so
+   an ESL-flagged plugin with an older header is light in a Skyrim SE profile; a plugin whose header bands as another
+   game is read as the profile's anyway and logged. Those bits decide only the plugin's slot, and so its Form ID
+   decoding (LMC-ID-008): no record count is imposed, but a light or medium plugin's own records whose object ids its
+   space cannot hold (above `0xFFF` or `0xFFFF`) are masked into it and may collide, and the fold logs how many.
 4. **The conflict report (LMC-REC-007).** `plugins.conflicts` lists the overridden forms with wins, losses and
    injections per plugin; `plugins.conflicts <formid>` one form's carriers in load order, its winner and the policy;
    and `plugins.conflicts <formid> fields` reads each carrier's record back from its file

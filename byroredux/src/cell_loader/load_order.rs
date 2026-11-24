@@ -974,6 +974,8 @@ where
     let mut next_regular: u16 = 0;
     let mut next_light: u16 = 0;
     let mut next_medium: u16 = 0;
+    // LMC-REC-009 — the profile's game, from the base master: every plugin is read in its dialect.
+    let mut profile_game: Option<esm::reader::ProfileGame> = None;
 
     // #3813 — a plugin's record walk reads nothing but its own bytes, remap
     // and string tables, so it runs on the rayon pool while this thread
@@ -1020,10 +1022,23 @@ where
                 );
                 (header, game)
             };
+            // LMC-REC-009 — the base master names the profile's game; a plugin whose header bands as another game is
+            // read as the profile's anyway (the original engines read every plugin as their own game) and reported.
+            let profile = *profile_game.get_or_insert(esm::reader::ProfileGame::of_header(game, header.hedr_version));
+            if game != profile.kind {
+                log::warn!(
+                    "plugin '{}': its header reads as {:?}, the profile's game is {:?}; it is read as {:?} (LMC-REC-009)",
+                    path,
+                    game,
+                    profile.kind,
+                    profile.kind
+                );
+            }
+            let game = profile.kind;
 
             let plugin_slot = allocate_global_slot(
-                header.light_master,
-                header.medium_master,
+                profile.is_light(header.record_flags),
+                profile.is_medium(header.record_flags),
                 &mut next_regular,
                 &mut next_light,
                 &mut next_medium,
@@ -1054,7 +1069,22 @@ where
                 let _strings_guard = tables.map(esm::StringsTableGuard::new);
                 let content_hash = twox_hash::XxHash64::oneshot(0, &bytes);
                 // LMC-REC-010 — keep what no parser decodes of every plugin but the first, the game's own master.
-                let options = esm::records::ParseOptions { collect_opaque: idx > 0 };
+                // LMC-ID-008 — a light or medium plugin's own records past its object space are masked into it;
+                // say so, since two of them may then share an id.
+                if !matches!(plugin_slot, esm::reader::GlobalSlot::Regular(_)) {
+                    let outside = own_records_outside_object_space(&bytes, &remap);
+                    if let Some(first) = outside.first() {
+                        log::warn!(
+                            "plugin '{}' is a {} plugin, but {} of its own records have object ids its space cannot \
+                             hold (first {:08X}); they are masked into it and may collide (LMC-ID-008)",
+                            path,
+                            if matches!(plugin_slot, esm::reader::GlobalSlot::Light(_)) { "light (0xFFF)" } else { "medium (0xFFFF)" },
+                            outside.len(),
+                            first
+                        );
+                    }
+                }
+                let options = esm::records::ParseOptions { collect_opaque: idx > 0, game: Some(game) };
                 let plugin_records = esm::records::parse_esm_with_options(&bytes, Some(remap), options);
                 log::info!(
                     "Walked plugin {}/{} '{}' in {:.2} s",
@@ -1184,6 +1214,20 @@ impl MasterClosure {
         let master = master as usize;
         self.rows.get(plugin as usize).and_then(|row| row.get(master / 64)).is_some_and(|word| word >> (master % 64) & 1 == 1)
     }
+}
+
+/// The FormIDs, as written, of the records in `bytes` that are the plugin's own and lie past the object space of its
+/// light or medium slot (LMC-ID-008, [`esm::reader::FormIdRemap::is_outside_own_object_space`]); a walk error ends the
+/// count where it stopped, since the record walk reports it.
+fn own_records_outside_object_space(bytes: &[u8], remap: &esm::reader::FormIdRemap) -> Vec<u32> {
+    let mut reader = esm::reader::EsmReader::new(bytes);
+    let mut outside = Vec::new();
+    let _ = reader.for_each_record_header(bytes.len(), |header| {
+        if remap.is_outside_own_object_space(header.form_id) {
+            outside.push(header.form_id);
+        }
+    });
+    outside
 }
 
 /// Allocate one global load-order slot without ever entering reserved or
@@ -1859,6 +1903,43 @@ mod tests {
             !index.items.contains_key(&0x0000_0800),
             "the raw pre-remap id must not survive — that's the #1554 bug"
         );
+    }
+
+    /// LMC-ID-008 — a light plugin's own records past its 12-bit object space are found from the record headers
+    /// alone; the ones inside it are not.
+    #[test]
+    fn a_light_plugins_records_past_its_object_space_are_counted() {
+        let mut bytes = build_tes4(0x0200);
+        let mut weapons = build_weap(0x0000_1800, &1u32.to_le_bytes());
+        weapons.extend(build_weap(0x0000_0800, &1u32.to_le_bytes()));
+        bytes.extend(wrap_group(b"WEAP", &weapons));
+        let remap = esm::reader::FormIdRemap {
+            plugin_slot: esm::reader::GlobalSlot::Light(0),
+            master_slots: Vec::new(),
+            scheme: Default::default(),
+        };
+        assert_eq!(own_records_outside_object_space(&bytes, &remap), [0x0000_1800]);
+    }
+
+    /// LMC-REC-009 — the base master names the profile's game, and every plugin is read as it: a plugin whose header
+    /// bands as Fallout 3 / New Vegas (HEDR 0.94, record version 0) in a Skyrim SE profile is read as Skyrim, its
+    /// `0x200` bit is Skyrim SE's light flag, and its own record lands in the light space.
+    #[test]
+    fn every_plugin_is_read_as_the_profiles_game() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("Base.esm");
+        fs::write(&base, build_tes4_with_masters(0, &[])).unwrap();
+        let mut plugin = build_tes4_with_masters(0x0200, &["Base.esm"]);
+        plugin[30..34].copy_from_slice(&0.94f32.to_le_bytes()); // the HEDR version, after the 24-byte header and HEDR's 6
+        plugin.extend(wrap_group(b"WEAP", &build_weap(0x0100_0800, &1u32.to_le_bytes())));
+        let path = dir.path().join("OldHeader.esp");
+        fs::write(&path, &plugin).unwrap();
+        let own = esm::reader::EsmReader::new(&plugin).read_file_header().unwrap();
+        assert!(!own.light_master, "read on its own, the header is Fallout 3 / New Vegas, which has no light plugins");
+
+        let (index, _) = parse_record_indexes_in_load_order(&[base.to_str().unwrap(), path.to_str().unwrap()]).unwrap();
+        assert!(index.items.contains_key(&0xFE00_0800), "{:?}", index.items.keys().collect::<Vec<_>>());
+        assert_eq!(index.game, esm::reader::GameKind::Skyrim);
     }
 
     // ── EX-09/17 item 8 (#2370) — load-order conformance fixtures ──────
