@@ -67,9 +67,35 @@ pub(crate) enum Content {
 /// One selection in an authored playlist or one alternative in a palette layer.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AuthoredTrack {
-    File(String),
+    File(MusicFile),
     Silence { label: String, duration: f32 },
     Palette { label: String, duration: f32, fade_out: f32, layers: Vec<Arc<[AuthoredTrack]>> },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MusicFile {
+    pub(crate) key: String,
+    pub(crate) loop_region: Option<byroredux_audio::MusicLoop>,
+    pub(crate) finale: Option<Finale>,
+}
+
+impl From<String> for MusicFile {
+    fn from(key: String) -> Self {
+        Self { key, loop_region: None, finale: None }
+    }
+}
+
+#[cfg(test)]
+impl From<&str> for MusicFile {
+    fn from(key: &str) -> Self {
+        key.to_string().into()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Finale {
+    pub(crate) key: String,
+    pub(crate) cues: Arc<[f64]>,
 }
 
 /// PRD §3.2.

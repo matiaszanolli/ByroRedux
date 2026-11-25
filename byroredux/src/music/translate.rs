@@ -1,7 +1,7 @@
 //! Each game's music sources as directives: the only per-game code in the music path (PRD R5,
 //! `docs/engine/music.md` §3, §5, §7).
 
-use super::directive::{Area, AuthoredTrack, Content, Directive, MusicFiles, PlaylistPolicy, Source, Stem};
+use super::directive::{Area, AuthoredTrack, Content, Directive, Finale, MusicFile, MusicFiles, PlaylistPolicy, Source, Stem};
 use byroredux_plugin::esm::cell::{CellData, WorldspaceRecord};
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::misc::{
@@ -418,7 +418,22 @@ impl Catalog {
         let label = || if track.editor_id.is_empty() { format!("{form:#010x}") } else { track.editor_id.clone() };
         if track.kind == MustKind::SingleTrack && !track.file.is_empty() {
             return match self.files.resolve_track(&track.file) {
-                Content::Playlist(mut files) if files.len() == 1 => Ok(AuthoredTrack::File(files.remove(0))),
+                Content::Playlist(mut files) if files.len() == 1 => {
+                    let loop_region = track.loop_data.map(|region| byroredux_audio::MusicLoop {
+                        begin: f64::from(region.begin), end: f64::from(region.end), repeats: region.count,
+                    });
+                    let finale = match self.files.resolve_track(&track.finale_file) {
+                        Content::Playlist(mut files) if files.len() == 1 => {
+                            let mut cues: Vec<_> = track.cue_points.iter().copied()
+                                .filter(|cue| cue.is_finite() && *cue >= 0.0).map(f64::from).collect();
+                            cues.sort_by(f64::total_cmp);
+                            cues.dedup();
+                            Some(Finale { key: files.remove(0), cues: cues.into() })
+                        }
+                        _ => None,
+                    };
+                    Ok(AuthoredTrack::File(MusicFile { key: files.remove(0), loop_region, finale }))
+                }
                 issue @ (Content::Missing(_) | Content::Unresolved(_)) => Err(issue),
                 _ => Err(unresolved("single track needs one file")),
             };

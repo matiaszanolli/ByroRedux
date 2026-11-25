@@ -1,7 +1,7 @@
 //! The game-neutral music controller (`docs/engine/music.md` §2): one directive per layer, what is
 //! audible, which track plays, the fades between them, and the report.
 
-use super::directive::{AuthoredTrack, Content, Directive, Outcome, PlaylistPolicy, Shuffle};
+use super::directive::{AuthoredTrack, Content, Directive, MusicFile, Outcome, PlaylistPolicy, Shuffle};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -38,6 +38,8 @@ impl Layer {
 }
 
 const ONE_SHOT_SLOT: u32 = 7;
+/// Cue transitions use a short crossfade independent of the music type's ducking fade.
+const FINALE_FADE_SECS: f32 = 0.25;
 /// A vanilla palette has up to three layers. Leave room for nested choices
 /// while keeping each music layer's share of the audio backend bounded.
 const PALETTE_VOICES: u32 = 16;
@@ -50,6 +52,9 @@ pub(crate) trait MusicOutput {
     fn live(&self) -> bool;
     /// Start `key` on `voice`; `false` when it could not be read or decoded.
     fn play(&mut self, voice: u32, key: &str, level: f32, fade: f32, looping: bool) -> bool;
+    fn play_authored(&mut self, voice: u32, file: &MusicFile, level: f32, fade: f32) -> bool {
+        self.play(voice, &file.key, level, fade, false)
+    }
     fn stop(&mut self, voice: u32, fade: f32);
     fn pause(&mut self, voice: u32, fade: f32);
     fn resume(&mut self, voice: u32, fade: f32);
@@ -57,6 +62,7 @@ pub(crate) trait MusicOutput {
     /// Whether `voice` still holds an unfinished track.
     fn active(&self, voice: u32) -> bool;
     fn position(&self, voice: u32) -> Option<f64>;
+    fn duration(&self, _voice: u32) -> Option<f64> { None }
 }
 
 /// A track a layer is playing.
@@ -66,6 +72,13 @@ struct Playing {
     voice: u32,
     /// Seconds played on the controller's own clock, which a suspended layer stops.
     clock: f64,
+    authored: Option<MusicFile>,
+}
+
+impl Playing {
+    fn new(key: String, voice: u32) -> Self {
+        Self { key, voice, clock: 0.0, authored: None }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -162,14 +175,14 @@ struct PaletteOutput<'a> {
 impl PaletteOutput<'_> {
     fn start(&mut self, track: &AuthoredTrack, elapsed: f64, parent: PaletteTiming) -> Option<PaletteChoice> {
         match track {
-            AuthoredTrack::File(key) => {
+            AuthoredTrack::File(file) => {
                 let slot = self.voices.iter().position(Option::is_none)?;
                 let voice = self.layer.palette_voice(slot as u32);
-                if !self.out.play(voice, key, self.level, self.fade_in, false) {
+                if !self.out.play_authored(voice, file, self.level, self.fade_in) {
                     return None;
                 }
                 self.voices[slot] = Some(PaletteVoice {
-                    playing: Playing { key: key.clone(), voice, clock: 0.0 }, fading: false,
+                    playing: Playing::new(file.key.clone(), voice), fading: false,
                 });
                 Some(PaletteChoice::File(slot))
             }
@@ -248,6 +261,12 @@ enum Mix {
     Full,
     Paused(&'static str),
     Ducked(Ducking),
+}
+
+#[derive(Clone, Copy)]
+enum BattleFinale {
+    Queued(f64),
+    Playing,
 }
 
 #[derive(Debug, Default)]
@@ -348,12 +367,12 @@ impl LayerState {
         out: &mut dyn MusicOutput,
     ) -> bool {
         match track {
-            AuthoredTrack::File(key) => {
+            AuthoredTrack::File(file) => {
                 let voice = layer.voice(0);
-                if !out.play(voice, key, level, fade, false) {
+                if !out.play_authored(voice, file, level, fade) {
                     return false;
                 }
-                self.track = Some(Playing { key: key.clone(), voice, clock: 0.0 });
+                self.track = Some(Playing { authored: Some(file.clone()), ..Playing::new(file.key.clone(), voice) });
             }
             AuthoredTrack::Silence { label, duration } => {
                 self.timed = Some(TimedSelection {
@@ -399,6 +418,7 @@ pub(crate) struct MusicController {
     hold: bool,
     /// Seconds Battle still holds after combat ended (MUS-CMB-002).
     battle_hold: f32,
+    battle_finale: Option<BattleFinale>,
     /// A sting stopped the music: Battle and Location stay silent until the place changes, combat
     /// starts or a script plays (MUS-STG-004, #6901).
     silenced: bool,
@@ -423,7 +443,7 @@ impl MusicController {
         for (i, layer) in layers.iter_mut().enumerate() {
             layer.shuffle = Shuffle::seeded(seed.wrapping_add((i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)));
         }
-        Self { layers, hold: false, battle_hold: 0.0, silenced: false, reported: HashSet::new() }
+        Self { layers, hold: false, battle_hold: 0.0, battle_finale: None, silenced: false, reported: HashSet::new() }
     }
 
     fn state(&self, layer: Layer) -> &LayerState {
@@ -477,6 +497,9 @@ impl MusicController {
             Some(new) => new.change_fade_secs.unwrap_or(new.fade_secs),
             None => state.directive.as_ref().map_or(0.0, |old| old.fade_secs),
         };
+        if layer == Layer::Battle {
+            self.battle_finale = None;
+        }
         if directive.as_ref().is_some_and(|d| matches!(d.content, Content::AuthoredPlaylist { .. })) {
             state.shuffle.reset();
         }
@@ -587,7 +610,7 @@ impl MusicController {
             let leading = self.state(winner).directive.as_ref().expect("winner has a directive");
             let lower = current.directive.as_ref().and_then(|d| d.priority)
                 .zip(leading.priority).is_some_and(|(current, leading)| current > leading);
-            let already_playing = (current.track.is_some() || current.timed.is_some())
+            let already_playing = (current.track.is_some() || current.timed.is_some() || current.one_shot.is_some())
                 && (current.suspended.is_none() || current.suspended == Some("Hold"));
             if lower && playing(winner) && already_playing
                 && let Some(db) = leading.ducking_db
@@ -629,6 +652,12 @@ impl MusicController {
 
     fn step_battle(&mut self, inputs: Inputs, battle: impl FnOnce() -> Directive, out: &mut dyn MusicOutput) {
         if inputs.in_combat {
+            if matches!(self.battle_finale.take(), Some(BattleFinale::Playing)) {
+                if let Some(finale) = self.layers[Layer::Battle as usize].one_shot.take() {
+                    out.stop(finale.voice, FINALE_FADE_SECS);
+                }
+                self.set(Layer::Battle, None, out);
+            }
             if self.state(Layer::Battle).directive.is_none() {
                 let directive = battle();
                 self.set(Layer::Battle, Some(directive), out);
@@ -639,7 +668,7 @@ impl MusicController {
                 }
             }
             self.battle_hold = self.state(Layer::Battle).directive.as_ref().and_then(|d| d.recovery_secs).unwrap_or(0.0);
-        } else if self.state(Layer::Battle).directive.is_some() {
+        } else if self.state(Layer::Battle).directive.is_some() && !self.step_battle_finale(inputs, out) {
             self.battle_hold -= inputs.dt;
             if self.battle_hold <= 0.0 {
                 // A battle set's outro plays as Battle hands back (MUS-CMB-003).
@@ -650,11 +679,70 @@ impl MusicController {
                 if let Some((key, level)) = outro.filter(|_| !matches!(self.mix_for(Layer::Battle, inputs), Mix::Paused(_))) {
                     let voice = Layer::Battle.voice(ONE_SHOT_SLOT);
                     if out.play(voice, &key, level, 0.0, false) {
-                        self.layers[Layer::Battle as usize].one_shot = Some(Playing { key, voice, clock: 0.0 });
+                        self.layers[Layer::Battle as usize].one_shot = Some(Playing::new(key, voice));
                     }
                 }
             }
         }
+    }
+
+    /// A combat finale keeps Battle in the stack until its own stream ends.
+    fn step_battle_finale(&mut self, inputs: Inputs, out: &mut dyn MusicOutput) -> bool {
+        let state = self.state(Layer::Battle);
+        if matches!(self.battle_finale, Some(BattleFinale::Playing)) {
+            let playing = state.one_shot.as_ref().is_some_and(|track| out.live() && out.active(track.voice));
+            if !playing {
+                self.set(Layer::Battle, None, out);
+            }
+            return true;
+        }
+        let Some(track) = state.track.as_ref() else { return false };
+        let Some(file) = track.authored.as_ref() else { return false };
+        let Some(finale) = file.finale.as_ref() else { return false };
+        match self.mix_for(Layer::Battle, inputs) {
+            Mix::Paused("Hold") => return true,
+            Mix::Paused(_) => {
+                self.battle_finale = None;
+                return false;
+            }
+            Mix::Full | Mix::Ducked(_) => {}
+        }
+
+        let position = out.position(track.voice).unwrap_or(track.clock);
+        let active = !out.live() || out.active(track.voice);
+        let cue = match self.battle_finale {
+            Some(BattleFinale::Queued(cue)) => Some(cue),
+            _ => {
+                let end = out.duration(track.voice).unwrap_or(f64::INFINITY);
+                finale.cues.iter().copied().filter_map(|cue| {
+                    match file.loop_region {
+                        Some(region) => region.cue_at_or_after(cue, position),
+                        None => (cue >= position).then_some(cue),
+                    }
+                }).filter(|&cue| cue < end).min_by(f64::total_cmp)
+            }
+        };
+        if let Some(cue) = cue && active && position < cue {
+            self.battle_finale = Some(BattleFinale::Queued(cue));
+            self.battle_hold = 0.0;
+            return true;
+        }
+
+        let level = state.directive.as_ref().map_or(1.0, |directive| directive.level);
+        let level = state.level(level);
+        let voice = Layer::Battle.voice(ONE_SHOT_SLOT);
+        if out.play(voice, &finale.key, level, FINALE_FADE_SECS, false) {
+            let replacement = Playing::new(finale.key.clone(), voice);
+            out.stop(track.voice, FINALE_FADE_SECS);
+            let state = &mut self.layers[Layer::Battle as usize];
+            state.track = None;
+            state.one_shot = Some(replacement);
+            self.battle_finale = Some(BattleFinale::Playing);
+            self.battle_hold = 0.0;
+        } else {
+            self.set(Layer::Battle, None, out);
+        }
+        true
     }
 
     /// A battle set's intro on entering combat (MUS-CMB-003).
@@ -664,7 +752,7 @@ impl MusicController {
         let Some(key) = (if intro { d.intro.clone() } else { d.outro.clone() }) else { return };
         let voice = layer.voice(ONE_SHOT_SLOT);
         if out.play(voice, &key, d.level, 0.0, false) {
-            state.one_shot = Some(Playing { key, voice, clock: 0.0 });
+            state.one_shot = Some(Playing::new(key, voice));
         }
     }
 
@@ -686,7 +774,7 @@ impl MusicController {
                     let level = state.level(directive.level);
                     let palette = state.timed.iter().flat_map(TimedSelection::voices)
                         .filter(|voice| !voice.fading).map(|voice| &voice.playing);
-                    for track in state.track.iter().chain(palette) {
+                    for track in state.track.iter().chain(state.one_shot.iter()).chain(palette) {
                         out.set_level(track.voice, level, fade);
                     }
                 }
@@ -721,12 +809,16 @@ impl MusicController {
 
     fn play(&mut self, layer: Layer, inputs: Inputs, out: &mut dyn MusicOutput) {
         let live = out.live();
+        let battle_ending = layer == Layer::Battle && self.battle_finale.is_some();
         let state = &mut self.layers[layer as usize];
         if state.suspended.is_some() {
             return;
         }
         for playing in state.voices_mut() {
             playing.clock += f64::from(inputs.dt);
+        }
+        if battle_ending {
+            return;
         }
         // An intro or outro plays once; with no audio device it is over at once (`docs/engine/music.md` §8).
         if state.one_shot.as_ref().is_some_and(|p| !live || !out.active(p.voice)) {
@@ -756,7 +848,7 @@ impl MusicController {
                         .map(|offset| &tracks[(index + offset) % tracks.len()])
                         .find(|key| out.play(voice, key, d.level, fade, looping));
                     match played {
-                        Some(key) => state.track = Some(Playing { key: key.clone(), voice, clock: 0.0 }),
+                        Some(key) => state.track = Some(Playing::new(key.clone(), voice)),
                         None => {
                             let path = tracks.get(index).cloned().unwrap_or_else(|| d.source.label.clone());
                             let missing = Directive { content: Content::Missing(path), ..(*d).clone() };
@@ -789,7 +881,7 @@ impl MusicController {
                     let fade = state.start_fade.take().unwrap_or(d.fade_secs);
                     if !state.start_authored(tracks, *policy, layer, level, fade, out) && !state.playlist_finished {
                         let path = match tracks.first() {
-                            Some(AuthoredTrack::File(key)) => key.clone(),
+                            Some(AuthoredTrack::File(file)) => file.key.clone(),
                             _ => d.source.label.clone(),
                         };
                         let missing = Directive { content: Content::Missing(path), ..(*d).clone() };
@@ -824,7 +916,7 @@ impl MusicController {
                         (None, true) if state.failed_stems[i] => {}
                         (None, true) => {
                             if out.play(voice, &stem.key, d.level * stem.level, start_fade, true) {
-                                state.stems[i] = Some(Playing { key: stem.key.clone(), voice, clock: 0.0 });
+                                state.stems[i] = Some(Playing::new(stem.key.clone(), voice));
                             } else {
                                 state.failed_stems[i] = true;
                             }
@@ -879,6 +971,15 @@ impl MusicController {
             if layer == Layer::Battle && state.outcome() == Some(Outcome::Playing) && self.battle_hold > 0.0 {
                 line.push_str(&format!(" — recovery {:.1}s", self.battle_hold));
             }
+            if layer == Layer::Battle {
+                match self.battle_finale {
+                    Some(BattleFinale::Queued(cue)) => line.push_str(&format!(" — finale queued at {cue:.2}s")),
+                    Some(BattleFinale::Playing) => line.push_str(" — finale"),
+                    None if state.track.as_ref().and_then(|track| track.authored.as_ref())
+                        .is_some_and(|file| file.finale.is_some()) => line.push_str(" — finale available"),
+                    None => {}
+                }
+            }
             for note in &d.notes {
                 line.push_str(&format!(" — {note}"));
             }
@@ -907,6 +1008,72 @@ pub(crate) mod tests {
 
     fn files(keys: &[&str]) -> Vec<AuthoredTrack> {
         keys.iter().map(|key| AuthoredTrack::File((*key).into())).collect()
+    }
+
+    fn combat_with_finale() -> Directive {
+        use crate::music::directive::Finale;
+        let track = AuthoredTrack::File(MusicFile {
+            key: "battle".into(),
+            loop_region: Some(byroredux_audio::MusicLoop { begin: 2.0, end: 5.0, repeats: 2 }),
+            finale: Some(Finale { key: "ending".into(), cues: Arc::from([1.0, 3.0, 4.0, 6.0]) }),
+        });
+        Directive {
+            priority: Some(8), ducking_db: Some(12.0), recovery_secs: Some(5.0),
+            ..authored("combat", vec![track], PlaylistPolicy { one_selection: true, cycle: false, ordered: true })
+        }
+    }
+
+    #[test]
+    fn combat_finale_waits_for_the_next_cue_in_the_repeated_pass() {
+        let mut music = MusicController::seeded(1);
+        let mut out = FakeOutput { live: true, ..Default::default() };
+        let location = Directive { priority: Some(90), ..playlist("exterior", &["ambient"]) };
+        music.set(Layer::Location, Some(location), &mut out);
+        music.step(frame(0.0), no_battle, &mut out);
+        let combat = Inputs { in_combat: true, ..frame(0.0) };
+        music.step(combat, combat_with_finale, &mut out);
+        music.step(Inputs { dt: 6.5, ..combat }, no_battle, &mut out);
+        music.step(frame(0.0), no_battle, &mut out);
+        assert!(matches!(music.battle_finale, Some(BattleFinale::Queued(7.0))));
+        music.step(Inputs { hold: true, ..frame(6.0) }, no_battle, &mut out);
+        assert!(matches!(music.battle_finale, Some(BattleFinale::Queued(7.0))));
+        assert_eq!(music.track(Layer::Battle, &out).unwrap().1, 6.5);
+
+        music.step(frame(0.5), no_battle, &mut out);
+        music.step(frame(0.0), no_battle, &mut out);
+        let finale = Layer::Battle.voice(ONE_SHOT_SLOT);
+        let old = Layer::Battle.voice(0);
+        assert_eq!(out.voices[&finale].0, "ending");
+        assert!(!out.voices.contains_key(&old));
+        assert!(out.faded.contains(&format!("play {finale} {FINALE_FADE_SECS}")));
+        assert!(out.faded.contains(&format!("stop {old} {FINALE_FADE_SECS}")));
+        assert!(music.state(Layer::Location).ducking.is_some());
+
+        out.voices.remove(&finale);
+        music.step(frame(0.5), no_battle, &mut out);
+        assert!(music.directive(Layer::Battle).is_none());
+        assert!(music.state(Layer::Location).ducking.is_none());
+    }
+
+    #[test]
+    fn combat_return_cancels_the_queued_finale_and_replaces_an_active_one() {
+        let mut music = MusicController::seeded(1);
+        let mut out = FakeOutput { live: true, ..Default::default() };
+        let combat = Inputs { in_combat: true, ..frame(0.0) };
+        music.step(combat, combat_with_finale, &mut out);
+        music.step(frame(0.0), no_battle, &mut out);
+        assert!(matches!(music.battle_finale, Some(BattleFinale::Queued(1.0))));
+        music.step(Inputs { dt: 15.0, ..combat }, no_battle, &mut out);
+        assert!(music.battle_finale.is_none());
+        assert_eq!(music.track(Layer::Battle, &out).unwrap().1, 15.0);
+
+        // No cue remains at this position: use the immediate handoff.
+        music.step(frame(0.0), no_battle, &mut out);
+        assert!(matches!(music.battle_finale, Some(BattleFinale::Playing)));
+        music.step(combat, combat_with_finale, &mut out);
+        assert!(music.battle_finale.is_none());
+        assert_eq!(music.track(Layer::Battle, &out), Some(("battle".into(), 0.0)));
+        assert!(!out.voices.contains_key(&Layer::Battle.voice(ONE_SHOT_SLOT)));
     }
 
     #[test]

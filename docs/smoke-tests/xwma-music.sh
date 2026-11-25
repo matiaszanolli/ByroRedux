@@ -120,6 +120,10 @@ awk -v a="$(position "$quiet")" -v b="$(position "$quieter")" 'BEGIN { exit !(b 
 echo "smoke[xwma-music]: $SMOKE_GAME combat PASS -- $later / $quieter"
 
 debug "obscript.cmd $actor 1017 r:00000014" || fail "could not end combat"
+if [[ "$later" == *' — finale available'* ]]; then
+    finale="$(wait_music Battle "^Battle: Playing — $combat_type .*\.xwm at .* — finale$")"
+    echo "smoke[xwma-music]: $SMOKE_GAME finale PASS -- $finale"
+fi
 wait_music Battle '^Battle: none' >/dev/null
 restored="$(wait_music Location '^(Location: Playing — .*\.xwm at |Location: Silent \(timed selection\) — .* — palette )')"
 [[ "$(selection "$quieter")" == "$(selection "$restored")" ]] || fail "restoring gain switched the exterior selection"

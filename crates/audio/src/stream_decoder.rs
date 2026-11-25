@@ -38,6 +38,7 @@ pub(crate) fn is_xwma(bytes: &[u8]) -> bool {
 
 pub(crate) fn streaming_sound(
     mut source: Box<dyn MediaSource>,
+    region: Option<MusicLoop>,
 ) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
     let mut header = [0; 12];
     match source.read_exact(&mut header) {
@@ -47,11 +48,134 @@ pub(crate) fn streaming_sound(
     }
     source.seek(SeekFrom::Start(0))?;
     if is_xwma(&header) {
-        Ok(StreamingSoundData::from_decoder(XwmaStream::new(source)?))
+        sound_from_decoder(XwmaStream::new(source)?, region)
     } else {
-        Ok(StreamingSoundData::from_decoder(ClaimCheckedDecoder::new(
-            source,
-        )?))
+        sound_from_decoder(ClaimCheckedDecoder::new(source)?, region)
+    }
+}
+
+/// Repeat the authored half-open range without changing the intro or tail.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MusicLoop {
+    pub begin: f64,
+    pub end: f64,
+    pub repeats: u32,
+}
+
+impl MusicLoop {
+    /// First future occurrence of an authored cue on the expanded playhead.
+    pub fn cue_at_or_after(self, cue: f64, position: f64) -> Option<f64> {
+        let length = self.end - self.begin;
+        let expanded = if cue < self.begin || self.repeats == 0 || !length.is_finite() || length <= 0.0 {
+            cue
+        } else if cue <= self.end {
+            let pass = ((position - cue) / length).ceil().max(0.0);
+            if pass > f64::from(self.repeats) {
+                return None;
+            }
+            cue + pass * length
+        } else {
+            cue + length * f64::from(self.repeats)
+        };
+        (expanded >= position).then_some(expanded)
+    }
+}
+
+fn sound_from_decoder<D: Decoder<Error = FromFileError> + 'static>(
+    decoder: D,
+    region: Option<MusicLoop>,
+) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
+    match region.filter(|region| region.repeats != 0) {
+        Some(region) => Ok(StreamingSoundData::from_decoder(LoopedStream::new(decoder, region)?)),
+        None => Ok(StreamingSoundData::from_decoder(decoder)),
+    }
+}
+
+/// Kira sees one non-looping timeline. The decoder cuts chunks at wraps and seeks
+/// on its own decode thread. Incoming chunks are trimmed in place.
+struct LoopedStream<D> {
+    source: D,
+    source_cursor: usize,
+    cursor: usize,
+    begin: usize,
+    end: usize,
+    repeated: usize,
+    total: usize,
+}
+
+impl<D: Decoder<Error = FromFileError>> LoopedStream<D> {
+    fn new(source: D, region: MusicLoop) -> Result<Self, FromFileError> {
+        let rate = f64::from(source.sample_rate());
+        let begin = (region.begin * rate).round();
+        let end = (region.end * rate).round();
+        let invalid = || io::Error::new(io::ErrorKind::InvalidData, "music loop is outside the stream or has no frames");
+        if !begin.is_finite() || !end.is_finite() || begin < 0.0 || end <= begin || end > source.num_frames() as f64 {
+            return Err(invalid().into());
+        }
+        let (begin, end) = (begin as usize, end as usize);
+        let repeated = (end - begin).checked_mul(region.repeats as usize).ok_or_else(invalid)?;
+        let total = source.num_frames().checked_add(repeated).filter(|&frames| frames <= i64::MAX as usize)
+            .ok_or_else(invalid)?;
+        Ok(Self { source, source_cursor: 0, cursor: 0, begin, end, repeated, total })
+    }
+
+    /// Source frame and the number of frames available before a discontinuity.
+    fn span(&self) -> (usize, usize) {
+        if self.repeated == 0 {
+            return (self.cursor, self.total - self.cursor);
+        }
+        let length = self.end - self.begin;
+        if self.cursor < self.end {
+            return (self.cursor, self.end - self.cursor);
+        }
+        // The final repeat and the tail are contiguous in the source.
+        let last_pass = self.begin + self.repeated;
+        if self.cursor < last_pass {
+            let offset = (self.cursor - self.end) % length;
+            return (self.begin + offset, length - offset);
+        }
+        (self.cursor - self.repeated, self.total - self.cursor)
+    }
+}
+
+impl<D: Decoder<Error = FromFileError>> Decoder for LoopedStream<D> {
+    type Error = FromFileError;
+
+    fn sample_rate(&self) -> u32 { self.source.sample_rate() }
+
+    fn num_frames(&self) -> usize { self.total }
+
+    fn decode(&mut self) -> Result<Vec<Frame>, Self::Error> {
+        if self.cursor == self.total {
+            return Ok(Vec::new());
+        }
+        let (wanted, count) = self.span();
+        if self.source_cursor != wanted {
+            self.source_cursor = self.source.seek(wanted)?;
+            if self.source_cursor > wanted {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "music loop seek skipped its first frame").into());
+            }
+        }
+        loop {
+            let mut frames = self.source.decode()?;
+            if frames.is_empty() {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "music loop reached an early end of stream").into());
+            }
+            let start = self.source_cursor;
+            self.source_cursor += frames.len();
+            if self.source_cursor <= wanted {
+                continue;
+            }
+            frames.drain(..wanted - start);
+            frames.truncate(count);
+            self.cursor += frames.len();
+            return Ok(frames);
+        }
+    }
+
+    fn seek(&mut self, index: usize) -> Result<usize, Self::Error> {
+        self.cursor = index.min(self.total);
+        Ok(self.cursor)
     }
 }
 
@@ -220,6 +344,7 @@ impl Decoder for ClaimCheckedDecoder {
                 track_id: self.track_id,
             },
         )?;
+        self.decoder.reset();
         let actual = seeked.actual_ts.get();
         self.position = if actual < 0 {
             0

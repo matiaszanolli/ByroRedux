@@ -130,8 +130,7 @@ impl MustKind {
     }
 }
 
-/// `MUST.LNAM` — loop begin / end (seconds) and repeat count. Decoded, not yet played: the audio
-/// layer has no loop-region wiring beyond whole-track looping (#3775).
+/// `MUST.LNAM` — loop begin / end (seconds) and repeat count.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MustLoop {
     pub begin: f32,
@@ -153,6 +152,8 @@ pub struct MustRecord {
     pub file: String,
     /// `BNAM` — the finale file played when the music type ends.
     pub finale_file: String,
+    /// `FNAM` — cue points in seconds in the main track.
+    pub cue_points: Vec<f32>,
     /// `LNAM`.
     pub loop_data: Option<MustLoop>,
     /// `SNAM` — a palette's member tracks, with null FormIDs separating layers.
@@ -170,6 +171,10 @@ pub fn parse_must(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             b"DNAM" => out.fade_out = reader.f32().unwrap_or(0.0),
             b"ANAM" => out.file = read_zstring(&sub.data),
             b"BNAM" => out.finale_file = read_zstring(&sub.data),
+            b"FNAM" => {
+                out.cue_points = reader.u32_array().unwrap_or_default()
+                    .into_iter().map(f32::from_bits).collect();
+            }
             b"LNAM" => {
                 if let (Ok(begin), Ok(end), Ok(count)) = (reader.f32(), reader.f32(), reader.u32()) {
                     out.loop_data = Some(MustLoop { begin, end, count });
@@ -346,11 +351,15 @@ mod tests {
             sub(b"CNAM", 0x6ED7_E048u32.to_le_bytes()),
             sub(b"FLTV", 120.0f32.to_le_bytes()),
             sub(b"ANAM", b"music\\explore\\tundra_a.xwm\0"),
+            sub(b"BNAM", b"music\\explore\\ending.xwm\0"),
+            sub(b"FNAM", [3.5f32, 15.25].into_iter().flat_map(f32::to_le_bytes).collect::<Vec<_>>()),
             sub(b"LNAM", lnam),
         ];
         let track = parse_must(0x2000, &subs, &None);
         assert_eq!(track.kind, MustKind::SingleTrack);
         assert_eq!(track.file, "music\\explore\\tundra_a.xwm");
+        assert_eq!(track.finale_file, "music\\explore\\ending.xwm");
+        assert_eq!(track.cue_points, [3.5, 15.25]);
         assert_eq!(track.loop_data, Some(MustLoop { begin: 1.5, end: 90.0, count: 2 }));
         let palette = parse_must(1, &[sub(b"CNAM", 0x23F6_78C3u32.to_le_bytes())], &None);
         assert_eq!(palette.kind, MustKind::Palette);

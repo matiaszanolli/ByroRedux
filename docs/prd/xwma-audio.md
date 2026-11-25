@@ -1,6 +1,7 @@
 # xWMA Audio Decoding — Product Requirements
 
-**Status**: ACTIVE (2026-11-25). Revision 12 records timed silence and layered palettes.
+**Status**: ACTIVE (2026-11-25). Revision 13 records finite loop regions and combat finales.
+Revision 12 records timed silence and layered palettes.
 Revision 11 records ducking and authored playlist selection.
 Revision 10 records live exterior and combat music on Skyrim SE and Fallout 4.
 Revision 9 records the owner's decision on the Fallout 4 voice lines over
@@ -289,10 +290,14 @@ original runtime ([V4 evidence on the shared fields](../engine/xwma-phase0-findi
   meaning of a zero count are covered in the
   [V4 loop evidence](../engine/xwma-phase0-findings.md#v4--palette-layout-loop-data-and-fallout-4-behavior).
   The editor fields specify seconds. A zero count with a present loop range is
-  **Phase 0: verify** in the original runtime.
+  **Phase 0: verify** in the original runtime. ByroRedux currently treats zero as no extra
+  passes. The [stream tests](../../crates/audio/tests/support/xwma_stream.rs) compare real source
+  samples at the wrap and tail.
 - **XWMA-MUSC-008.** A combat track that ends while its finale (`finale_file`) exists
   SHOULD crossfade into the finale when combat ends first ("crossfading from one of the
-  Cue Points directly into the Finale track", CK wiki, *Music Track*).
+  Cue Points directly into the Finale track", CK wiki, *Music Track*). The controller
+  waits for the next cue, and the [live gate](../smoke-tests/xwma-music.sh) checks the finale
+  when the selected authored track names one.
 - **XWMA-MUSC-009.** A `MUST` whose conditions are false SHOULD be skipped (CK wiki,
   *Music Track*, Conditions). Today `music.rs` reads no conditions, so every track plays.
 
@@ -503,3 +508,4 @@ is published for Skyrim and Fallout 4.
 | 10 | 2026-11-25 | Translated authored location and battle types to single-file playlists, applied PNAM priority, and passed the live Skyrim SE and Fallout 4 exterior and combat gates (#7416). | — |
 | 11 | 2026-11-25 | Applied combat ducking and gain recovery to the running exterior track and wired the three authored playlist flags (#7416). | — |
 | 12 | 2026-11-25 | Preserved palette layer separators and played timed silence and layered palettes through the authored playlist (#7416). | — |
+| 13 | 2026-11-25 | Streamed finite authored loop regions and scheduled combat finales on the active track's cue timeline (#7416). | — |

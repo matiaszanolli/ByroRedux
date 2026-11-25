@@ -184,7 +184,7 @@ fn real_data_palettes_keep_three_layers_and_resolve_their_streams() {
         assert_eq!(layers.len(), 3);
         for layer in layers {
             let key = layer.iter().find_map(|choice| match choice {
-                AuthoredTrack::File(key) => Some(key),
+                AuthoredTrack::File(file) => Some(&file.key),
                 _ => None,
             }).expect("each layer names a playable file");
             let bytes = provider.extract(key).expect("palette file is present");

@@ -83,6 +83,11 @@ runs until that frame is available or the decoder errors. Using a `dpds`
 packet offset directly would require a verified restart point and preroll.
 The decoded-audio cap applies during catch-up.
 
+Finite authored music loops present an expanded timeline to kira. The adapter rounds
+`LNAM` endpoints to source frames and cuts chunks in place at each wrap. The final
+pass continues into the tail. The adapter retains no decoded loop buffer. Seeking on
+the expanded timeline maps to a source frame and uses the codec's existing seek path.
+
 ## Streaming bound for XWMA-STRM-002
 
 **Per live voice, retain at most 36,864 decoded frame slots** from the

@@ -184,6 +184,7 @@ mod world;
 
 pub use cache::*;
 pub use components::*;
+pub use stream_decoder::MusicLoop;
 pub use system::*;
 pub use world::*;
 

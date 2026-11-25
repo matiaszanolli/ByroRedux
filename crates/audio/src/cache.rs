@@ -167,7 +167,15 @@ pub fn with_start_delay(sound: &std::sync::Arc<StaticSoundData>, secs: f64) -> s
 pub fn load_streaming_sound_from_bytes(
     bytes: Vec<u8>,
 ) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
-    with_frames(crate::stream_decoder::streaming_sound(Box::new(Cursor::new(bytes)))?)
+    load_music_stream_from_bytes(bytes, None)
+}
+
+/// Load a music asset with a finite authored loop on the decoder's playback timeline.
+pub fn load_music_stream_from_bytes(
+    bytes: Vec<u8>,
+    region: Option<MusicLoop>,
+) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
+    with_frames(crate::stream_decoder::streaming_sound(Box::new(Cursor::new(bytes)), region)?)
 }
 
 /// Refuse a stream with no frames. kira 0.12.5's decoder thread never leaves its transport loop for
@@ -240,7 +248,7 @@ pub fn load_streaming_sound_from_file(
     path: impl AsRef<std::path::Path>,
 ) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
     let file = std::fs::File::open(path)?;
-    with_frames(crate::stream_decoder::streaming_sound(Box::new(file))?)
+    with_frames(crate::stream_decoder::streaming_sound(Box::new(file), None)?)
 }
 
 /// Process-lifetime cache of decoded `StaticSoundData`, keyed by

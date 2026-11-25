@@ -97,8 +97,11 @@ palette stays within its parent's fade and end times. Palette playback uses up t
 16 voices per music layer. [Creation Kit Music Track](https://skyrimck.uesp.net/wiki/Music_Track).
 
 The entire palette counts as one playlist selection. The controller's hold pauses
-timed selections and their voices. Authored conditions, loop regions and combat
-finales are tracked in [xWMA Phase 4](../prd/xwma-audio.md#55-music-stack-musc-and-must-xwma-musc).
+timed selections and their voices. `MUST.LNAM` repeats its frame range on the
+decoder's timeline, after one pass through the intro and before the original tail.
+A count of zero currently leaves the source timeline intact. Original-game behavior
+for zero and authored track conditions remain open in
+[xWMA Phase 4](../prd/xwma-audio.md#55-music-stack-musc-and-must-xwma-musc).
 
 On Oblivion the winning region is the one the engine's region selection already picks
 (`select_active_region_sound`: override flag, then priority). A music type with no file
@@ -217,6 +220,13 @@ code, and its executable is encrypted.
   time (§7), then Location returns to its normal gain or resumes. Oblivion has none: it counts the actors whose combat
   targets include the player (`0x6136b0` / `0x6136e0`) and switches back when the count
   reaches 0.
+- **Authored combat finales (XWMA-MUSC-008).** When combat ends with a finale available on
+  the current track, Battle waits for the next `MUST.FNAM` cue on the active playback
+  timeline. Cues inside a loop recur on each pass. ByroRedux uses a 250 ms crossfade
+  into `MUST.BNAM` at the cue, or immediately when there is no remaining cue. Battle
+  keeps its priority through the finale and releases it when the stream ends.
+  Renewed combat cancels a pending finale or fades out an active one.
+  [Creation Kit Music Track](https://skyrimck.uesp.net/wiki/Music_Track).
 - **Stings (MUS-STG, #6901).** Oblivion plays `Special\death.mp3` on the player's death
   (`0x600b7d`) and `Special\success.mp3` on a level-up (`0x5ad005`, the "Success" track
   UESP lists), both on its one music graph (`0x6ab160`), which stops the track that was
@@ -379,7 +389,8 @@ Vegas leg, `music-oblivion.sh` scenario 7.
 The [xWMA music smoke](../smoke-tests/xwma-music.sh) runs xWMA scenario 4 for Skyrim SE
 and Fallout 4. With an audio device active, it checks the position of an exterior track,
 starts combat through a placed actor, and checks that both selections advance during ducking.
-Ending combat restores the exterior selection's gain. The ignored
+Ending combat restores the exterior selection's gain after the finale, when the selected
+combat track has one. The ignored
 `real_data_palettes_keep_three_layers_and_resolve_their_streams` test checks real three-layer
 palettes, their authored durations, and one stream from each layer in both games.
 

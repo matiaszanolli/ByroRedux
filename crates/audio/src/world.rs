@@ -169,6 +169,7 @@ pub struct MovieHold {
 pub(crate) struct MusicVoice {
     pub(crate) handle: StreamingSoundHandle<FromFileError>,
     pub(crate) level: f32,
+    duration_secs: f64,
 }
 
 /// Keep sub-silence gain targets so a long duck crosses the backend's silence floor at the
@@ -567,12 +568,13 @@ impl AudioWorld {
         let Some(mgr) = self.manager.as_mut() else {
             return false;
         };
+        let duration_secs = streaming_sound.duration().as_secs_f64();
         let mut slot = self.music_voices.remove(&voice).map(|v| v.handle);
         let volume_db = music_volume_db(level * self.music_volume);
         play_main_track(mgr, &mut slot, streaming_sound, volume_db, fade_secs, looping);
         match slot {
             Some(handle) => {
-                self.music_voices.insert(voice, MusicVoice { handle, level });
+                self.music_voices.insert(voice, MusicVoice { handle, level, duration_secs });
                 true
             }
             None => false,
@@ -613,6 +615,11 @@ impl AudioWorld {
     /// it holds no track.
     pub fn music_voice_position(&self, voice: u32) -> Option<f64> {
         self.music_voices.get(&voice).map(|v| v.handle.position())
+    }
+
+    /// Length of the stream's playback timeline, including its authored repeats.
+    pub fn music_voice_duration(&self, voice: u32) -> Option<f64> {
+        self.music_voices.get(&voice).map(|v| v.duration_secs)
     }
 
     /// Whether music voice `voice` holds a track that has not finished:

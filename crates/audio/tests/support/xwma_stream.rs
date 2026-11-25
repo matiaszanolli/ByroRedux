@@ -151,6 +151,97 @@ fn malformed_xwma_returns_an_error() {
     assert!(crate::load_streaming_sound_from_bytes(bytes).is_err());
 }
 
+/// A packetized ramp gives each source frame a recognizable value.
+struct Ramp {
+    position: usize,
+}
+
+impl Decoder for Ramp {
+    type Error = FromFileError;
+
+    fn sample_rate(&self) -> u32 { 8 }
+    fn num_frames(&self) -> usize { 14 }
+    fn decode(&mut self) -> Result<Vec<Frame>, Self::Error> {
+        let end = (self.position + 4).min(self.num_frames());
+        let frames = (self.position..end).map(|frame| Frame::from_mono(frame as f32)).collect();
+        self.position = end;
+        Ok(frames)
+    }
+    fn seek(&mut self, frame: usize) -> Result<usize, Self::Error> {
+        self.position = frame / 4 * 4;
+        Ok(self.position)
+    }
+}
+
+fn read_window(mut decoder: impl Decoder<Error = FromFileError>, start: usize, count: usize) -> Vec<Frame> {
+    let mut position = decoder.seek(start).unwrap();
+    let mut frames = Vec::with_capacity(count);
+    while frames.len() < count {
+        let chunk = decoder.decode().unwrap();
+        assert!(!chunk.is_empty(), "stream ended before the requested window");
+        let skip = start.saturating_sub(position).min(chunk.len());
+        position += chunk.len();
+        frames.extend(chunk.into_iter().skip(skip).take(count - frames.len()));
+    }
+    frames
+}
+
+#[test]
+fn finite_loop_copies_only_its_range_then_plays_the_tail() {
+    let region = MusicLoop { begin: 3.0 / 8.0, end: 9.0 / 8.0, repeats: 2 };
+    let make = || LoopedStream::new(Ramp { position: 0 }, region).unwrap();
+    assert_eq!(make().num_frames(), 26);
+    let expected: Vec<_> = (0..9).chain(3..9).chain(3..14).map(|frame| Frame::from_mono(frame as f32)).collect();
+    assert_eq!(read_window(make(), 0, expected.len()), expected);
+    assert_eq!(read_window(make(), 10, 13), expected[10..23]);
+    assert_eq!(read_window(make(), 21, 5), expected[21..]);
+    let bad = MusicLoop { end: 15.0 / 8.0, ..region };
+    assert!(LoopedStream::new(Ramp { position: 0 }, bad).is_err());
+}
+
+#[test]
+fn finite_xwma_loop_reaches_the_expanded_end_in_kira() {
+    let bytes = stream(&format(2), 6_144);
+    let region = MusicLoop { begin: 384.0 / 48_000.0, end: 1_152.0 / 48_000.0, repeats: 2 };
+    let data = crate::load_music_stream_from_bytes(bytes.clone(), Some(region)).unwrap();
+    let expanded = 6_144 + 768 * 2;
+    assert_eq!(data.num_frames(), expanded);
+    let zero = MusicLoop { repeats: 0, ..region };
+    assert_eq!(crate::load_music_stream_from_bytes(bytes, Some(zero)).unwrap().num_frames(), 6_144);
+    let mut manager = mock();
+    let mut handle = manager.play(data).unwrap();
+    consume_until(&mut manager, || handle.state() == PlaybackState::Stopped);
+    assert!(handle.pop_error().is_none());
+    assert!(handle.position() >= (expanded - 64) as f64 / 48_000.0);
+}
+
+#[test]
+#[ignore = "requires BYROREDUX_SKYRIMSE_DATA and BYROREDUX_FO4_DATA"]
+fn vanilla_authored_music_loops_match_source_pcm_at_wraps_and_tail() {
+    let root = |name| PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("set {name} to the Data directory")));
+    let skyrim = BsaArchive::open(root("BYROREDUX_SKYRIMSE_DATA").join("Skyrim - Sounds.bsa")).unwrap();
+    let fallout = Ba2Archive::open(root("BYROREDUX_FO4_DATA").join("Fallout4 - Sounds.ba2")).unwrap();
+    for (label, bytes, region) in [
+        ("MUSSovngardeChantLP", skyrim.extract(r"music\mus_sovngarde_chant_lp.xwm").unwrap(),
+            MusicLoop { begin: 0.0, end: f64::from(209.24f32), repeats: 90 }),
+        ("MUSzCombatHigh07", fallout.extract(r"music\mus_combat_boss_05.xwm").unwrap(),
+            MusicLoop { begin: f64::from(7.114f32), end: f64::from(117.904f32), repeats: 2 }),
+    ] {
+        let source = || XwmaStream::new(Box::new(Cursor::new(bytes.clone()))).unwrap();
+        let expanded = || LoopedStream::new(source(), region).unwrap();
+        let rate = f64::from(source().sample_rate());
+        let begin = (region.begin * rate).round() as usize;
+        let end = (region.end * rate).round() as usize;
+        let added = (end - begin) * region.repeats as usize;
+        assert_eq!(expanded().num_frames(), source().num_frames() + added, "{label}");
+        let before_wrap = read_window(source(), end - 32, 32);
+        let after_wrap = read_window(source(), begin, 32);
+        assert_eq!(read_window(expanded(), end - 32, 64), [before_wrap, after_wrap].concat(), "{label}");
+        let tail_boundary = end.min(source().num_frames() - 32) - 32;
+        assert_eq!(read_window(expanded(), tail_boundary + added, 64), read_window(source(), tail_boundary, 64), "{label}");
+    }
+}
+
 #[test]
 fn xwma_paced_playback_seek_and_loop_restart_stay_bounded() {
     // Build a stream long enough to fill the ring. After the first packet,

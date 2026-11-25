@@ -26,12 +26,16 @@ struct AudioOutput<'a> {
     provider: Option<&'a crate::asset_provider::SoundArchiveProvider>,
 }
 
-impl MusicOutput for AudioOutput<'_> {
-    fn live(&self) -> bool {
-        self.audio.as_ref().is_some_and(|audio| audio.is_active())
-    }
-
-    fn play(&mut self, voice: u32, key: &str, level: f32, fade: f32, looping: bool) -> bool {
+impl AudioOutput<'_> {
+    fn play_stream(
+        &mut self,
+        voice: u32,
+        key: &str,
+        level: f32,
+        fade: f32,
+        looping: bool,
+        region: Option<byroredux_audio::MusicLoop>,
+    ) -> bool {
         let Some(audio) = self.audio.as_deref_mut().filter(|audio| audio.is_active()) else {
             return true; // headless: the decision stands, nothing is heard (MUS-RPT-003)
         };
@@ -39,7 +43,7 @@ impl MusicOutput for AudioOutput<'_> {
             log::warn!("music: '{key}' could not be read");
             return false;
         };
-        match byroredux_audio::load_streaming_sound_from_bytes(bytes) {
+        match byroredux_audio::load_music_stream_from_bytes(bytes, region) {
             // kira can refuse the track too: a silent voice is no playing track (#6921).
             Ok(sound) => audio.play_music_voice(voice, sound, level, fade, looping),
             Err(error) => {
@@ -47,6 +51,20 @@ impl MusicOutput for AudioOutput<'_> {
                 false
             }
         }
+    }
+}
+
+impl MusicOutput for AudioOutput<'_> {
+    fn live(&self) -> bool {
+        self.audio.as_ref().is_some_and(|audio| audio.is_active())
+    }
+
+    fn play(&mut self, voice: u32, key: &str, level: f32, fade: f32, looping: bool) -> bool {
+        self.play_stream(voice, key, level, fade, looping, None)
+    }
+
+    fn play_authored(&mut self, voice: u32, file: &directive::MusicFile, level: f32, fade: f32) -> bool {
+        self.play_stream(voice, &file.key, level, fade, false, file.loop_region)
     }
 
     fn stop(&mut self, voice: u32, fade: f32) {
@@ -79,6 +97,10 @@ impl MusicOutput for AudioOutput<'_> {
 
     fn position(&self, voice: u32) -> Option<f64> {
         self.audio.as_ref().filter(|audio| audio.is_active())?.music_voice_position(voice)
+    }
+
+    fn duration(&self, voice: u32) -> Option<f64> {
+        self.audio.as_ref()?.music_voice_duration(voice)
     }
 }
 
