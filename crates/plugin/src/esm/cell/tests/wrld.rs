@@ -531,6 +531,46 @@ fn parse_wrld_exterior_cell_xclw_sentinel_is_explicit_no_water() {
     );
 }
 
+/// A CELL whose XCLW is a "default" placeholder reads exactly like one with
+/// no XCLW, so it inherits the worldspace water. Reading it as a dry cell
+/// removed the sea from FO4 and Skyrim.
+#[test]
+fn parse_wrld_exterior_cell_xclw_default_placeholder_inherits() {
+    for placeholder in [f32::MAX, f32::from_bits(0x4F7F_FFC9)] {
+        let xclc = [1i32.to_le_bytes(), 1i32.to_le_bytes()].concat();
+        let cell = build_cell_record(
+            0x0001_2346,
+            &[
+                (b"EDID", b"HarbourCell\0".to_vec()),
+                (b"XCLC", xclc),
+                (b"XCLW", placeholder.to_le_bytes().to_vec()),
+            ],
+        );
+        let sub_block = build_cell_children_group(0, 5, &cell);
+        let block = build_cell_children_group(0, 4, &sub_block);
+        let children = build_world_children_group(0x0000_003C, &block);
+        let wrld = build_wrld_record(0x0000_003C, &[(b"EDID", b"Commonwealth\0".to_vec())]);
+        let mut payload = wrld;
+        payload.extend_from_slice(&children);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GRUP");
+        buf.extend_from_slice(&((24 + payload.len()) as u32).to_le_bytes());
+        buf.extend_from_slice(b"WRLD");
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        buf.extend_from_slice(&payload);
+
+        let (_worldspaces, _climates, exterior, _persistent) = parse_synthetic_wrld(&buf);
+        let cell = &exterior["commonwealth"][&(1, 1)];
+
+        assert_eq!(cell.water_height, None, "{placeholder} is not a height");
+        assert!(
+            !cell.water_height_is_explicit,
+            "{placeholder} must leave the cell inheriting the worldspace water"
+        );
+    }
+}
+
 #[test]
 fn parse_wrld_truncated_payloads_default_safely() {
     // Defensive: a 1-byte PNAM (pre-Skyrim variant), an empty DATA,

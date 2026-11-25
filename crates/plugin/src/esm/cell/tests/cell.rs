@@ -1587,7 +1587,7 @@ fn parse_cell_without_xclw_leaves_water_height_none() {
 fn parse_cell_xclw_sentinel_is_explicit_no_water() {
     // #3827 / ESM-D5-01 — walker-level regression for the XCLW tri-state.
     // `gated_water_height` is already unit-tested at the helper boundary for
-    // all four cases (normal height, #INT_MIN#, Skyrim FLT_MAX, too-short),
+    // all four cases (normal height, #INT_MIN#, FLT_MAX, too-short),
     // but nothing drove a full `parse_cell_group` call with an authored
     // sentinel payload and asserted the composed result: an explicit XCLW
     // that decodes to "no water" (author drained a reservoir / dry
@@ -1597,7 +1597,7 @@ fn parse_cell_xclw_sentinel_is_explicit_no_water() {
     // future length-guarded match arm (`b"XCLW" if sub.data.len() >= 4`)
     // could silently reintroduce that collapse for this exact payload
     // without any test at the walker level catching it.
-    let sentinel_bytes = f32::MAX.to_le_bytes();
+    let sentinel_bytes = (-2_147_483_648.0_f32).to_le_bytes(); // #INT_MIN#
 
     let mut sub_data = Vec::new();
     let edid = "DrainedReservoir\0";

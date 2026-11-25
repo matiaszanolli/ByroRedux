@@ -2392,10 +2392,10 @@ mod tests {
     }
 
     /// #5243, real-data half: on WastelandNV the distant mesh must be
-    /// per-cell. The census (issue body) shows **zero** inherit cells and
-    /// 15,962 authored dry sentinels — so the mesh may contain no −2300
-    /// quad at all, every emitted quad must belong to a cell with resolved
-    /// water, and Lake Mead's 2600 band must be present beyond the hole.
+    /// per-cell. Every emitted quad must sit at its own cell's effective
+    /// height (authored, or the −2300 default for a cell that inherits) over
+    /// terrain that reaches below it, and Lake Mead's 2600 band must be
+    /// present beyond the hole.
     ///
     /// `cargo test -p byroredux -- --ignored distant_water`
     #[test]
@@ -2438,14 +2438,6 @@ mod tests {
              cells, 330 wet at distance); got histogram {:?}",
             geometry.height_histogram
         );
-        assert!(
-            !geometry
-                .height_histogram
-                .iter()
-                .any(|(h, _)| (*h - -2300.0).abs() < 1.0),
-            "no cell inherits the worldspace default (census: 0 absent XCLW), so no \
-             -2300 quad may exist — that was the phantom-water half of #5243"
-        );
         // Every emitted quad belongs to a cell with resolved water and sits
         // in the (hole, reach] window. Quads emit their min corner first, so
         // its coordinates divide back to the cell id exactly.
@@ -2461,9 +2453,22 @@ mod tests {
             let cell = cells
                 .get(&(gx, gy))
                 .expect("emitted quad must belong to a real cell");
+            let effective = if cell.water_height_is_explicit {
+                cell.water_height
+            } else {
+                Some(-2300.0)
+            };
+            let height = v.position[1];
+            assert_eq!(
+                effective,
+                Some(height),
+                "cell ({gx},{gy}) drew water at a height it does not resolve to"
+            );
             assert!(
-                cell.water_height.is_some(),
-                "cell ({gx},{gy}) resolves no water — a dry-sentinel quad leaked through"
+                cell.landscape
+                    .as_ref()
+                    .is_none_or(|land| land.heights.iter().any(|&h| h <= height)),
+                "cell ({gx},{gy}) drew water wholly under its terrain"
             );
         }
     }

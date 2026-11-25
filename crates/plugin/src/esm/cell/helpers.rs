@@ -118,11 +118,12 @@ impl CellSubrecordFields {
             // XCLW: f32 water plane height in world units (Z-up). Same
             // layout across Oblivion / FO3 / FNV / Skyrim — the cell's
             // water surface sits at this Z (interior) or Z-in-worldspace
-            // (exterior). `gated_water_height` returns None for the
-            // `#INT_MIN#` / FLT_MAX "no water" sentinels;
-            // `water_height_is_explicit` keeps that None distinct from an
-            // absent XCLW. See #397 / #356 / #1305.
-            b"XCLW" => {
+            // (exterior). A "default" placeholder says the same thing as no
+            // XCLW, so it leaves both fields alone. `gated_water_height`
+            // returns None for the remaining "no water" sentinel
+            // (`#INT_MIN#`); `water_height_is_explicit` keeps that None
+            // distinct from the inherit case. See #397 / #356 / #1305.
+            b"XCLW" if !is_default_water_height(&sub.data) => {
                 self.water_height_is_explicit = true;
                 self.water_height = gated_water_height(&sub.data);
             }
@@ -418,14 +419,43 @@ pub(super) fn read_form_id_array(reader: &EsmReader, data: &[u8]) -> Vec<u32> {
         .collect()
 }
 
+/// `FLT_MAX`, which xEdit names `Default` for this field: the cell takes its
+/// worldspace's water height (`wbCELLAfterLoad` writes it into cells that
+/// flag water and carry no XCLW, "so water height will be taken from WRLD by
+/// game"; the bit pattern is `wbInterface.pas`'s `Default`).
+const XCLW_DEFAULT_BITS: u32 = 0x7F7F_FFFF;
+/// About 2^32, which UESP's Skyrim `CELL` page records as a Creation Kit bug
+/// meaning the same as `FLT_MAX`. These are the bytes Skyrim.esm ships (37
+/// Tamriel cells), not the nearest float to `u32::MAX`.
+const XCLW_CK_DEFAULT_BITS: u32 = 0x4F7F_FFC9;
+
+/// Whether a CELL `XCLW` payload defers to the worldspace water height.
+///
+/// UESP calls this value "no water present", of a field it describes as the
+/// "non-ocean water-height"; read as a dry cell it removes the sea. Shipped
+/// terrain settles it: the cells carrying it that dip below their
+/// worldspace's `DNAM` water height are Boston Harbor and the lower Charles
+/// (FO4), the Sea of Ghosts (Skyrim), the Colorado below Hoover Dam (FNV)
+/// and reaches of the Potomac (FO3), each meeting the neighbouring authored
+/// river heights.
+fn is_default_water_height(data: &[u8]) -> bool {
+    data.first_chunk::<4>().is_some_and(|bytes| {
+        matches!(
+            u32::from_le_bytes(*bytes),
+            XCLW_DEFAULT_BITS | XCLW_CK_DEFAULT_BITS
+        )
+    })
+}
+
 /// Gate a wire f32 water-plane height (Z-up world units). Shared by the
 /// three sub-records that author one: CELL `XCLW` (cell level), WRLD
 /// `DNAM` (worldspace-default, second f32 of the payload), and WRLD
-/// `NAM4` (distant-LOD ring). Returns `None` for Bethesda's "no water"
-/// sentinels: `#INT_MIN#` (-2147483648.0, nif.xml line 59) and
-/// `f32::MAX` (observed in Skyrim exterior CELL records). Without this,
-/// sentinel — or corrupt — cells spawn planes at impossible heights,
-/// poisoning water bounds and render work; a NaN that slips through
+/// `NAM4` (distant-LOD ring). Returns `None` for values that are not a
+/// height: `#INT_MIN#` (-2147483648.0, nif.xml line 59, "no water") and
+/// `f32::MAX` (a CELL's "use the default", filtered before this by
+/// [`is_default_water_height`]; a WRLD has no further default to take).
+/// Without this, sentinel — or corrupt — cells spawn planes at impossible
+/// heights, poisoning water bounds and render work; a NaN that slips through
 /// culls every triangle of the plane (NaN `<=` is always false) and
 /// silently drains the worldspace (#4487). Also `None` when the payload
 /// is too short. Same f32 layout across Oblivion / FO3 / FNV / Skyrim+,
@@ -502,7 +532,17 @@ pub(super) fn decode_ragdoll_pose(data: &[u8]) -> Vec<super::RagdollPoseBone> {
 
 #[cfg(test)]
 mod tests {
-    use super::gated_water_height;
+    use super::{gated_water_height, is_default_water_height};
+
+    #[test]
+    fn only_the_two_default_bit_patterns_defer_to_the_worldspace() {
+        assert!(is_default_water_height(&f32::MAX.to_le_bytes()));
+        assert!(is_default_water_height(&0x4F7F_FFC9u32.to_le_bytes()));
+        for height in [0.0f32, 450.0, -14_000.0, -f32::MAX, -2_147_483_648.0] {
+            assert!(!is_default_water_height(&height.to_le_bytes()), "{height}");
+        }
+        assert!(!is_default_water_height(&[0xFF; 3]));
+    }
 
     #[test]
     fn gated_water_height_normal_height_passes_through() {
@@ -524,8 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn gated_water_height_float_max_sentinel_is_no_water() {
-        // Skyrim exterior CELLs use FLT_MAX for an explicitly dry tile.
+    fn gated_water_height_float_max_is_not_a_height() {
         assert_eq!(gated_water_height(&f32::MAX.to_le_bytes()), None);
     }
 

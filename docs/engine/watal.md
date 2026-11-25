@@ -25,9 +25,16 @@ remaining Skyrim tail, character traversal, and wider shoreline/LOD visual
 matrix remain open. The verified Skyrim underwater fog tail is now promoted;
 localized surface disturbance emitters and transient
 `SplashEvent`/`RippleEvent` markers plus concrete spatial audio are now live.
-The CELL boundary now preserves XCLW as a tri-state: absent means inherit the
-WRLD default, a finite authored height overrides it, and either Bethesda no-water
-sentinel (`#INT_MIN#` or Skyrim's FLT_MAX) explicitly suppresses a plane.
+The CELL boundary now preserves XCLW as a tri-state: absent **or a "default"
+placeholder** (`0x7F7FFFFF` FLT_MAX, `0x4F7FFFC9`) means inherit the WRLD
+default, a finite authored height overrides it, and the `#INT_MIN#` no-water
+sentinel suppresses a plane. Until 2026-11-25 FLT_MAX was read as dry, which
+removed every cell that takes the worldspace height: Boston Harbor and the lower
+Charles (FO4), the Sea of Ghosts (Skyrim), the Colorado below Hoover Dam (FNV)
+and reaches of the Potomac (FO3). xEdit names the value `Default` for this
+field; UESP calls it "no water present". The shipped terrain decides it: those
+cells' low ground forms the sea and rivers, meeting the authored river heights.
+An inherited plane wholly under its LAND tile spawns nothing.
 
 **Goal**: every supported engine version (Oblivion / FO3 / FNV / Skyrim LE/SE /
 FO4 / FO76 / Starfield) translates its native, per-game water authoring into **one
@@ -1046,11 +1053,11 @@ actual residency (`cell_is_full_detail`). The old one-cell margin
 (#1871 heritage, from the wrong-height-sheet era) cut a permanent waterless
 ring at every boundary. The pre-#5243 single sheet at
 the worldspace
-default was wrong on both sides of the census: FNV WastelandNV, Skyrim
-Tamriel and FO4 Commonwealth author **zero** inherit cells (every wet cell
-is an override), so the default sheet painted phantom ocean across their
-authored-dry basins while distant Lake Mead rendered 4,900 BU below its own
-rim. `crates/plugin/examples/xclw_census.rs` is the re-checkable census.
+default was wrong wherever a cell authors its own height: distant Lake Mead rendered
+4,900 BU below its own rim. (#5243's census also reported **zero** inherit cells
+for FNV, Skyrim and FO4; that was the FLT_MAX misreading above, so its
+"authored-dry basins" are inherit cells.)
+`crates/plugin/examples/xclw_census.rs` is the re-checkable census.
 The render-only `WaterLodInfo { height, water_form, quad_heights }`
 component retains provenance (default height, water form, and the live
 quad-height histogram `water.dump` reports) for diagnostics and streaming

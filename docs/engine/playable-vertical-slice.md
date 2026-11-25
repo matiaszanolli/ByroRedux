@@ -346,6 +346,9 @@ cross-game exterior smoke records both and fails if an XCLW no-water sentinel
 escapes into live bounds. A real Skyrim `(2,-10)` probe exposed the second
 sentinel spelling (`FLT_MAX`) and the missing tri-state at the CELL→WRLD fallback:
 the fix preserves absent XCLW as “inherit” while an authored sentinel stays dry.
+(Corrected 2026-11-25: `FLT_MAX` is the "default height" placeholder and now
+inherits; see [watal.md](watal.md). The extra planes lay wholly under their
+terrain, which the spawner now suppresses.)
 The rebuilt probe reduced the fixture from 16 water planes to the expected two
 (one LOD plane plus the authored `RiverWater` tile), retained flow
 `[0.878, 0, 0.479] @ 90`, and resolved every texture. W0's fixed above/underwater
