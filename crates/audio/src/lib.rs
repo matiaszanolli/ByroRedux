@@ -188,7 +188,6 @@ pub use system::*;
 pub use world::*;
 
 use dsp::*;
-use stream_decoder::ClaimCheckedDecoder;
 
 
 // Re-export the kira types downstream crates need so they can hold

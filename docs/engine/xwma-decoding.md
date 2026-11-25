@@ -74,14 +74,14 @@ kira's scheduler keep requesting the same frame. On truncation reuse the
 existing claim-checking behavior and surface the terminal error to the
 controller. [ClaimCheckedDecoder](../../crates/audio/src/stream_decoder.rs).
 
-For seek and loop restart, flush the codec (`avcodec_flush_buffers`) and drop pending
-output together. Use `dpds` for frame-to-packet lookup. A packet selected
-that way still needs a verified restart point and the required decoder
-preroll. If no checkpoint is known, replay incrementally from the start
-and discard through the requested position. Perform nontrivial replay on
-the stream worker with cancellation and bounded work per step. Use the
-same presentation timeline for restart, seek and loop point conversion.
-The decoded-audio cap applies throughout preroll and a loop restart.
+For seek and loop restart, the adapter flushes the codec
+(`avcodec_flush_buffers`), drops pending output and reports frame zero as the
+landing point. Kira asks for chunks on its worker, discarding through the
+requested frame on the same timeline as normal playback. Kira 0.12.5 checks
+for a stop between scheduler steps. Its catch-up loop for one requested frame
+runs until that frame is available or the decoder errors. Using a `dpds`
+packet offset directly would require a verified restart point and preroll.
+The decoded-audio cap applies during catch-up.
 
 ## Streaming bound for XWMA-STRM-002
 
@@ -94,10 +94,16 @@ copies, including during chunk replacement and seeking.
 | Owner | Maximum frame slots |
 |---|---:|
 | kira 0.12.5 per-voice ring, including its interpolation seed | 16,384 |
-| Prior and incoming adapter chunks, at most 4,096 each | 8,192 |
-| Codec PCM and time-domain overlap/scratch | 8,192 |
+| Prior and incoming kira chunks, 2,048 each | 4,096 |
+| Rust interleaved PCM | 2,048 |
+| Native PCM and time-domain overlap/scratch | 10,240 |
 | Remaining per-voice copies and interpolation | 4,096 |
 | Total | **36,864** |
+
+The native decoder uses up to 2,048 slots for reusable planar output, 4,096
+for overlap and 4,096 for its shared inverse-transform output. The patch
+emits one codec frame at a time within each compressed superframe. Streams
+use floating-point PCM, so the lazy 16-bit conversion buffer is absent.
 
 The cap corresponds to **576 KiB** at a conservative 16 bytes per slot
 including a timestamp, or about 0.84 seconds of frame slots at 44.1 kHz.
@@ -144,7 +150,8 @@ digest and metadata.
 - **One pinned release, fetched at build time.** The version, tarball URL and SHA-256 are
   pinned in [`crates/xwma/build.rs`](../../crates/xwma/build.rs) and
   [`third_party/ffmpeg/PATCHES.md`](../../third_party/ffmpeg/PATCHES.md). The build script
-  verifies the tarball and extracts it under `OUT_DIR`. It keeps `libavcodec.a` and
+  verifies the tarball, extracts it under `OUT_DIR` and patches the decoder to yield
+  one codec frame at a time. It keeps `libavcodec.a` and
   `libavutil.a`, deletes the extracted source and object files, and caches the tarball in
   `target/<profile>/xwma-ffmpeg-cache/` by default.
 - **Scalar build.** The configure line in the build script enables `wmav2` and its support
@@ -155,7 +162,7 @@ digest and metadata.
 - **Static link, no FFmpeg on the machine.** The in-process decoder needs no FFmpeg
   installation at build or run time (PRD XWMA-DEC-005). An empty cache requires network access
   and `curl` for the initial download or `XWMA_FFMPEG_TARBALL` pointing to a local copy. The
-  build uses a `tar` that reads `.xz`, a C toolchain, GNU Make and a POSIX shell. Phase 3
+  build uses a `tar` that reads `.xz`, `patch`, a C toolchain, GNU Make and a POSIX shell. Phase 3
   routes `.fuz` voice through this decoder (#7415).
 - **Licence.** The library is LGPL-2.1-or-later as a whole. The compiled-file inventory and
   notices are recorded in

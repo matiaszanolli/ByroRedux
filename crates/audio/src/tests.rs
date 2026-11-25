@@ -6,7 +6,7 @@ use super::*;
 use std::time::Duration;
 
 #[path = "../../xwma/tests/support/fixture.rs"]
-mod xwma_fixture;
+pub(super) mod xwma_fixture;
 
 /// Every production source file of the crate, for the source-scan pins
 /// below. `lib.rs` was split into `dsp` / `world` / `components` / `system`

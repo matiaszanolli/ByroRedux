@@ -152,8 +152,8 @@ impl Directive {
     }
 }
 
-/// The formats the streaming decoder plays (PRD §3.5 row 2).
-const PLAYABLE: [&str; 4] = ["mp3", "wav", "ogg", "flac"];
+/// The formats the streaming decoder plays. The xWMA backend is an unconditional audio dependency.
+const PLAYABLE: [&str; 5] = ["mp3", "wav", "ogg", "flac", "xwm"];
 
 fn playable(key: &str) -> bool {
     key.rsplit_once('.').is_some_and(|(_, ext)| PLAYABLE.iter().any(|p| ext.eq_ignore_ascii_case(p)))
@@ -282,6 +282,14 @@ mod tests {
         assert_eq!(files().resolve(""), Content::Silent);
         assert!(matches!(files().resolve("dungeon\\x.xma"), Content::Unresolved(_)));
         assert_eq!(files().resolve("dungeon\\"), Content::Missing("Data\\Music\\dungeon\\".into()), "no playable file in it");
+    }
+
+    #[test]
+    fn xwma_is_playable_by_file_and_folder() {
+        let files = MusicFiles::new(["music\\dungeon\\track.xwm".to_owned()]);
+        let expected = Content::Playlist(vec!["music\\dungeon\\track.xwm".into()]);
+        assert_eq!(files.resolve("Dungeon/Track.XWM"), expected);
+        assert_eq!(files.resolve("Dungeon\\"), expected);
     }
 
     #[test]
