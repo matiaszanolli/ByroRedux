@@ -122,7 +122,7 @@ impl SoundFailures {
         }
     }
 
-    fn record(&self, path: &str, error: &FromFileError) {
+    fn record(&self, path: &str, error: &impl std::fmt::Display) {
         let key = path.replace('/', "\\").to_lowercase();
         let mut entries = self.entries.lock().expect("sound failure report poisoned");
         let Entry::Vacant(entry) = entries.entry(key) else {
@@ -474,6 +474,15 @@ impl VoiceSoundCache {
     where
         F: FnOnce() -> Option<Vec<u8>>,
     {
+        self.get_or_try_load(path, || Ok(loader()))
+    }
+
+    /// Like [`Self::get_or_load`], with loader errors reported through
+    /// [`SoundFailures`] alongside decode errors. An absent asset is a cache miss.
+    pub fn get_or_try_load<F>(&mut self, path: &str, loader: F) -> Option<Arc<StaticSoundData>>
+    where
+        F: FnOnce() -> std::io::Result<Option<Vec<u8>>>,
+    {
         let key = path.to_ascii_lowercase();
         if let Some(i) = self.entries.iter().position(|(k, ..)| *k == key) {
             let (k, sound, bytes) = self.entries.remove(i);
@@ -483,11 +492,14 @@ impl VoiceSoundCache {
         if self.negatives.contains(&key) {
             return None;
         }
-        let Some(bytes) = loader() else {
-            self.remember_negative(key);
-            return None;
+        let sound = match loader() {
+            Ok(bytes) => bytes.and_then(|bytes| self.failures.decode(path, bytes)),
+            Err(error) => {
+                self.failures.record(path, &error);
+                None
+            }
         };
-        match self.failures.decode(path, bytes) {
+        match sound {
             Some(sound) => {
                 let pcm_bytes = sound.frames.len() * std::mem::size_of::<kira::Frame>();
                 self.resident_bytes += pcm_bytes;

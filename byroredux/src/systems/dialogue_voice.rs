@@ -1,7 +1,6 @@
 //! #5367 Phase V — per-line dialogue voice playback.
 //!
-//! **Scope: FO3 / FNV and Oblivion; Skyrim `.fuz` deferred.** There are two
-//! authored conventions, not one universal Bethesda rule.
+//! Voice file naming follows two authored conventions across the supported games.
 //!
 //! **Oblivion (#5526)** authors no NPC `VTCK` and no `VTYP` records, so there
 //! is no voice type to key on. Its voices ship (`Oblivion - Voices1/2.bsa`,
@@ -50,10 +49,8 @@
 //! `.fuz` (Skyrim / FO4 / FO76) rides the same name shape with the
 //! `.fuz` extension ([`fuz_voice_path_candidates`]); the FUZE container
 //! (FUZE + raw lip + RIFF xWMA, #5464) is parsed in
-//! `byroredux_audio::fuz` and its WMA payload decoded through the
-//! host's optional `ffmpeg` (#5912 — parse, don't link: without
-//! `ffmpeg` the line stays on the subtitle estimate exactly as
-//! pre-#5912). FNV DLC voice ships inside
+//! `byroredux_audio::fuz` and its xWMA payload decoded by the shared
+//! static sound loader (#7415). FNV DLC voice ships inside
 //! `<DLC> - Main.bsa`, which the profile does not mount: pass it with
 //! `--sounds-bsa` for a voiced DLC session (the SE profile mounts
 //! `Skyrim - Voices_en0.bsa` the same way).
@@ -256,7 +253,7 @@ fn resolve_voice_segments(
     let mut sounds = Vec::with_capacity(responses.len());
     {
         // #5383 — cache → provider, `combat_anim`'s order: the loader
-        // reads the archive provider INSIDE `get_or_load`, under the
+        // reads the archive provider INSIDE `get_or_try_load`, under the
         // cache write guard. The pre-fix shape took the provider read
         // first and the cache write under it — the reverse edge — so the
         // type-keyed lock-order graph recorded both directions across the
@@ -266,36 +263,17 @@ fn resolve_voice_segments(
         for (segment, &response) in responses.iter().enumerate() {
             let candidates = candidates_for(response);
             let sound = candidates.iter().find_map(|path| {
-                cache.get_or_load(path, || {
-                    let provider = world.try_resource::<SoundArchiveProvider>()?;
+                cache.get_or_try_load(path, || {
+                    let Some(provider) = world.try_resource::<SoundArchiveProvider>() else {
+                        return Ok(None);
+                    };
                     if provider.is_empty() {
-                        return None;
+                        return Ok(None);
                     }
-                    let bytes = provider.extract(path)?;
-                    // #5912 — FUZE containers (Skyrim/FO4/FO76 .fuz) must
-                    // become WAV before the cache's kira decode sees them;
-                    // every other vanilla voice payload is already
-                    // kira-decodable. `ffmpeg` missing is the expected
-                    // degradation (debug, once per line) — a parse failure
-                    // on a FUZE-marked file is worth a warn.
-                    if bytes.starts_with(b"FUZE") {
-                        match byroredux_audio::fuz::fuz_to_wav_bytes(&bytes) {
-                            Ok(wav) => Some(wav),
-                            Err(byroredux_audio::fuz::FuzDecodeError::FfmpegMissing) => {
-                                log::debug!(
-                                    "#5912: '{path}' resolved but no host ffmpeg — \
-                                     playing silent on the subtitle estimate"
-                                );
-                                None
-                            }
-                            Err(e) => {
-                                log::warn!("#5912: .fuz decode failed for '{path}': {e}");
-                                None
-                            }
-                        }
-                    } else {
-                        Some(bytes)
-                    }
+                    provider
+                        .extract(path)
+                        .map(byroredux_audio::fuz::voice_payload)
+                        .transpose()
                 })
             });
             let Some(sound) = sound else {
@@ -810,7 +788,7 @@ mod tests {
     /// `SoundCache`) and a voiced dialogue line (the `VoiceSoundCache`
     /// through `resolve_voice_segments`) acquire their cache and the
     /// archive provider in ONE order (cache → provider, inside
-    /// `get_or_load`). The pre-fix voice path took the provider read
+    /// the loader). The pre-fix voice path took the provider read
     /// first and the cache write under it, so the type-keyed lock-order
     /// graph recorded both directions and any detector session
     /// (`BYRO_LOCK_ORDER_CHECK=1`) covering both closed a cycle. The

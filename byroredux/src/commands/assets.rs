@@ -166,7 +166,10 @@ mod xwma_fixture;
 #[cfg(test)]
 mod snd_failed_tests {
     use super::*;
-    use byroredux_audio::{Frame, SoundFailures, fuz::MAX_PCM_BYTES};
+    use byroredux_audio::{
+        Frame, SoundFailures, VoiceSoundCache,
+        fuz::{MAX_PCM_BYTES, voice_payload},
+    };
 
     #[test]
     fn snd_failed_lists_paths_and_reasons() {
@@ -188,15 +191,25 @@ mod snd_failed_tests {
                 .decode("sound/fx/broken.xwm", b"RIFF\x04\0\0\0XWMA".to_vec())
                 .is_none()
         );
+        let mut voices = VoiceSoundCache::with_budget_and_failures(
+            VoiceSoundCache::DEFAULT_BUDGET_BYTES,
+            failures.clone(),
+        );
+        assert!(
+            voices
+                .get_or_try_load("sound/voice/broken.fuz", || voice_payload(b"FUZE".to_vec()).map(Some))
+                .is_none()
+        );
 
         assert_eq!(
             registry.execute(&world, "snd.failed").lines,
             [
-                "Sounds that failed to decode (2)".to_owned(),
+                "Sounds that failed to decode (3)".to_owned(),
                 "  sound/fx/broken.xwm: invalid xWMA RIFF (missing fmt chunk)".to_owned(),
                 format!(
                     "  {radio_path}: xWMA exceeds the static PCM limit ({MAX_PCM_BYTES} bytes)"
                 ),
+                "  sound/voice/broken.fuz: invalid FUZE container or missing RIFF/XWMA".to_owned(),
             ]
         );
     }

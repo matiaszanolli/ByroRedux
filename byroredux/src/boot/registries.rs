@@ -72,11 +72,9 @@ pub(crate) fn install_runtime_registries(world: &mut World, scheduler: &Schedule
         crate::save_io::discover_save_dir(),
         10,
     ));
-    // #7366 — a process death runs no destructor, so a movie soundtrack WAV or a `.fuz` xWMA image the dead
-    // process left in the temp directory is reclaimed here (the save staging sweep above covers saves only).
+    // #7366 — reclaim movie soundtrack WAVs left in the temp directory by a dead process.
     let reclaimed = byroredux_core::atomic_file::reclaim_stale_temp_files_in_temp_dir(&[
         byroredux_video::SOUNDTRACK_TEMP_FILE,
-        byroredux_audio::fuz::XWMA_TEMP_FILE,
     ]);
     if reclaimed > 0 {
         log::info!("removed {reclaimed} stale temp file(s) a dead process left in the temp directory");
@@ -99,9 +97,9 @@ pub(crate) fn install_runtime_registries(world: &mut World, scheduler: &Schedule
 
 #[cfg(test)]
 mod temp_sweep_tests {
-    /// #7366 — the boot sweep names both temp-file kinds the engine creates through
-    /// `atomic_file::create_temp_file` (the movie soundtrack WAV and the `.fuz` xWMA image), and each creator
-    /// takes its name from the same constant the sweep reads, so a renamed stem cannot slip past the sweep.
+    /// #7366 — the movie soundtrack WAV is the engine's only temp-file kind
+    /// created through `atomic_file::create_temp_file`. Its creator and the
+    /// boot sweep use the same filename stem and extension.
     #[test]
     fn the_boot_sweep_names_every_temp_file_kind_the_engine_creates() {
         let src = include_str!("registries.rs");
@@ -113,13 +111,15 @@ mod temp_sweep_tests {
             .expect("the sweep call ends")
             .0;
         assert!(sweep.contains("byroredux_video::SOUNDTRACK_TEMP_FILE"), "the movie soundtrack WAV is swept");
-        assert!(sweep.contains("byroredux_audio::fuz::XWMA_TEMP_FILE"), "the .fuz xWMA image is swept");
         let video = include_str!("../../../crates/video/src/lib.rs");
-        assert!(video.contains("(SOUNDTRACK_STEM, \"wav\")"), "the video constant carries the creator's stem");
-        let fuz = include_str!("../../../crates/audio/src/fuz.rs");
         assert!(
-            fuz.contains("create_temp_file(XWMA_TEMP_FILE.0, XWMA_TEMP_FILE.1)"),
-            "the xWMA creator takes its name from the swept constant"
+            video.contains("SOUNDTRACK_TEMP_FILE: (&str, &str) = (SOUNDTRACK_STEM, \"wav\")"),
+            "the video constant carries the creator's stem and extension"
+        );
+        assert!(
+            video.contains("stem: SOUNDTRACK_STEM,")
+                && video.contains("create_temp_file(soundtrack.stem, \"wav\")"),
+            "the soundtrack creator uses the swept stem and extension"
         );
     }
 }

@@ -2197,6 +2197,22 @@ fn no_binary_production_source_scans_for_a_form_id() {
     assert!(found.is_empty(), "resolve through FormIdPool's index, not a scan (#7113):\n{}", found.join("\n"));
 }
 
+/// #7415 — audio decoding runs in process, including test fixtures under the audio source tree.
+#[test]
+fn audio_source_does_not_spawn_commands() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/audio/src");
+    assert!(src.is_dir(), "audio source directory must exist");
+    let mut found = Vec::new();
+    visit_workspace_rs_files(&src, &mut |path, contents| {
+        for (idx, line) in contents.lines().enumerate() {
+            if line.contains("Command::new") {
+                found.push(format!("{}:{}  {}", path.display(), idx + 1, line.trim()));
+            }
+        }
+    });
+    assert!(found.is_empty(), "audio must decode in process (#7415):\n{}", found.join("\n"));
+}
+
 /// #7218 — Oblivion's actor values, ruleset and regen lanes are wired (#7010, #7197), so no production source may
 /// still name the closed #3768 "pre-AVIF resolver" as what they wait on: that wording had rotted into a dozen
 /// comments. The needles are built at run time so this test's own text cannot match.

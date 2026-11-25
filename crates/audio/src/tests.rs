@@ -2062,6 +2062,89 @@ fn static_xwma_preserves_sample_rate_and_frame_count() {
     }
 }
 
+const TEST_LIP: &[u8] = b"lip bytes";
+
+fn fuz_bytes(inner: &[u8]) -> Vec<u8> {
+    let mut bytes = b"FUZE\x01\0\0\0".to_vec();
+    bytes.extend_from_slice(&(TEST_LIP.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(TEST_LIP);
+    bytes.extend_from_slice(inner);
+    bytes
+}
+
+#[test]
+fn voice_cache_decodes_fuz_xwma_and_preserves_lip_bytes() {
+    let xwma = xwma_fixture::stream(&xwma_fixture::format(1), 6144);
+    let bytes = fuz_bytes(&xwma);
+    assert_eq!(fuz::parse_fuz(&bytes).expect("valid FUZE").lip, TEST_LIP);
+
+    let mut cache = VoiceSoundCache::new();
+    let sound = cache
+        .get_or_try_load(r"sound\voice\valid.fuz", || fuz::voice_payload(bytes).map(Some))
+        .expect("playable FUZE");
+    assert_eq!(sound.sample_rate, 48_000);
+    assert_eq!(sound.num_frames(), 6144);
+    assert!(
+        sound
+            .frames
+            .iter()
+            .all(|frame| *frame == Frame::from_mono(0.0))
+    );
+}
+
+#[test]
+fn voice_cache_reports_each_fuz_failure_once_and_decodes_later_lines() {
+    let failures = SoundFailures::default();
+    let mut cache = VoiceSoundCache::with_budget_and_failures(
+        VoiceSoundCache::DEFAULT_BUDGET_BYTES,
+        failures.clone(),
+    );
+    let cases = [
+        (
+            r"Sound\Voice\broken-container.fuz",
+            "sound/voice/BROKEN-CONTAINER.fuz",
+            b"RIFF\x04\0\0\0WAVE",
+            "invalid FUZE container or missing RIFF/XWMA",
+        ),
+        (
+            r"Sound\Voice\broken-stream.fuz",
+            "sound/voice/BROKEN-STREAM.fuz",
+            b"RIFF\x04\0\0\0XWMA",
+            "invalid xWMA RIFF (missing fmt chunk)",
+        ),
+    ];
+    for (path, alias, inner, _) in cases {
+        assert!(
+            cache
+                .get_or_try_load(path, || fuz::voice_payload(fuz_bytes(inner)).map(Some))
+                .is_none()
+        );
+        assert!(
+            cache
+                .get_or_try_load(path, || panic!("negative cache must skip the loader"))
+                .is_none()
+        );
+        assert!(
+            cache
+                .get_or_try_load(alias, || fuz::voice_payload(fuz_bytes(inner)).map(Some))
+                .is_none()
+        );
+    }
+    assert!(cache.get_or_try_load("sound/voice/absent.fuz", || Ok(None)).is_none());
+
+    let xwma = xwma_fixture::stream(&xwma_fixture::format(1), 6144);
+    let sound = cache
+        .get_or_try_load("sound/voice/next.fuz", || {
+            fuz::voice_payload(fuz_bytes(&xwma)).map(Some)
+        })
+        .expect("another voice line still decodes");
+    assert_eq!(sound.num_frames(), 6144);
+    assert_eq!(
+        failures.entries(),
+        cases.map(|(path, _, _, reason)| (path.to_owned(), reason.to_owned()))
+    );
+}
+
 #[test]
 fn sound_cache_reuses_decoded_xwma_by_path() {
     let mut cache = SoundCache::new();
