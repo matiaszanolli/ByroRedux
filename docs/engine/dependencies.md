@@ -160,7 +160,7 @@ dependency is only ever consumed by that one crate:
 | byroredux-plugin            | byroredux-core, byroredux-bsa, byroredux-sdk |
 | byroredux-game-detect       | byroredux-core, byroredux-bsa, byroredux-plugin |
 | byroredux-physics           | byroredux-core |
-| byroredux-audio             | byroredux-core, byroredux-xwma (`byroredux-bsa` dev-only) |
+| byroredux-audio             | byroredux-core, byroredux-xwma (`byroredux-bsa` and `byroredux-plugin` dev-only) |
 | byroredux-video             | byroredux-bink2, byroredux-binkaudio |
 | byroredux-pex               | byroredux-papyrus (`byroredux-bsa` dev-only) |
 | byroredux-mod-runtime       | byroredux-sdk (Wasmtime host boundary) |

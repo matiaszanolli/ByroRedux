@@ -1,8 +1,13 @@
 //! FUZE (`.fuz`) container parsing (#5912).
 //!
 //! Skyrim/FO4/FO76 voice lines ship as `.fuz`: a 12-byte `FUZE` header, the raw
-//! `.lip` sync bytes, then a complete `RIFF`/`XWMA` stream. The container shape
-//! was pinned byte-level by `skyrim_fuz_container_shape` (#5464).
+//! `.lip` sync bytes, then a complete `RIFF`/`XWMA` stream. The header may
+//! declare zero lip bytes. The container layout was verified by
+//! `skyrim_fuz_container_shape` (#5464).
+//!
+//! The voice cache decodes the embedded WMA v2 in process through the
+//! statically linked xWMA decoder (#7415). It applies the static PCM limit
+//! and records failures for the dialogue caller's subtitle fallback.
 
 /// Static xWMA decoded PCM limit and default voice cache budget (64 MiB).
 pub const MAX_PCM_BYTES: usize = 64 * 1024 * 1024;

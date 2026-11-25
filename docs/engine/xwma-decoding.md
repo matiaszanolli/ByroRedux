@@ -57,7 +57,7 @@ files is the standing test of that boundary (PRD scenario 6). [PRD decoder requi
 |---|---|
 | Static effects | Recognize xWMA at the existing byte-loading boundary, decode through the shared codec, and hand the completed frames to `StaticSoundData`. Enforce a checked static allocation limit before reserving. Cache on successful decode through the existing path-keyed sound cache. |
 | Streamed music | Supply the common [streaming decoder](../../crates/audio/src/stream_decoder.rs) with a WMA v2 packet/frame backend. Retain kira's streaming voice and its normal control, playback, and error paths. Decoding runs off the mixer callback. |
-| Voice | Per PRD Q2 (decided), [the FUZE reader](../../crates/audio/src/fuz.rs) keeps ownership of the wrapper and lip data and supplies the inner xWMA slice. The voice caller keeps subtitle-estimate fallback on failure. |
+| Voice | The [FUZE reader](../../crates/audio/src/fuz.rs) supplies the embedded xWMA stream to the voice cache for in-process decoding. The 64 MiB static PCM limit applies. The voice caller keeps the subtitle estimate on failure. |
 
 The audio caller attaches the resolved asset path and reason to decoder
 errors and deduplicates reports per session. A music decoder error ends
@@ -155,8 +155,8 @@ digest and metadata.
 - **Static link, no FFmpeg on the machine.** The in-process decoder needs no FFmpeg
   installation at build or run time (PRD XWMA-DEC-005). An empty cache requires network access
   and `curl` for the initial download or `XWMA_FFMPEG_TARBALL` pointing to a local copy. The
-  build uses a `tar` that reads `.xz`, a C toolchain, GNU Make and a POSIX shell. The voice
-  route uses the host's `ffmpeg` until Phase 3 (#7415).
+  build uses a `tar` that reads `.xz`, a C toolchain, GNU Make and a POSIX shell. Phase 3
+  routes `.fuz` voice through this decoder (#7415).
 - **Licence.** The library is LGPL-2.1-or-later as a whole. The compiled-file inventory and
   notices are recorded in
   [`licence-files.tsv`](../../third_party/ffmpeg/licence-files.tsv) and

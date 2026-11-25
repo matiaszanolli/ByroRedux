@@ -237,12 +237,12 @@ see §5 phase 5.
    total voice duration replacing the Phase-L subtitle estimate in the
    Goodbye close. A line with no resolvable voice keeps the estimate —
    missing audio is the common modded shape, not an error. `.fuz`
-   (Skyrim+) is a different container (`FUZE`, u32 version, u32 lip size,
-   raw `.lip` bytes, then a RIFF **xWMA** audio stream — not XMA2;
-   `skyrim_fuz_container_shape`, #5464). **#5912 landed it**: the payload is plain
-   WMA v2 (fmt tag `0x0161`, 40/40 vanilla files) and the line is decoded through
-   the host's optional `ffmpeg` (no WMA decoder exists in the Rust audio stack;
-   without it the line keeps the subtitle estimate). Live gate (`dt1-dialogue-layers.sh` leg 3):
+   (Skyrim+) wraps a RIFF **xWMA** stream in a `FUZE` header followed by
+   optional `.lip` sync bytes (`skyrim_fuz_container_shape`, #5464). The voice
+   cache decodes the WMA v2 payload (fmt tag `0x0161`) in process with the
+   statically linked decoder (#7415). A decode failure, including audio that
+   exceeds the 64 MiB static PCM limit, records the path and reason once
+   and keeps the subtitle estimate. Live gate (`dt1-dialogue-layers.sh` leg 3):
    the fresh-boot greeting resolves 1 segment / 5.0 s in
    `maleuniquedocmitchell`.
    **Two conventions, not one universal rule.** The above is FO3/FNV.

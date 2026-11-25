@@ -21,11 +21,9 @@
 #      the KCC walk, so the gate closes the distance directly) and
 #      poll `dialogue.status` until the conversation opens on
 #      `DialogueGenericHello` — no activation anywhere.
-#   6. The #5912 voice leg: the open line resolves its .fuz through the
-#      VoiceSoundCache (FUZE parse + WMA payload via the host's optional
-#      ffmpeg) and the Phase V log carries a real duration — no ffmpeg
-#      on the host degrades the leg to an explicit SKIP of the voice
-#      assertions, never a pass.
+#   6. The open line resolves its .fuz through VoiceSoundCache and decodes
+#      the embedded WMA v2 stream in process (#7415). The Phase V log
+#      carries the decoded duration.
 set -euo pipefail
 
 PORT="${BYRO_DEBUG_PORT:-19879}"
@@ -60,12 +58,6 @@ for f in "Skyrim.esm" "Skyrim - Meshes0.bsa" "Skyrim - Textures0.bsa" "Skyrim - 
         exit 77
     fi
 done
-# The voice leg decodes through the host's optional ffmpeg (#5912 —
-# parse, don't link). Without it the leg runs but the voice assertions
-# are explicitly skipped below; without the archive the whole gate skips.
-HAVE_FFMPEG=1
-command -v ffmpeg >/dev/null 2>&1 || HAVE_FFMPEG=0
-
 if ss -ltn "sport = :$PORT" | grep -q LISTEN; then
     fail "port $PORT already occupied; refusing to attach to another session"
 fi
@@ -175,13 +167,11 @@ echo "smoke[dt2-skyrim-forcegreet]: Phase P PASS — $page, on interface\dialogu
 # ── The #5912 voice leg ────────────────────────────────────────────
 # The open line rides play_line_voice like every conversation: the .fuz
 # candidate composes from the applied selection's EDIDs, the FUZE
-# container parses, and (with a host ffmpeg) the WMA payload decodes.
+# container parses, and the linked decoder handles the WMA payload.
 # The Phase V log line is the observable: N segment(s) with a real
 # duration replaces the subtitle estimate.
 sleep 3   # the voice resolve logs when the line starts speaking
-if [[ "$HAVE_FFMPEG" -ne 1 ]]; then
-    echo "smoke[dt2-skyrim-forcegreet]: SKIP voice leg -- no host ffmpeg (line stays on the subtitle estimate, #5912 degradation)"
-elif grep -Eq '#5367 Phase V: voice line info [0-9A-FXx]+ -> [1-9][0-9]* segment\(s\), [0-9.]+s' \
+if grep -Eq '#5367 Phase V: voice line info [0-9A-FXx]+ -> [1-9][0-9]* segment\(s\), [0-9.]+s' \
         "$LOG_DIR/session.stderr"; then
     grep -E '#5367 Phase V: voice line info' "$LOG_DIR/session.stderr" | sed 's/^/smoke[dt2-skyrim-forcegreet]: voice /'
     echo "smoke[dt2-skyrim-forcegreet]: voice PASS — .fuz resolved and decoded"
