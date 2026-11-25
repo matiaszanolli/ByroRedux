@@ -1,0 +1,292 @@
+--- a/libavcodec/wma.h
++++ b/libavcodec/wma.h
+@@ -123,6 +123,8 @@
+     DECLARE_ALIGNED(32, float, frame_out)[MAX_CHANNELS][BLOCK_MAX_SIZE * 2];
+     /* last frame info */
+     uint8_t last_superframe[MAX_CODED_SUPERFRAME_SIZE + AV_INPUT_BUFFER_PADDING_SIZE]; /* padding added */
++    int packet_frames_left;                 ///< remaining frames in the retained packet
++    int packet_bit_start;                   ///< byte-aligned base of the packet bit reader
+     int last_bitoffset;
+     int last_superframe_len;
+     int exponents_initialized[MAX_CHANNELS];
+@@ -143,6 +145,8 @@
+ #endif /* TRACE */
+ } WMACodecContext;
+
++size_t byro_xwma_wmav2_scratch_frame_slots(void);
++
+ extern const uint8_t ff_wma_hgain_hufftab[37][2];
+ extern const float ff_wma_lsp_codebook[NB_LSP_COEFS][16];
+ extern const uint32_t ff_aac_scalefactor_code[121];
+--- a/libavcodec/wmadec.c
++++ b/libavcodec/wmadec.c
+@@ -835,12 +835,8 @@
+     const uint8_t *buf = avpkt->data;
+     int buf_size       = avpkt->size;
+     WMACodecContext *s = avctx->priv_data;
+-    int nb_frames, bit_offset, pos, len, ret;
++    int bit_offset = 0, new_packet = !s->packet_frames_left, pos, len, ret;
+     uint8_t *q;
+-    float **samples;
+-    int samples_offset;
+-
+-    ff_tlog(avctx, "***decode_superframe:\n");
+
+     if (buf_size == 0) {
+         if (s->eof_done)
+@@ -866,141 +862,129 @@
+                buf_size, avctx->block_align);
+         return AVERROR_INVALIDDATA;
+     }
+-    if (avctx->block_align)
+-        buf_size = avctx->block_align;
+-
+-    init_get_bits(&s->gb, buf, buf_size * 8);
+-
+-    if (s->use_bit_reservoir) {
+-        /* read super frame header */
+-        skip_bits(&s->gb, 4); /* super frame index */
+-        nb_frames = get_bits(&s->gb, 4) - (s->last_superframe_len <= 0);
+-        if (nb_frames <= 0) {
+-            int is_error = nb_frames < 0 || get_bits_left(&s->gb) <= 8;
+-            av_log(avctx, is_error ? AV_LOG_ERROR : AV_LOG_WARNING,
+-                   "nb_frames is %d bits left %d\n",
+-                   nb_frames, get_bits_left(&s->gb));
+-            if (is_error)
+-                return AVERROR_INVALIDDATA;
+-
+-            if ((s->last_superframe_len + buf_size - 1) >
+-                MAX_CODED_SUPERFRAME_SIZE) {
++    buf_size = avctx->block_align;
++
++    /* The simple decode API retains this packet when we emit a frame and
++     * return zero bytes consumed. Keep the bit reader in that same packet
++     * until the last frame, then copy its tail into the bit reservoir. */
++    if (new_packet) {
++        init_get_bits(&s->gb, buf, buf_size * 8);
++        if (s->use_bit_reservoir) {
++            int nb_frames;
++            skip_bits(&s->gb, 4); /* superframe index */
++            nb_frames = get_bits(&s->gb, 4) - (s->last_superframe_len <= 0);
++            if (nb_frames <= 0) {
++                int is_error = nb_frames < 0 || get_bits_left(&s->gb) <= 8;
++                av_log(avctx, is_error ? AV_LOG_ERROR : AV_LOG_WARNING,
++                       "nb_frames is %d bits left %d\n",
++                       nb_frames, get_bits_left(&s->gb));
++                if (is_error)
++                    return AVERROR_INVALIDDATA;
++
++                if (s->last_superframe_len + buf_size - 1 >
++                    MAX_CODED_SUPERFRAME_SIZE) {
++                    ret = AVERROR_INVALIDDATA;
++                    goto fail;
++                }
++                q   = s->last_superframe + s->last_superframe_len;
++                len = buf_size - 1;
++                while (len-- > 0)
++                    *q++ = get_bits(&s->gb, 8);
++                memset(q, 0, AV_INPUT_BUFFER_PADDING_SIZE);
++                s->last_superframe_len += 8 * buf_size - 8;
++                return buf_size;
++            }
++
++            bit_offset = get_bits(&s->gb, s->byte_offset_bits + 3);
++            pos = bit_offset + 4 + 4 + s->byte_offset_bits + 3;
++            if (bit_offset > get_bits_left(&s->gb) ||
++                pos >= MAX_CODED_SUPERFRAME_SIZE * 8 || pos > buf_size * 8) {
+                 ret = AVERROR_INVALIDDATA;
+                 goto fail;
+             }
+
+-            q   = s->last_superframe + s->last_superframe_len;
+-            len = buf_size - 1;
+-            while (len > 0) {
+-                *q++ = get_bits (&s->gb, 8);
+-                len --;
+-            }
+-            memset(q, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+-
+-            s->last_superframe_len += 8*buf_size - 8;
+-//             s->reset_block_lengths = 1; //XXX is this needed ?
+-            *got_frame_ptr = 0;
+-            return buf_size;
+-        }
+-    } else
+-        nb_frames = 1;
+-
+-    /* get output buffer */
+-    frame->nb_samples = nb_frames * s->frame_len;
++            s->packet_bit_start = pos;
++            s->packet_frames_left = nb_frames;
++        } else {
++            s->packet_frames_left = 1;
++        }
++    }
++
++    frame->nb_samples = s->frame_len;
+     if ((ret = ff_get_buffer(avctx, frame, 0)) < 0)
+-        return ret;
+-    samples        = (float **) frame->extended_data;
+-    samples_offset = 0;
+-
+-    if (s->use_bit_reservoir) {
+-        bit_offset = get_bits(&s->gb, s->byte_offset_bits + 3);
+-        if (bit_offset > get_bits_left(&s->gb)) {
+-            av_log(avctx, AV_LOG_ERROR,
+-                   "Invalid last frame bit offset %d > buf size %d (%d)\n",
+-                   bit_offset, get_bits_left(&s->gb), buf_size);
++        goto fail;
++
++    if (s->use_bit_reservoir && new_packet && s->last_superframe_len > 0) {
++        /* The first output frame spans the previous and current packets. */
++        if (s->last_superframe_len + ((bit_offset + 7) >> 3) >
++            MAX_CODED_SUPERFRAME_SIZE) {
+             ret = AVERROR_INVALIDDATA;
+             goto fail;
+         }
+-
+-        if (s->last_superframe_len > 0) {
+-            /* add bit_offset bits to last frame */
+-            if ((s->last_superframe_len + ((bit_offset + 7) >> 3)) >
+-                MAX_CODED_SUPERFRAME_SIZE) {
+-                ret = AVERROR_INVALIDDATA;
+-                goto fail;
+-            }
+-            q   = s->last_superframe + s->last_superframe_len;
+-            len = bit_offset;
+-            while (len > 7) {
+-                *q++ = get_bits(&s->gb, 8);
+-                len -= 8;
+-            }
+-            if (len > 0)
+-                *q++ = get_bits(&s->gb, len) << (8 - len);
+-            memset(q, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+-
+-            /* XXX: bit_offset bits into last frame */
+-            init_get_bits(&s->gb, s->last_superframe,
+-                          s->last_superframe_len * 8 + bit_offset);
+-            /* skip unused bits */
+-            if (s->last_bitoffset > 0)
+-                skip_bits(&s->gb, s->last_bitoffset);
+-            /* this frame is stored in the last superframe and in the
+-             * current one */
+-            if ((ret = wma_decode_frame(s, samples, samples_offset)) < 0)
+-                goto fail;
+-            samples_offset += s->frame_len;
+-            nb_frames--;
+-        }
+-
+-        /* read each frame starting from bit_offset */
+-        pos = bit_offset + 4 + 4 + s->byte_offset_bits + 3;
+-        if (pos >= MAX_CODED_SUPERFRAME_SIZE * 8 || pos > buf_size * 8)
+-            return AVERROR_INVALIDDATA;
++        q = s->last_superframe + s->last_superframe_len;
++        len = bit_offset;
++        while (len > 7) {
++            *q++ = get_bits(&s->gb, 8);
++            len -= 8;
++        }
++        if (len > 0)
++            *q++ = get_bits(&s->gb, len) << (8 - len);
++        memset(q, 0, AV_INPUT_BUFFER_PADDING_SIZE);
++        init_get_bits(&s->gb, s->last_superframe,
++                      s->last_superframe_len * 8 + bit_offset);
++        skip_bits(&s->gb, s->last_bitoffset);
++
++        if ((ret = wma_decode_frame(s, (float **)frame->extended_data, 0)) < 0)
++            goto fail;
++        s->last_superframe_len = 0;
++        pos = s->packet_bit_start;
+         init_get_bits(&s->gb, buf + (pos >> 3), (buf_size - (pos >> 3)) * 8);
+-        len = pos & 7;
+-        if (len > 0)
+-            skip_bits(&s->gb, len);
+-
++        skip_bits(&s->gb, pos & 7);
+         s->reset_block_lengths = 1;
+-        for (int i = 0; i < nb_frames; i++) {
+-            if ((ret = wma_decode_frame(s, samples, samples_offset)) < 0)
+-                goto fail;
+-            samples_offset += s->frame_len;
+-        }
+-
+-        /* we copy the end of the frame in the last frame buffer */
+-        pos               = get_bits_count(&s->gb) +
+-                            ((bit_offset + 4 + 4 + s->byte_offset_bits + 3) & ~7);
++    } else {
++        if (s->use_bit_reservoir && new_packet) {
++            /* First frame in a packet with no preceding tail. */
++            pos = s->packet_bit_start;
++            init_get_bits(&s->gb, buf + (pos >> 3), (buf_size - (pos >> 3)) * 8);
++            skip_bits(&s->gb, pos & 7);
++            s->reset_block_lengths = 1;
++        }
++        if ((ret = wma_decode_frame(s, (float **)frame->extended_data, 0)) < 0)
++            goto fail;
++    }
++
++    *got_frame_ptr = 1;
++    if (--s->packet_frames_left)
++        return 0;
++
++    if (s->use_bit_reservoir) {
++        pos = get_bits_count(&s->gb) + (s->packet_bit_start & ~7);
+         s->last_bitoffset = pos & 7;
+-        pos             >>= 3;
+-        len               = buf_size - pos;
++        pos >>= 3;
++        len = buf_size - pos;
+         if (len > MAX_CODED_SUPERFRAME_SIZE || len < 0) {
+-            av_log(s->avctx, AV_LOG_ERROR, "len %d invalid\n", len);
+             ret = AVERROR_INVALIDDATA;
+             goto fail;
+         }
+         s->last_superframe_len = len;
+         memcpy(s->last_superframe, buf + pos, len);
+-    } else {
+-        /* single frame decode */
+-        if ((ret = wma_decode_frame(s, samples, samples_offset)) < 0)
+-            goto fail;
+-        samples_offset += s->frame_len;
+-    }
+-
+-    ff_dlog(s->avctx, "%d %d %d %d eaten:%d\n",
+-            s->frame_len_bits, s->block_len_bits, s->frame_len, s->block_len,
+-            avctx->block_align);
+-
+-    *got_frame_ptr = 1;
+-
++    }
+     return buf_size;
+
+ fail:
+-    /* when error, we reset the bit reservoir */
++    *got_frame_ptr = 0;
++    s->packet_frames_left = 0;
+     s->last_superframe_len = 0;
++    av_frame_unref(frame);
+     return ret;
++}
++
++size_t byro_xwma_wmav2_scratch_frame_slots(void)
++{
++    /* Overlap slots are channel-paired. The full IMDCT writes one channel
++     * at a time into the shared work buffer. */
++    return sizeof(((WMACodecContext *)0)->frame_out[0]) / sizeof(float)
++         + sizeof(((WMACodecContext *)0)->output) / sizeof(float);
+ }
+
+ static av_cold void flush(AVCodecContext *avctx)
+@@ -1010,6 +994,12 @@
+     s->last_bitoffset      =
+     s->last_superframe_len = 0;
+
++    s->packet_frames_left = 0;
++    s->reset_block_lengths = 1;
++    s->block_len_bits = s->prev_block_len_bits = s->next_block_len_bits = 0;
++    s->noise_index = 0;
++    memset(s->frame_out, 0, sizeof(s->frame_out));
++    memset(s->exponents_initialized, 0, sizeof(s->exponents_initialized));
+     s->eof_done = 0;
+     avctx->internal->skip_samples = s->frame_len * 2;
+ }

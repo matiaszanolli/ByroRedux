@@ -9,13 +9,12 @@ mod riff;
 
 use std::{
     fmt,
-    io::{self, Cursor, Read, Seek},
+    io::{self, Cursor, Read, Seek, SeekFrom},
 };
 
 use codec::{Codec, Receive};
 
 const MAX_CHUNK_FRAMES: usize = 2048;
-const MAX_CHUNK_SAMPLES: usize = MAX_CHUNK_FRAMES * 2;
 
 /// Stream shape and the presentation length declared by the validated `dpds` table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,9 +82,12 @@ pub struct Decoder<R> {
     source: R,
     metadata: Metadata,
     state: State,
+    data_start: u64,
+    data_len: u64,
+    decode: DecodeState,
     largest_codec_frame: u32,
-    f32_pcm: [f32; MAX_CHUNK_SAMPLES],
-    s16_pcm: [i16; MAX_CHUNK_SAMPLES],
+    f32_pcm: Box<[f32]>,
+    s16_pcm: Option<Box<[i16]>>,
 }
 
 impl<'a> Decoder<Cursor<&'a [u8]>> {
@@ -106,15 +108,18 @@ impl<R: Read + Seek> Decoder<R> {
         Ok(Self {
             source,
             metadata: stream.metadata,
-            state: State::Active(DecodeState {
+            state: State::Active,
+            data_start: stream.data_start,
+            data_len: stream.data_len,
+            decode: DecodeState {
                 codec: Codec::open(&stream)?,
                 remaining: stream.data_len,
                 decoded: 0,
                 draining: false,
-            }),
+            },
             largest_codec_frame: 0,
-            f32_pcm: [0.0; MAX_CHUNK_SAMPLES],
-            s16_pcm: [0; MAX_CHUNK_SAMPLES],
+            f32_pcm: vec![0.0; MAX_CHUNK_FRAMES * usize::from(stream.metadata.channels)].into(),
+            s16_pcm: None,
         })
     }
 
@@ -126,6 +131,32 @@ impl<R: Read + Seek> Decoder<R> {
     /// A native frame may be delivered as multiple PCM chunks.
     pub fn largest_codec_frame(&self) -> u32 {
         self.largest_codec_frame
+    }
+
+    /// PCM capacity retained by the Rust chunks and the native decoder's output and
+    /// time-domain scratch. Compressed packets and transform coefficients are separate.
+    pub fn pcm_frame_slots(&self) -> usize {
+        let channels = usize::from(self.metadata.channels);
+        let rust_samples = self.f32_pcm.len() + self.s16_pcm.as_ref().map_or(0, |pcm| pcm.len());
+        rust_samples / channels + self.decode.codec.pcm_frame_slots()
+    }
+
+    /// Rewind to the first packet, clearing output, overlap and decoder priming state.
+    /// Callers can then decode or discard one chunk at a time on their worker.
+    pub fn restart(&mut self) -> Result<(), Error> {
+        if matches!(self.state, State::Failed) {
+            return Err(Error::Failed);
+        }
+        if let Err(error) = self.source.seek(SeekFrom::Start(self.data_start)) {
+            self.state = State::Failed;
+            return Err(error.into());
+        }
+        self.decode.codec.flush();
+        self.decode.remaining = self.data_len;
+        self.decode.decoded = 0;
+        self.decode.draining = false;
+        self.state = State::Active;
+        Ok(())
     }
 
     /// Advance and borrow up to 2,048 frames of interleaved floating-point PCM.
@@ -140,15 +171,18 @@ impl<R: Read + Seek> Decoder<R> {
         let Some(len) = self.next_chunk()? else {
             return Ok(None);
         };
-        for (dest, &sample) in self.s16_pcm[..len].iter_mut().zip(&self.f32_pcm[..len]) {
+        let pcm = self
+            .s16_pcm
+            .get_or_insert_with(|| vec![0; self.f32_pcm.len()].into_boxed_slice());
+        for (dest, &sample) in pcm[..len].iter_mut().zip(&self.f32_pcm[..len]) {
             *dest = to_s16(sample);
         }
-        Ok(Some(&self.s16_pcm[..len]))
+        Ok(Some(&pcm[..len]))
     }
 
     fn next_chunk(&mut self) -> Result<Option<usize>, Error> {
-        let result = match &mut self.state {
-            State::Active(state) => state.next(
+        let result = match self.state {
+            State::Active => self.decode.next(
                 &mut self.source,
                 &mut self.f32_pcm,
                 self.metadata.frame_count,
@@ -167,7 +201,7 @@ impl<R: Read + Seek> Decoder<R> {
 }
 
 enum State {
-    Active(DecodeState),
+    Active,
     Finished,
     Failed,
 }
@@ -183,7 +217,7 @@ impl DecodeState {
     fn next(
         &mut self,
         source: &mut impl Read,
-        pcm: &mut [f32; MAX_CHUNK_SAMPLES],
+        pcm: &mut [f32],
         declared: u32,
         largest_codec_frame: &mut u32,
     ) -> Result<Option<usize>, Error> {

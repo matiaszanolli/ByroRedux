@@ -1,14 +1,14 @@
 //! Builds the one FFmpeg decoder the engine links: `wmav2`, statically (xWMA PRD, #7413).
 //!
 //! The release is not in the repository. This script downloads the pinned tarball, checks its
-//! SHA-256, extracts it, configures and builds it out of tree, keeps the two static archives and
+//! SHA-256, extracts and patches it, configures and builds it out of tree, keeps the two static archives and
 //! removes everything else. The wrapper's C shim is compiled against those same headers before
 //! cleanup. `third_party/ffmpeg/PATCHES.md` records the release, configure line and licence audit.
 //!
-//! Build requirements beyond a Rust toolchain: a C compiler, GNU Make, a POSIX shell, `curl`, and a
+//! Build requirements beyond a Rust toolchain: a C compiler, GNU Make, a POSIX shell, `curl`, `patch`, and a
 //! `tar` that reads `.xz`. Offline builds: set `XWMA_FFMPEG_TARBALL` to a local copy of the tarball
 //! (its digest is still checked). `XWMA_FFMPEG_CACHE` moves the tarball cache. `XWMA_FFMPEG_SOURCE`
-//! names an unpacked, possibly modified source tree instead: no download, no digest check, always
+//! names an unpacked tree with the streaming patch or an equivalent change: always
 //! rebuilt, and never deleted (the LGPL relink path in `PATCHES.md`).
 
 use sha2::{Digest, Sha256};
@@ -44,11 +44,13 @@ const CONFIGURE_FLAGS: &[&str] = &[
 
 const LIBRARIES: [&str; 2] = ["avcodec", "avutil"];
 const SHIM: &str = "byro_xwma_shim";
+const STREAM_PATCH: &str = "../../third_party/ffmpeg/wmav2-stream-frames.patch";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let shim_source = Path::new("src/wmav2.c");
     println!("cargo:rerun-if-changed={}", shim_source.display());
+    println!("cargo:rerun-if-changed={STREAM_PATCH}");
     println!("cargo:rerun-if-env-changed=XWMA_FFMPEG_TARBALL");
     println!("cargo:rerun-if-env-changed=XWMA_FFMPEG_CACHE");
     println!("cargo:rerun-if-env-changed=XWMA_FFMPEG_SOURCE");
@@ -64,8 +66,10 @@ fn main() {
 
     // What the archives were built from; a matching stamp means they are current.
     let shim_digest = Sha256::digest(fs::read(shim_source).expect("read the wmav2 shim"));
+    let patch_digest =
+        Sha256::digest(fs::read(STREAM_PATCH).expect("read the wmav2 streaming patch"));
     let stamp = format!(
-        "ffmpeg {VERSION} {SHA256} msvc={msvc} shim={shim_digest:x} {}",
+        "ffmpeg {VERSION} {SHA256} msvc={msvc} shim={shim_digest:x} patch={patch_digest:x} {}",
         CONFIGURE_FLAGS.join(" ")
     );
     let stamp_file = lib.join("stamp");
@@ -92,7 +96,9 @@ fn main() {
             }
             None => {
                 extract(&fetch_tarball(&out), &work);
-                work.join(format!("ffmpeg-{VERSION}"))
+                let source = work.join(format!("ffmpeg-{VERSION}"));
+                apply_stream_patch(&source);
+                source
             }
         };
         build(&work, &source, msvc);
@@ -133,6 +139,19 @@ fn main() {
         println!("cargo:rustc-link-lib=m");
         println!("cargo:rustc-link-lib=pthread");
     }
+}
+
+fn apply_stream_patch(source: &Path) {
+    use std::process::Stdio;
+
+    let patch = fs::File::open(STREAM_PATCH).expect("open the wmav2 streaming patch");
+    run(
+        Command::new("patch")
+            .current_dir(source)
+            .args(["--batch", "-p1"])
+            .stdin(Stdio::from(patch)),
+        "apply the wmav2 streaming patch",
+    );
 }
 
 /// The verified tarball: the one `XWMA_FFMPEG_TARBALL` names, else the cached download (fetched

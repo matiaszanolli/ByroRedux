@@ -18,6 +18,7 @@ pub(crate) struct Stream {
     pub metadata: Metadata,
     pub avg_bytes_per_sec: u32,
     pub block_align: u16,
+    pub data_start: u64,
     pub data_len: u64,
 }
 
@@ -98,6 +99,7 @@ pub(crate) fn open(source: &mut (impl Read + Seek)) -> Result<Stream, Error> {
         },
         avg_bytes_per_sec,
         block_align,
+        data_start: data.start,
         data_len,
     })
 }

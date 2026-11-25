@@ -7,13 +7,21 @@ tag `n9.1`, released 2026-11-20. The
 
 ## Layout and patches
 
-The release is used unpatched and is **not in the repository**. The
+The release tarball is **outside the repository**. The
 [workspace build script](../../crates/xwma/build.rs) downloads the tarball above, checks its
-SHA-256, extracts it under Cargo's `OUT_DIR`, builds it, keeps `libavcodec.a` and `libavutil.a`, and
+SHA-256, extracts it under Cargo's `OUT_DIR`, applies
+[`wmav2-stream-frames.patch`](wmav2-stream-frames.patch), builds it, keeps
+`libavcodec.a` and `libavutil.a`, and
 deletes the extracted source and every object file. Only the verified tarball stays, in
 `target/<profile>/xwma-ffmpeg-cache/`, so a rebuild does not download again; `cargo clean` removes it.
 `XWMA_FFMPEG_TARBALL` points the build at a local copy for offline builds and `XWMA_FFMPEG_CACHE`
-moves the cache. This directory keeps only this file and the V7 [file inventory](licence-files.tsv).
+moves the cache.
+
+The patch yields one codec frame per call while retaining the compressed superframe and
+its bit cursor. Upstream allocates PCM for the entire superframe, up to 30,720 frames.
+The patch also clears saved overlap, exponent history and the noise cursor on flush so
+replay from the start produces the original PCM. It modifies two existing paths in
+the V7 [file inventory](licence-files.tsv) and follows their LGPL notices.
 The build runs `configure` and GNU Make out of tree, then links the two archives
 statically. This is the Linux configure line verified in
 [V7](../../docs/engine/xwma-phase0-findings.md#v7--static-wmav2-build-and-corpus-comparison).
@@ -26,7 +34,7 @@ make
 For a manual out-of-tree build, run the source tree's `configure` by its
 absolute path from an empty build directory. `wmav2` is the sole registered
 codec. The archives also contain its supporting code. Linux requires a C
-toolchain, binutils, a POSIX shell, GNU Make and standard shell utilities.
+toolchain, binutils, a POSIX shell, GNU Make, `patch` and standard shell utilities.
 The macOS recipe uses Xcode's C toolchain and SDK with GNU Make. The
 Windows MSVC recipe uses an MSYS2 shell and GNU Make with the Visual
 Studio compiler, linker, librarian and SDK, and adds `--toolchain=msvc`.
@@ -57,7 +65,8 @@ used for that release. Include the source with the distribution or make it
 available alongside the binary. See [FFmpeg's distribution guidance](https://ffmpeg.org/legal.html)
 and [LGPL 2.1 §6](https://github.com/FFmpeg/FFmpeg/blob/n9.1/COPYING.LGPLv2.1#L271).
 
-To relink, unpack the matching source (the pinned tarball), modify it, set
+To relink, unpack the pinned tarball and apply the patch in the source tree
+with `patch -p1 < /path/to/wmav2-stream-frames.patch`. Make your changes, set
 `XWMA_FFMPEG_SOURCE` to the unpacked directory (this bypasses the download and the digest
 check, and the build then rebuilds on every run and leaves that directory untouched),
 and rebuild the release package and feature set with the same C tools and

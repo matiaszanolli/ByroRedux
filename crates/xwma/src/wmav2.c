@@ -7,8 +7,16 @@
 #include <libavutil/log.h>
 #include <libavutil/mem.h>
 
-/* A WMA v2 superframe contains at most 15 codec frames of 2,048 PCM frames each. */
-enum { MAX_SUPERFRAME_FRAMES = 15 * 2048 };
+/* The pinned decoder yields one codec frame per receive, even within a packet. */
+enum { MAX_CODEC_FRAMES = 2048 };
+
+size_t byro_xwma_wmav2_scratch_frame_slots(void);
+
+size_t byro_xwma_pcm_frame_slots(void)
+{
+    /* The AVFrame's planar buffer is reused. */
+    return MAX_CODEC_FRAMES + byro_xwma_wmav2_scratch_frame_slots();
+}
 
 void byro_xwma_log_errors_only(void)
 {
@@ -31,7 +39,7 @@ int byro_xwma_context_open(AVCodecContext *ctx, int channels, int rate,
     ctx->block_align = align;
     ctx->bits_per_coded_sample = 16;
     ctx->thread_count = 1;
-    ctx->max_samples = MAX_SUPERFRAME_FRAMES * channels;
+    ctx->max_samples = MAX_CODEC_FRAMES * channels;
     av_channel_layout_default(&ctx->ch_layout, channels);
 
     /* Match the xWMA demuxer. Empty extradata disables the bit reservoir. */
@@ -73,8 +81,9 @@ int byro_xwma_receive(AVCodecContext *ctx, AVFrame *frame, int channels,
 
     if (frame->format != AV_SAMPLE_FMT_FLTP ||
         frame->ch_layout.nb_channels != channels || frame->sample_rate != rate ||
-        frame->nb_samples <= 0 || frame->nb_samples > MAX_SUPERFRAME_FRAMES ||
+        frame->nb_samples <= 0 || frame->nb_samples > MAX_CODEC_FRAMES ||
         frame->linesize[0] < frame->nb_samples * (int)sizeof(float) ||
+        frame->linesize[0] > MAX_CODEC_FRAMES * (int)sizeof(float) ||
         !frame->extended_data)
         return AVERROR_INVALIDDATA;
     for (int ch = 0; ch < channels; ++ch) {
@@ -84,6 +93,12 @@ int byro_xwma_receive(AVCodecContext *ctx, AVFrame *frame, int channels,
 
     *frames = frame->nb_samples;
     return 0;
+}
+
+void byro_xwma_flush(AVCodecContext *ctx, AVFrame *frame)
+{
+    av_frame_unref(frame);
+    avcodec_flush_buffers(ctx);
 }
 
 /* The caller holds the validated frame and provides room for frames * channels. */

@@ -6,7 +6,7 @@ use std::{
     sync::Once,
 };
 
-use crate::{Error, MAX_CHUNK_FRAMES, MAX_CHUNK_SAMPLES, Metadata, riff::Stream};
+use crate::{Error, MAX_CHUNK_FRAMES, Metadata, riff::Stream};
 
 // Only the C shim accesses fields. Its headers come from the same source as the linked library.
 #[repr(C)]
@@ -49,6 +49,8 @@ unsafe extern "C" {
         frames: *mut c_int,
     ) -> c_int;
     fn byro_xwma_copy(frame: *mut AVFrame, offset: c_int, frames: c_int, out: *mut f32);
+    fn byro_xwma_flush(ctx: *mut AVCodecContext, frame: *mut AVFrame);
+    fn byro_xwma_pcm_frame_slots() -> usize;
     fn avcodec_free_context(ctx: *mut *mut AVCodecContext);
     fn avcodec_send_packet(ctx: *mut AVCodecContext, pkt: *const AVPacket) -> c_int;
     fn av_packet_alloc() -> *mut AVPacket;
@@ -185,6 +187,17 @@ impl Codec {
         check(code, "start drain")
     }
 
+    pub(crate) fn flush(&mut self) {
+        self.pending = 0..0;
+        // SAFETY: the context and frame are live and uniquely owned.
+        unsafe { byro_xwma_flush(self.ctx.0.as_ptr(), self.frame.0.as_ptr()) };
+    }
+
+    pub(crate) fn pcm_frame_slots(&self) -> usize {
+        // SAFETY: the shim returns a size derived from the pinned C types.
+        unsafe { byro_xwma_pcm_frame_slots() }
+    }
+
     pub(crate) fn receive(&mut self) -> Result<Receive, Error> {
         // Only a successful receive revalidates the frame for a later copy.
         self.pending = 0..0;
@@ -214,12 +227,10 @@ impl Codec {
         }
     }
 
-    pub(crate) fn copy_pending(
-        &mut self,
-        output: &mut [f32; MAX_CHUNK_SAMPLES],
-    ) -> Result<usize, Error> {
+    pub(crate) fn copy_pending(&mut self, output: &mut [f32]) -> Result<usize, Error> {
         let frames = self.pending.len().min(MAX_CHUNK_FRAMES);
         let samples = frames * usize::from(self.metadata.channels);
+        let output = &mut output[..samples];
         if frames != 0 {
             // SAFETY: pending describes unread samples of the last frame validated by receive.
             // The shim reads only these frames. output fits MAX_CHUNK_FRAMES for both channels.
@@ -233,7 +244,7 @@ impl Codec {
             };
             self.pending.start += frames;
         }
-        if output[..samples].iter().any(|sample| !sample.is_finite()) {
+        if output.iter().any(|sample| !sample.is_finite()) {
             return Err(Error::InvalidPcm);
         }
         Ok(samples)
