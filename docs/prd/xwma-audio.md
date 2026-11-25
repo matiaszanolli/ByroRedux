@@ -1,6 +1,8 @@
 # xWMA Audio Decoding — Product Requirements
 
-**Status**: ACTIVE (2026-11-24). Revision 8 records the build-time FFmpeg fetch and the 627
+**Status**: ACTIVE (2026-11-24). Revision 9 records the owner's decision on the Fallout 4 voice lines over
+the static PCM budget (the 15 `npcfmagnolia` songs): the static limit stays, they belong to the Streamed
+route, and scenario 5 is amended to say so (XWMA-VOX-003). Revision 8 records the build-time FFmpeg fetch and the 627
 short entries measured in Phase 1 slices A to C. Revision 7 files the tracking issues.
 Revision 6 records the owner's approval. Revision 5 records the owner's Q2 to Q4 decisions
 (§10): voices move to the same decoder, effects ship before voices before music, and files
@@ -122,8 +124,8 @@ Phase 1 lands (XWMA-DEC-001).
 | 1 | Fallout 4 effects (`sound\fx\**\*.xwm`) | Static | 6,463 of the game's 8,410 sounds (the rest `.wav`) | silent: the effect decoder is kira's, built for wav, ogg, mp3 and flac (`crates/audio/src/cache.rs`, `load_sound_from_bytes`) |
 | 2 | Fallout 4 music (`music\**\*.xwm`) | Streamed | 459 | refused as Unresolved (`byroredux/src/music/translate.rs:333`, MUS-NG-001) |
 | 3 | Skyrim music | Streamed | 269 | refused as Unresolved, as row 2 |
-| 4 | Skyrim voices (`.fuz`, `Skyrim - Voices_en0.bsa`) | Voice | 75,408 | plays through the host's `ffmpeg` (`crates/audio/src/fuz.rs`, #5912); silent with a warning where no `ffmpeg` is installed |
-| 5 | Fallout 4 voices (`.fuz`, `Fallout4 - Voices.ba2`) | Voice | 116,101 | as row 4 |
+| 4 | Skyrim voices (`.fuz`, `Skyrim - Voices_en0.bsa`) | Voice | 75,408 | decodes in process through the shared static loader (#7415, committed `cd7988507`); the host-`ffmpeg` route is deleted |
+| 5 | Fallout 4 voices (`.fuz`, `Fallout4 - Voices.ba2`) | Voice | 116,101 | as row 4, except 15 `npcfmagnolia` lines (the Magnolia songs and their `_muffledreverb` and `_normalreverb` variants) whose decoded PCM exceeds the static budget and are refused with "exceeds the static PCM limit" (measured 2026-11-24, Phase 3 slice C) |
 | 6 | A mod's `.xwm` on Skyrim or Fallout 4 | Static or Streamed | — | silent, as rows 1 to 3 (catalog A7.xwma) |
 | 7 | Skyrim effects | — | none (5,929 `.wav`) | plays |
 
@@ -238,10 +240,15 @@ installed Oblivion, Fallout 3 and New Vegas BSAs (54 archives) hold no `.xwm` an
 ### 5.4 Voice route: `.fuz` (`XWMA-VOX`)
 
 - **XWMA-VOX-001.** A `.fuz` line MUST decode with the
-  in-process decoder (Q2) and MUST NOT start `ffmpeg`. Today it starts the host's `ffmpeg`
-  (`crates/audio/src/fuz.rs`, #5912).
+  in-process decoder (Q2) and MUST NOT start `ffmpeg`. Today it decodes in process
+  (`crates/audio/src/fuz.rs`, #7415) and the host-`ffmpeg` route is deleted.
 - **XWMA-VOX-002.** A `.fuz` line that fails to decode MUST fall back to the subtitle
   estimate, as it does today without `ffmpeg`, and MUST report its path once.
+- **XWMA-VOX-003.** A `.fuz` line whose decoded PCM exceeds the static budget (64 MiB) MUST be refused
+  with the "exceeds the static PCM limit" reason, fall back to the subtitle estimate and be listed by
+  `snd.failed`; such a line belongs to the Streamed route (Phase 4). Owner decision, 2026-11-24: the
+  limit is not raised for voices. Today 15 vanilla Fallout 4 lines are refused: the `npcfmagnolia`
+  songs and their `_muffledreverb` and `_normalreverb` variants.
 
 ### 5.5 Music stack: `MUSC` and `MUST` (`XWMA-MUSC`)
 
@@ -343,8 +350,11 @@ digests and counts. A scenario passes when:
 4. On a Skyrim exterior cell and a Fallout 4 exterior cell, `music.status` reports Playing
    with a `.xwm` file and an advancing position, and a combat request reports the
    higher-priority type as audible (XWMA-MUSC-002).
-5. With `ffmpeg` absent from `PATH`, every vanilla `.fuz` line of both voice archives
-   decodes (XWMA-VOX-001).
+5. With `ffmpeg` absent from `PATH`, every vanilla `.fuz` line of both voice archives decodes
+   (XWMA-VOX-001) except the 15 `npcfmagnolia` lines over the static budget, which are refused with
+   the static-limit reason and listed by `snd.failed` (XWMA-VOX-003): 191,494 of 191,509 lines
+   (75,408 Skyrim, 116,086 Fallout 4). The 545 lines that decode fewer frames than their `dpds`
+   declaration play under the provisional short-decode policy (XWMA-DEC-001, #7413).
 6. A truncated copy of a vanilla music file ends its voice and logs its path (XWMA-STRM-003,
    XWMA-REP-001), and 1,000 bit-flipped copies of vanilla files each return an error or
    output with no crash, hang or unbounded allocation (XWMA-DEC-004).
@@ -359,7 +369,7 @@ digests and counts. A scenario passes when:
 | Decode coverage | xWMA entries that decode ÷ xWMA entries in the installed archives | per game and route |
 | Oracle agreement | decoded files within the XWMA-DEC-002 tolerance ÷ decoded files | per game |
 | Music source coverage | `MUSC` sources translated ÷ authored; playable = tracks found and decoding ÷ translated, as the game-music PRD defines them | per game |
-| Voices without `ffmpeg` | `.fuz` lines that decode with no `ffmpeg` on `PATH` ÷ `.fuz` lines | per game |
+| Voices without `ffmpeg` | `.fuz` lines that decode with no `ffmpeg` on `PATH` ÷ `.fuz` lines (a line refused over the static budget counts as not decoded) | per game |
 
 The numbers live in ROADMAP's compatibility matrix: music source coverage in its Music
 sources column, and the other three metrics in the paragraph beside the matrix that already
@@ -396,7 +406,7 @@ Exit: scenarios 1 and 2 pass, with decode coverage published for both games.
 **Phase 2 — Effects.** XWMA-STAT-001, XWMA-STAT-002, XWMA-MOD-001, XWMA-REP-001 and
 XWMA-REP-002. Exit: scenario 3 and scenario 7 pass.
 
-**Phase 3 — Voices.** XWMA-VOX-001 and XWMA-VOX-002.
+**Phase 3 — Voices.** XWMA-VOX-001 to XWMA-VOX-003.
 Exit: scenario 5 passes and the voice rate is published.
 
 **Phase 4 — Music and the stack.** XWMA-STRM-001 to XWMA-STRM-003, XWMA-MUSC-001 to
@@ -482,3 +492,4 @@ is published for Skyrim and Fallout 4.
 | 6 | 2026-11-24 | Owner approval: every §10 question decided, the gate passes; PROPOSED to APPROVED | owner: approved |
 | 7 | 2026-11-24 | APPROVED to ACTIVE: parent #7411 and phase issues #7412 to #7416 filed; the three open Phase 0 verify markers are tracked in #7412; `**Tracking**` line added | — |
 | 8 | 2026-11-24 | Fetch-at-build wording and the 627-entry count folded in after Phase 1 slices A to C; no requirement observable changed | — |
+| 9 | 2026-11-24 | Voice lines over the static budget (owner, Option 1): XWMA-VOX-003 added, scenario 5 amended to 191,494 of 191,509 lines, §3 voice rows and XWMA-VOX-001's Today brought to HEAD (#7415 slices A to C), Phase 3 and the voice metric reworded; no existing requirement's observable changed | — |
