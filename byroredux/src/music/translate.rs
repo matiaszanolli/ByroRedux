@@ -1,10 +1,13 @@
 //! Each game's music sources as directives: the only per-game code in the music path (PRD R5,
 //! `docs/engine/music.md` §3, §5, §7).
 
-use super::directive::{Area, Content, Directive, MusicFiles, Source, Stem};
+use super::directive::{Area, AuthoredTrack, Content, Directive, MusicFiles, PlaylistPolicy, Source, Stem};
 use byroredux_plugin::esm::cell::{CellData, WorldspaceRecord};
 use byroredux_plugin::esm::reader::GameKind;
-use byroredux_plugin::esm::records::misc::MUSC_ABRUPT_TRANSITION;
+use byroredux_plugin::esm::records::misc::{
+    MUSC_ABRUPT_TRANSITION, MUSC_CYCLE_TRACKS, MUSC_DUCKS_CURRENT_TRACK,
+    MUSC_MAINTAIN_TRACK_ORDER, MUSC_PLAYS_ONE_SELECTION,
+};
 use byroredux_sdk::relationships::CombatReaction;
 use byroredux_plugin::esm::records::{
     select_active_region_sound, EsmIndex, MediaSetKind, MediaSetRecord, MuscRecord, MustKind, RegionDataPayload,
@@ -365,31 +368,97 @@ impl Catalog {
     }
 
     fn authored_directive(&self, index: &EsmIndex, musc: &MuscRecord, source: Source) -> Directive {
-        let mut playlist = Vec::new();
-        let mut issue = None;
+        let mut tracks = Vec::new();
+        let mut first_issue = None;
+        let mut budget = 4096;
+        let mut ancestry = Vec::new();
         for &form in &musc.tracks {
-            let content = match index.music_tracks.get(&form) {
-                Some(track) if track.kind == MustKind::SingleTrack && !track.file.is_empty() => self.files.resolve_track(&track.file),
-                Some(track) if track.kind == MustKind::SilentTrack => continue,
-                Some(track) => Content::Unresolved(format!("unsupported or incomplete {:?} track {form:#010x}", track.kind)),
-                None => Content::Unresolved(format!("music track {form:#010x} is absent from the load order")),
-            };
-            match content {
-                Content::Playlist(files) => playlist.extend(files),
-                failed => { issue.get_or_insert(failed); }
+            match self.authored_track(index, form, &mut ancestry, &mut budget) {
+                Ok(track) => tracks.push(track),
+                Err(issue) => { first_issue.get_or_insert(issue); }
+            }
+            if budget == 0 {
+                break;
             }
         }
-        let content = if playlist.is_empty() {
-            issue.unwrap_or(Content::Silent)
+        let has = |flag| musc.flags & flag != 0;
+        let content = if tracks.is_empty() {
+            first_issue.unwrap_or(Content::Silent)
         } else {
-            Content::Playlist(playlist)
+            let policy = PlaylistPolicy {
+                one_selection: has(MUSC_PLAYS_ONE_SELECTION),
+                cycle: has(MUSC_CYCLE_TRACKS),
+                ordered: has(MUSC_MAINTAIN_TRACK_ORDER),
+            };
+            Content::AuthoredPlaylist { tracks, policy }
         };
         let fade_secs = if musc.fade_secs.is_finite() { musc.fade_secs.max(0.0) } else { self.fade_secs };
         Directive {
             priority: Some(musc.priority),
+            ducking_db: has(MUSC_DUCKS_CURRENT_TRACK).then_some(musc.ducking_db),
             fade_secs,
-            change_fade_secs: (musc.flags & MUSC_ABRUPT_TRANSITION != 0).then_some(0.0),
+            change_fade_secs: has(MUSC_ABRUPT_TRANSITION).then_some(0.0),
             ..Directive::new(source, content)
+        }
+    }
+
+    fn authored_track(
+        &self,
+        index: &EsmIndex,
+        form: u32,
+        ancestry: &mut Vec<u32>,
+        budget: &mut usize,
+    ) -> Result<AuthoredTrack, Content> {
+        let unresolved = |reason| Content::Unresolved(format!("music track {form:#010x}: {reason}"));
+        if *budget == 0 || ancestry.len() >= 4 || ancestry.contains(&form) {
+            return Err(unresolved("palette references exceed the traversal bounds or form a cycle"));
+        }
+        *budget -= 1;
+        let track = index.music_tracks.get(&form).ok_or_else(|| unresolved("absent from the load order"))?;
+        let label = || if track.editor_id.is_empty() { format!("{form:#010x}") } else { track.editor_id.clone() };
+        if track.kind == MustKind::SingleTrack && !track.file.is_empty() {
+            return match self.files.resolve_track(&track.file) {
+                Content::Playlist(mut files) if files.len() == 1 => Ok(AuthoredTrack::File(files.remove(0))),
+                issue @ (Content::Missing(_) | Content::Unresolved(_)) => Err(issue),
+                _ => Err(unresolved("single track needs one file")),
+            };
+        }
+        let duration = track.duration;
+        if !duration.is_finite() || duration < 0.0 {
+            return Err(unresolved("invalid duration"));
+        }
+        match track.kind {
+            MustKind::SilentTrack => Ok(AuthoredTrack::Silence { label: label(), duration }),
+            MustKind::Palette => {
+                if !track.fade_out.is_finite() || track.fade_out < 0.0 {
+                    return Err(unresolved("invalid fade out"));
+                }
+                ancestry.push(form);
+                let mut layers = Vec::new();
+                for members in track.sub_tracks.split(|member| *member == 0) {
+                    let mut choices = Vec::new();
+                    for &member in members {
+                        if let Ok(choice) = self.authored_track(index, member, ancestry, budget) {
+                            choices.push(choice);
+                        }
+                        if *budget == 0 {
+                            break;
+                        }
+                    }
+                    if !choices.is_empty() {
+                        layers.push(choices.into());
+                    }
+                    if *budget == 0 {
+                        break;
+                    }
+                }
+                ancestry.pop();
+                if layers.is_empty() {
+                    return Err(unresolved("no resolvable palette layers"));
+                }
+                Ok(AuthoredTrack::Palette { label: label(), duration, fade_out: track.fade_out, layers })
+            }
+            _ => Err(unresolved("unsupported or incomplete track")),
         }
     }
 
@@ -665,10 +734,12 @@ mod tests {
             let exterior = |grid| Place::Exterior { worldspace: "world".into(), grid };
             let cell = catalog.location(&index, &exterior((0, 0)));
             assert_eq!(cell.source.via, "cell XCMO");
-            assert_eq!(cell.content, Content::Playlist(vec!["music\\combat.wav".into()]));
+            assert!(matches!(cell.content, Content::AuthoredPlaylist { ref tracks, .. }
+                if tracks == &[AuthoredTrack::File("music\\combat.wav".into())]));
             let location = catalog.location(&index, &exterior((1, 1)));
             assert_eq!(location.source.via, "worldspace location NAM1");
-            assert_eq!(location.content, Content::Playlist(vec!["music\\ambient\\explore.xwm".into()]));
+            assert!(matches!(location.content, Content::AuthoredPlaylist { ref tracks, .. }
+                if tracks == &[AuthoredTrack::File("music\\ambient\\explore.xwm".into())]));
             assert_eq!((location.priority, location.fade_secs), (Some(90), 12.0));
             let battle = catalog.battle(&index, None, None, Surroundings::default(), 0);
             assert_eq!((battle.source.via, battle.priority), ("DOBJ Battle Music", Some(8)));

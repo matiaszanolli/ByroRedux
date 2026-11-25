@@ -2,6 +2,7 @@
 //! files a directive's paths resolve against.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 /// The record or keyword a directive came from, for `music.status` (MUS-RPT-001).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -56,10 +57,19 @@ pub(crate) struct Area {
 pub(crate) enum Content {
     /// Archive-style keys (`music\explore\a.mp3`), played one after another.
     Playlist(Vec<String>),
+    AuthoredPlaylist { tracks: Vec<AuthoredTrack>, policy: PlaylistPolicy },
     Stems { stems: Vec<Stem>, area: Area },
     Silent,
     Unresolved(String),
     Missing(String),
+}
+
+/// One selection in an authored playlist or one alternative in a palette layer.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum AuthoredTrack {
+    File(String),
+    Silence { label: String, duration: f32 },
+    Palette { label: String, duration: f32, fade_out: f32, layers: Vec<Arc<[AuthoredTrack]>> },
 }
 
 /// PRD §3.2.
@@ -71,12 +81,22 @@ pub(crate) enum Outcome {
     Missing,
 }
 
+/// Selection rules for an authored playlist. Legacy directives keep their own looping rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaylistPolicy {
+    pub(crate) one_selection: bool,
+    pub(crate) cycle: bool,
+    pub(crate) ordered: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Directive {
     pub(crate) source: Source,
     pub(crate) content: Content,
     /// Authored music-type priority, with smaller PNAM values taking precedence.
     pub(crate) priority: Option<u16>,
+    /// Attenuation to apply to a lower-priority track that is already playing.
+    pub(crate) ducking_db: Option<f32>,
     pub(crate) looping: bool,
     /// Linear level, before the music volume.
     pub(crate) level: f32,
@@ -118,6 +138,7 @@ impl Directive {
             source,
             content,
             priority: None,
+            ducking_db: None,
             looping: false,
             level: 1.0,
             fade_secs: 0.0,
@@ -141,7 +162,7 @@ impl Directive {
 
     pub(crate) fn outcome(&self) -> Outcome {
         match self.content {
-            Content::Playlist(_) | Content::Stems { .. } => Outcome::Playing,
+            Content::Playlist(_) | Content::AuthoredPlaylist { .. } | Content::Stems { .. } => Outcome::Playing,
             Content::Silent => Outcome::Silent,
             Content::Unresolved(_) => Outcome::Unresolved,
             Content::Missing(_) => Outcome::Missing,
@@ -151,7 +172,9 @@ impl Directive {
     /// Whether `other` asks for the same music: moving between two places that do must not
     /// restart the track (MUS-SEL-005).
     pub(crate) fn same_music(&self, other: &Self) -> bool {
-        self.source.label == other.source.label && self.source.form == other.source.form && self.content == other.content
+        self.source.label == other.source.label
+            && self.source.form == other.source.form
+            && self.content == other.content
     }
 }
 
@@ -246,6 +269,12 @@ impl Shuffle {
         self.rng ^= self.rng << 25;
         self.rng ^= self.rng >> 27;
         self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// A new playlist has a fresh first pass, using the existing random stream.
+    pub(crate) fn reset(&mut self) {
+        self.order.clear();
+        self.last = None;
     }
 
     /// A roll in `0..n` (`StreamMusic Random`'s category, #6903).

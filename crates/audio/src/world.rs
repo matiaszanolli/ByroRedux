@@ -171,6 +171,12 @@ pub(crate) struct MusicVoice {
     pub(crate) level: f32,
 }
 
+/// Keep sub-silence gain targets so a long duck crosses the backend's silence floor at the
+/// intended point of the decibel tween.
+fn music_volume_db(level: f32) -> f32 {
+    if level > 0.0 { 20.0 * level.log10() } else { kira::Decibels::SILENCE.0 }
+}
+
 /// The longest fade or delay a number from content or an INI can ask for `[ours]`:
 /// `Duration::from_secs_f*` panics at 2^64 seconds, and nothing authored means more than this.
 const MAX_TWEEN_SECS: f64 = u32::MAX as f64;
@@ -562,7 +568,8 @@ impl AudioWorld {
             return false;
         };
         let mut slot = self.music_voices.remove(&voice).map(|v| v.handle);
-        play_main_track(mgr, &mut slot, streaming_sound, level * self.music_volume, fade_secs, looping);
+        let volume_db = music_volume_db(level * self.music_volume);
+        play_main_track(mgr, &mut slot, streaming_sound, volume_db, fade_secs, looping);
         match slot {
             Some(handle) => {
                 self.music_voices.insert(voice, MusicVoice { handle, level });
@@ -598,7 +605,7 @@ impl AudioWorld {
         let volume = self.music_volume;
         if let Some(v) = self.music_voices.get_mut(&voice) {
             v.level = level;
-            v.handle.set_volume(linear_volume_to_db(level * volume), linear_tween(fade_secs));
+            v.handle.set_volume(music_volume_db(level * volume), linear_tween(fade_secs));
         }
     }
 
@@ -623,7 +630,7 @@ impl AudioWorld {
         self.music_volume = volume.max(0.0);
         let tween = linear_tween(0.0);
         for v in self.music_voices.values_mut() {
-            v.handle.set_volume(linear_volume_to_db(v.level * self.music_volume), tween);
+            v.handle.set_volume(music_volume_db(v.level * self.music_volume), tween);
         }
     }
 
@@ -637,7 +644,7 @@ impl AudioWorld {
         let Some(mgr) = self.manager.as_mut() else {
             return;
         };
-        play_main_track(mgr, &mut self.movie_sound, streaming_sound, 1.0, 0.0, false);
+        play_main_track(mgr, &mut self.movie_sound, streaming_sound, 0.0, 0.0, false);
     }
 
     /// Stop the movie's soundtrack at once.

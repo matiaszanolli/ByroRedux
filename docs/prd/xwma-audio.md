@@ -1,6 +1,8 @@
 # xWMA Audio Decoding — Product Requirements
 
-**Status**: ACTIVE (2026-11-25). Revision 10 records live exterior and combat music on Skyrim SE and Fallout 4.
+**Status**: ACTIVE (2026-11-25). Revision 12 records timed silence and layered palettes.
+Revision 11 records ducking and authored playlist selection.
+Revision 10 records live exterior and combat music on Skyrim SE and Fallout 4.
 Revision 9 records the owner's decision on the Fallout 4 voice lines over
 the static PCM budget (the 15 `npcfmagnolia` songs): the static limit stays, they belong to the Streamed
 route, and scenario 5 is amended to say so (XWMA-VOX-003). Revision 8 records the build-time FFmpeg fetch and the 627
@@ -267,10 +269,12 @@ original runtime ([V4 evidence on the shared fields](../engine/xwma-phase0-findi
   The controller compares active authored types, and the live gate exercises the combat transition.
 - **XWMA-MUSC-003.** A type flagged Ducks Current Track and playing over a lower-priority
   one MUST attenuate that one by its `ducking_db` over its `fade_secs` (CK wiki, *Music
-  Type*, Ducking and Fade Duration).
+  Type*, Ducking and Fade Duration). The [live gate](../smoke-tests/xwma-music.sh) checks that the
+  exterior playhead advances during combat and that gain returns on the same track.
 - **XWMA-MUSC-004.** A type MUST honour Plays One Selection, Cycle Tracks and Maintain
   Track Order as the CK describes them (CK wiki, *Music Type*), through the controller's
-  playlist model ([Music](../engine/music.md), Track selection).
+  playlist model. The [controller tests](../../byroredux/src/music/controller.rs) exercise ordered,
+  shuffled, single-selection and cycling playlists.
 - **XWMA-MUSC-005.** A type flagged Abrupt Transition MUST start at once, without waiting
   to fade out the current music (CK wiki, *Music Type*).
 - **XWMA-MUSC-006.** A `MUST` of kind single MUST play its `file`; of kind silent, play
@@ -278,7 +282,8 @@ original runtime ([V4 evidence on the shared fields](../engine/xwma-phase0-findi
   `duration`, then fade out over its `fade_out` (CK wiki, *Music Track*). How a palette's
   layers are encoded is documented by [UESP MUST](https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format/MUST)
   and the [V4 vanilla record checks](../engine/xwma-phase0-findings.md#v4--palette-layout-loop-data-and-fallout-4-behavior)
-  as zero FormID separators within `SNAM`: `MustRecord.sub_tracks` is a flat list.
+  as zero FormID separators within `SNAM`. The controller tests check the silence timer, parallel
+  layers, and the palette fade. The real-data test resolves three layers from each game's master.
 - **XWMA-MUSC-007.** A `MUST` carrying loop data MUST loop between its begin and end for
   its count (CK wiki, *Music Track*, Contains Loop). The unit of begin and end and the
   meaning of a zero count are covered in the
@@ -496,3 +501,5 @@ is published for Skyrim and Fallout 4.
 | 8 | 2026-11-24 | Fetch-at-build wording and the 627-entry count folded in after Phase 1 slices A to C; no requirement observable changed | — |
 | 9 | 2026-11-24 | Voice lines over the static budget (owner, Option 1): XWMA-VOX-003 added, scenario 5 amended to 191,494 of 191,509 lines, §3 voice rows and XWMA-VOX-001's Today brought to HEAD (#7415 slices A to C), Phase 3 and the voice metric reworded; no existing requirement's observable changed | — |
 | 10 | 2026-11-25 | Translated authored location and battle types to single-file playlists, applied PNAM priority, and passed the live Skyrim SE and Fallout 4 exterior and combat gates (#7416). | — |
+| 11 | 2026-11-25 | Applied combat ducking and gain recovery to the running exterior track and wired the three authored playlist flags (#7416). | — |
+| 12 | 2026-11-25 | Preserved palette layer separators and played timed silence and layered palettes through the authored playlist (#7416). | — |

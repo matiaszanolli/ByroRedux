@@ -4,7 +4,7 @@
 //!
 //! `cargo test --release -p byroredux --bin byroredux music::census_tests -- --ignored --nocapture`
 
-use super::directive::{MusicFiles, Outcome};
+use super::directive::{AuthoredTrack, Content, MusicFiles, Outcome};
 use super::translate::{Catalog, Place};
 use std::collections::BTreeMap;
 
@@ -153,6 +153,44 @@ fn report(game: &str, tallies: &[(&'static str, Tally)]) {
 
 fn tally<'a>(tallies: &'a [(&'static str, Tally)], kind: &str) -> &'a Tally {
     &tallies.iter().find(|(k, _)| *k == kind).unwrap_or_else(|| panic!("no {kind} sources")).1
+}
+
+#[test]
+#[ignore = "needs Skyrim SE and Fallout 4 game data on disk"]
+fn real_data_palettes_keep_three_layers_and_resolve_their_streams() {
+    use byroredux_plugin::esm::test_paths::{fo4_data_dir, skyrim_se_data_dir};
+    for (data, master, sounds, music_type, palette, seconds) in [
+        (skyrim_se_data_dir(), "Skyrim.esm", "Skyrim - Sounds.bsa", 0xB9DCB, "MUSExploreTundraDayPalette01", 120.0),
+        (fo4_data_dir(), "Fallout4.esm", "Fallout4 - Sounds.ba2", 0x1ED25, "MUSExploreADayPalette", 150.0),
+    ] {
+        let Some(data) = data_dir(data, master) else { return };
+        let path = data.join(master);
+        let path = path.to_str().expect("game data path");
+        let (index, _) = crate::cell_loader::parse_record_indexes_in_load_order(&[path]).expect("load the base master");
+        let provider = crate::asset_provider::build_sound_archive_provider(&[
+            "byroredux".into(), "--esm".into(), path.into(), "--sounds-bsa".into(),
+            data.join(sounds).to_string_lossy().into_owned(),
+        ]);
+        let catalog = Catalog::new(&index, MusicFiles::new(provider.music_keys()), None);
+        let directive = catalog.music_type(&index, music_type, "real data");
+        let Content::AuthoredPlaylist { tracks, .. } = directive.content else { panic!("{master}: no authored playlist") };
+        assert!(tracks.iter().any(|track| matches!(track, AuthoredTrack::Silence { duration, .. } if *duration > 0.0)));
+        let (timing, layers) = tracks.iter().find_map(|track| match track {
+            AuthoredTrack::Palette { label, duration, fade_out, layers } if label == palette =>
+                Some(((*duration, *fade_out), layers)),
+            _ => None,
+        }).expect("authored palette");
+        assert_eq!(timing, (seconds, 15.0));
+        assert_eq!(layers.len(), 3);
+        for layer in layers {
+            let key = layer.iter().find_map(|choice| match choice {
+                AuthoredTrack::File(key) => Some(key),
+                _ => None,
+            }).expect("each layer names a playable file");
+            let bytes = provider.extract(key).expect("palette file is present");
+            assert!(byroredux_audio::load_streaming_sound_from_bytes(bytes).is_ok(), "{key}");
+        }
+    }
 }
 
 /// Fallout 3 (base + 5 DLC): 31 music types — 22 files and 6 folders play, 2 missing

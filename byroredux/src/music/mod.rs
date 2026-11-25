@@ -67,6 +67,12 @@ impl MusicOutput for AudioOutput<'_> {
         }
     }
 
+    fn set_level(&mut self, voice: u32, level: f32, fade: f32) {
+        if let Some(audio) = self.audio.as_deref_mut() {
+            audio.set_music_voice_level(voice, level, fade);
+        }
+    }
+
     fn active(&self, voice: u32) -> bool {
         self.audio.as_ref().is_some_and(|audio| audio.music_voice_active(voice))
     }
@@ -424,6 +430,7 @@ impl MusicOutput for ReadOnlyOutput<'_> {
     fn stop(&mut self, _: u32, _: f32) {}
     fn pause(&mut self, _: u32, _: f32) {}
     fn resume(&mut self, _: u32, _: f32) {}
+    fn set_level(&mut self, _: u32, _: f32, _: f32) {}
     fn active(&self, voice: u32) -> bool {
         self.0.is_some_and(|audio| audio.music_voice_active(voice))
     }

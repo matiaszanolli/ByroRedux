@@ -194,7 +194,7 @@ pub(crate) fn play_main_track(
     mgr: &mut AudioManager<DefaultBackend>,
     slot: &mut Option<StreamingSoundHandle<FromFileError>>,
     streaming_sound: StreamingSoundData<FromFileError>,
-    volume: f32,
+    volume_db: f32,
     fade_in_secs: f32,
     looping: bool,
 ) {
@@ -202,8 +202,7 @@ pub(crate) fn play_main_track(
     if let Some(existing) = slot.as_mut() {
         existing.stop(fade);
     }
-    let db = linear_volume_to_db(volume);
-    let configured = streaming_sound.volume(db).fade_in_tween(Some(fade));
+    let configured = streaming_sound.volume(volume_db).fade_in_tween(Some(fade));
     let configured = if looping {
         configured.loop_region(0.0..)
     } else {

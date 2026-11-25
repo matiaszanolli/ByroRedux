@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# xWMA scenario 4. Run with skyrim_se or fo4 and a working audio device.
+# xWMA scenario 4 and combat ducking. Run with skyrim_se or fo4 and a working audio device.
 set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fixture.sh"
 smoke_load_fixture xwma-music "$@"
 smoke_require_data
+command -v python3 >/dev/null || { echo "smoke[xwma-music]: SKIP -- missing python3"; exit 77; }
 
 case "$SMOKE_GAME" in
     skyrim_se) worldspace=Tamriel grid=7,3 actor=0x000DD8FF combat_type=MUSCombat ;;
@@ -41,7 +42,15 @@ debug() {
 }
 read_music() {
     printf '%s\n' music.status .quit | BYRO_DEBUG_PORT="$port" timeout 5s "$client" 2>>"$logs/console.log" |
-        sed 's/\\n/\n/g; s/\\\\/\\/g; s/"$//' | tee -a "$logs/console.log"
+        python3 -c '
+import json
+import sys
+
+for line in sys.stdin:
+    reply = line.removeprefix("byro> ").strip()
+    if reply.startswith("\""):
+        print(json.loads(reply))
+' | tee -a "$logs/console.log"
 }
 wait_music() {
     local layer="$1" pattern="$2" deadline=$((SECONDS + timeout_seconds)) result
@@ -58,7 +67,18 @@ wait_music() {
     done
     fail "timed out waiting for $layer to match $pattern"
 }
-position() { sed -nE 's/.*\.xwm at ([[:digit:].]+)s.*/\1/p' <<<"$1"; }
+position() {
+    case "$1" in
+        *' — palette '*) sed -nE 's/.* — palette .+ ([[:digit:].]+)\/[[:digit:].]+s.*/\1/p' <<<"$1" ;;
+        *) sed -nE 's/.*\.xwm at ([[:digit:].]+)s.*/\1/p' <<<"$1" ;;
+    esac
+}
+selection() {
+    case "$1" in
+        *' — palette '*) sed -nE 's/.* — palette (.+) [[:digit:].]+\/[[:digit:].]+s.*/\1/p' <<<"$1" ;;
+        *) sed -nE 's/.* — (.+\.xwm) at .*/\1/p' <<<"$1" ;;
+    esac
+}
 
 (
     cd "$SMOKE_DATA"
@@ -87,12 +107,25 @@ echo "smoke[xwma-music]: $SMOKE_GAME exterior PASS -- $second"
 
 debug "obscript.cmd $actor 1016 r:00000014" || fail "could not request combat"
 battle="$(wait_music Battle "^Battle: Playing — $combat_type .*\.xwm at ")"
+ducked='^Location: (Playing \(ducked under Battle by 100\.0 dB\)|Silent \(timed selection, ducked under Battle by 100\.0 dB\))'
+quiet="$(wait_music Location "$ducked")"
 sleep 2
 later="$(wait_music Battle "^Battle: Playing — $combat_type .*\.xwm at ")"
+quieter="$(wait_music Location "$ducked")"
 awk -v a="$(position "$battle")" -v b="$(position "$later")" 'BEGIN { exit !(b > a) }' \
     || fail "battle position did not advance ($battle → $later)"
-wait_music Location '^Location: Playing \(paused under Battle\)' >/dev/null
-echo "smoke[xwma-music]: $SMOKE_GAME combat PASS -- $later"
+awk -v a="$(position "$quiet")" -v b="$(position "$quieter")" 'BEGIN { exit !(b > a) }' \
+    || fail "ducked exterior position did not advance ($quiet → $quieter)"
+[[ "$(selection "$second")" == "$(selection "$quieter")" ]] || fail "ducking switched the exterior selection"
+echo "smoke[xwma-music]: $SMOKE_GAME combat PASS -- $later / $quieter"
+
+debug "obscript.cmd $actor 1017 r:00000014" || fail "could not end combat"
+wait_music Battle '^Battle: none' >/dev/null
+restored="$(wait_music Location '^(Location: Playing — .*\.xwm at |Location: Silent \(timed selection\) — .* — palette )')"
+[[ "$(selection "$quieter")" == "$(selection "$restored")" ]] || fail "restoring gain switched the exterior selection"
+awk -v a="$(position "$quieter")" -v b="$(position "$restored")" 'BEGIN { exit !(b > a) }' \
+    || fail "exterior position did not remain continuous ($quieter → $restored)"
+echo "smoke[xwma-music]: $SMOKE_GAME exterior gain restored -- $restored"
 debug engine.quit || fail "could not shut down the engine"
 wait "$engine_pid" || fail "engine exited unsuccessfully"
 engine_pid=

@@ -1,7 +1,7 @@
 //! The game-neutral music controller (`docs/engine/music.md` §2): one directive per layer, what is
 //! audible, which track plays, the fades between them, and the report.
 
-use super::directive::{Content, Directive, Outcome, Shuffle};
+use super::directive::{AuthoredTrack, Content, Directive, Outcome, PlaylistPolicy, Shuffle};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -31,9 +31,16 @@ impl Layer {
     fn voice(self, slot: u32) -> u32 {
         self as u32 * 8 + slot
     }
+
+    fn palette_voice(self, slot: u32) -> u32 {
+        32 + self as u32 * PALETTE_VOICES + slot
+    }
 }
 
 const ONE_SHOT_SLOT: u32 = 7;
+/// A vanilla palette has up to three layers. Leave room for nested choices
+/// while keeping each music layer's share of the audio backend bounded.
+const PALETTE_VOICES: u32 = 16;
 
 /// Where the controller's decisions are heard: the audio world's music voices, or nowhere (no audio
 /// device, a test). Keys are the sound provider's `music\` keys.
@@ -46,6 +53,7 @@ pub(crate) trait MusicOutput {
     fn stop(&mut self, voice: u32, fade: f32);
     fn pause(&mut self, voice: u32, fade: f32);
     fn resume(&mut self, voice: u32, fade: f32);
+    fn set_level(&mut self, voice: u32, level: f32, fade: f32);
     /// Whether `voice` still holds an unfinished track.
     fn active(&self, voice: u32) -> bool;
     fn position(&self, voice: u32) -> Option<f64>;
@@ -60,12 +68,196 @@ struct Playing {
     clock: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PaletteTiming {
+    fade_at: f64,
+    end_at: f64,
+}
+
+impl PaletteTiming {
+    fn new(duration: f32, fade_out: f32) -> Self {
+        let fade_at = f64::from(duration);
+        Self { fade_at, end_at: fade_at + f64::from(fade_out) }
+    }
+
+    fn starting_at(self, elapsed: f64) -> Self {
+        Self { fade_at: elapsed + self.fade_at, end_at: elapsed + self.end_at }
+    }
+
+    fn within(self, parent: Self) -> Self {
+        Self { fade_at: self.fade_at.min(parent.fade_at), end_at: self.end_at.min(parent.end_at) }
+    }
+}
+
+#[derive(Debug)]
+struct PaletteVoice {
+    playing: Playing,
+    fading: bool,
+}
+
+#[derive(Debug)]
+enum PaletteChoice {
+    File(usize),
+    Silence(f64),
+    Palette(ActivePalette),
+}
+
+#[derive(Debug)]
+struct PaletteLayer {
+    alternatives: Arc<[AuthoredTrack]>,
+    current: Option<PaletteChoice>,
+    failed: bool,
+}
+
+#[derive(Debug)]
+struct ActivePalette {
+    timing: PaletteTiming,
+    layers: Vec<PaletteLayer>,
+}
+
+impl ActivePalette {
+    fn new(timing: PaletteTiming, layers: &[Arc<[AuthoredTrack]>]) -> Self {
+        let layers = layers.iter().map(|alternatives| PaletteLayer {
+            alternatives: Arc::clone(alternatives), current: None, failed: false,
+        }).collect();
+        Self { timing, layers }
+    }
+
+    fn step(&mut self, elapsed: f64, output: &mut PaletteOutput<'_>) -> bool {
+        for layer in &mut self.layers {
+            let ended = match &mut layer.current {
+                Some(PaletteChoice::File(slot)) => output.file_ended(*slot, elapsed, self.timing),
+                Some(PaletteChoice::Silence(until)) => elapsed >= *until,
+                Some(PaletteChoice::Palette(palette)) => palette.step(elapsed, output),
+                None => true,
+            };
+            if ended {
+                layer.current = None;
+                if !layer.failed && elapsed < self.timing.fade_at {
+                    let first = output.shuffle.roll(layer.alternatives.len() as u64) as usize;
+                    layer.current = (0..layer.alternatives.len())
+                        .map(|offset| &layer.alternatives[(first + offset) % layer.alternatives.len()])
+                        .find_map(|track| output.start(track, elapsed, self.timing));
+                    layer.failed = layer.current.is_none();
+                }
+            }
+        }
+        elapsed >= self.timing.end_at
+    }
+
+    fn has_selection(&self) -> bool {
+        self.layers.iter().any(|layer| layer.current.is_some())
+    }
+}
+
+struct PaletteOutput<'a> {
+    layer: Layer,
+    level: f32,
+    fade_in: f32,
+    voices: &'a mut [Option<PaletteVoice>; PALETTE_VOICES as usize],
+    shuffle: &'a mut Shuffle,
+    out: &'a mut dyn MusicOutput,
+}
+
+impl PaletteOutput<'_> {
+    fn start(&mut self, track: &AuthoredTrack, elapsed: f64, parent: PaletteTiming) -> Option<PaletteChoice> {
+        match track {
+            AuthoredTrack::File(key) => {
+                let slot = self.voices.iter().position(Option::is_none)?;
+                let voice = self.layer.palette_voice(slot as u32);
+                if !self.out.play(voice, key, self.level, self.fade_in, false) {
+                    return None;
+                }
+                self.voices[slot] = Some(PaletteVoice {
+                    playing: Playing { key: key.clone(), voice, clock: 0.0 }, fading: false,
+                });
+                Some(PaletteChoice::File(slot))
+            }
+            AuthoredTrack::Silence { duration, .. } => Some(PaletteChoice::Silence(elapsed + f64::from(*duration))),
+            AuthoredTrack::Palette { duration, fade_out, layers, .. } => {
+                let timing = PaletteTiming::new(*duration, *fade_out).starting_at(elapsed).within(parent);
+                let mut palette = ActivePalette::new(timing, layers);
+                palette.step(elapsed, self);
+                palette.has_selection().then_some(PaletteChoice::Palette(palette))
+            }
+        }
+    }
+
+    fn file_ended(&mut self, slot: usize, elapsed: f64, timing: PaletteTiming) -> bool {
+        let Some(voice) = &mut self.voices[slot] else { return true };
+        let id = voice.playing.voice;
+        if elapsed >= timing.end_at || self.out.live() && !self.out.active(id) {
+            self.out.stop(id, 0.0);
+            self.voices[slot] = None;
+            return true;
+        }
+        if !voice.fading && elapsed >= timing.fade_at {
+            voice.fading = true;
+            self.out.set_level(id, 0.0, (timing.end_at - elapsed) as f32);
+        }
+        false
+    }
+}
+
+#[derive(Debug)]
+struct TimedSelection {
+    label: String,
+    palette: Option<ActivePalette>,
+    timing: PaletteTiming,
+    elapsed: f64,
+    voices: [Option<PaletteVoice>; PALETTE_VOICES as usize],
+}
+
+impl TimedSelection {
+    fn step(
+        &mut self,
+        dt: f32,
+        layer: Layer,
+        level: f32,
+        fade_in: f32,
+        shuffle: &mut Shuffle,
+        out: &mut dyn MusicOutput,
+    ) -> bool {
+        self.elapsed += f64::from(dt.max(0.0));
+        match &mut self.palette {
+            Some(palette) => palette.step(self.elapsed, &mut PaletteOutput { layer, level, fade_in, voices: &mut self.voices, shuffle, out }),
+            None => self.elapsed >= self.timing.end_at,
+        }
+    }
+
+    fn voices(&self) -> impl Iterator<Item = &PaletteVoice> {
+        self.voices.iter().flatten()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Ducking {
+    by: Layer,
+    db: f32,
+    fade_secs: f32,
+}
+
+impl Ducking {
+    fn level(self, original: f32) -> f32 {
+        original * 10f32.powf(-self.db / 20.0)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Mix {
+    Full,
+    Paused(&'static str),
+    Ducked(Ducking),
+}
+
 #[derive(Debug, Default)]
 struct LayerState {
     /// Shared, so a frame's step reads it without deep-cloning its playlist and notes (#6931).
     directive: Option<Arc<Directive>>,
     /// A playlist's current track.
     track: Option<Playing>,
+    /// One timed selection in an authored playlist, with any active palette voices.
+    timed: Option<TimedSelection>,
     /// A media set's stems, by stem index, while each plays.
     stems: Vec<Option<Playing>>,
     /// The stems that would not start under this directive, by stem index: tried once, not every
@@ -74,20 +266,37 @@ struct LayerState {
     /// A battle intro or outro playing on the one-shot slot.
     one_shot: Option<Playing>,
     shuffle: Shuffle,
+    /// The next selection within the authored list (or shuffled pass).
+    selection: usize,
+    selection_started: bool,
+    playlist_finished: bool,
     /// The layer (or Hold) that suspends this one, while one does.
     suspended: Option<&'static str>,
+    ducking: Option<Ducking>,
     /// The fade for the first track after a directive change, where it is not the directive's own
     /// (`Directive::change_fade_secs`).
     start_fade: Option<f32>,
 }
 
 impl LayerState {
+    fn outcome(&self) -> Option<Outcome> {
+        self.directive.as_ref().map(|directive| {
+            if self.playlist_finished { Outcome::Silent } else { directive.outcome() }
+        })
+    }
+
+    fn level(&self, original: f32) -> f32 {
+        self.ducking.map_or(original, |duck| duck.level(original))
+    }
+
     fn voices(&self) -> impl Iterator<Item = &Playing> {
         self.track.iter().chain(self.stems.iter().flatten()).chain(self.one_shot.iter())
+            .chain(self.timed.iter().flat_map(|timed| timed.voices().map(|voice| &voice.playing)))
     }
 
     fn voices_mut(&mut self) -> impl Iterator<Item = &mut Playing> {
         self.track.iter_mut().chain(self.stems.iter_mut().flatten()).chain(self.one_shot.iter_mut())
+            .chain(self.timed.iter_mut().flat_map(|timed| timed.voices.iter_mut().flatten().map(|voice| &mut voice.playing)))
     }
 
     fn stop_all(&mut self, out: &mut dyn MusicOutput, fade: f32) {
@@ -95,9 +304,77 @@ impl LayerState {
             out.stop(playing.voice, fade);
         }
         self.track = None;
+        self.timed = None;
         self.stems.clear();
         self.failed_stems.clear();
         self.one_shot = None;
+        self.ducking = None;
+    }
+
+    /// Start the next playable selection, retaining the authored order or shuffled pass.
+    fn start_authored(
+        &mut self,
+        tracks: &[AuthoredTrack],
+        policy: PlaylistPolicy,
+        layer: Layer,
+        level: f32,
+        fade: f32,
+        out: &mut dyn MusicOutput,
+    ) -> bool {
+        let remaining = tracks.len() - self.selection;
+        // If a partial pass has no playable entries left, one complete new pass is enough.
+        let attempts = if policy.cycle && self.selection != 0 { remaining + tracks.len() } else { remaining };
+        for _ in 0..attempts {
+            if self.selection == tracks.len() {
+                self.selection = 0;
+            }
+            let index = if policy.ordered { self.selection } else { self.shuffle.next(tracks.len()) };
+            self.selection += 1;
+            if self.start_selection(&tracks[index], layer, level, fade, out) {
+                self.selection_started = true;
+                return true;
+            }
+        }
+        self.playlist_finished = self.selection_started && !policy.cycle;
+        false
+    }
+
+    fn start_selection(
+        &mut self,
+        track: &AuthoredTrack,
+        layer: Layer,
+        level: f32,
+        fade: f32,
+        out: &mut dyn MusicOutput,
+    ) -> bool {
+        match track {
+            AuthoredTrack::File(key) => {
+                let voice = layer.voice(0);
+                if !out.play(voice, key, level, fade, false) {
+                    return false;
+                }
+                self.track = Some(Playing { key: key.clone(), voice, clock: 0.0 });
+            }
+            AuthoredTrack::Silence { label, duration } => {
+                self.timed = Some(TimedSelection {
+                    label: label.clone(), palette: None, timing: PaletteTiming::new(*duration, 0.0),
+                    elapsed: 0.0, voices: Default::default(),
+                });
+            }
+            AuthoredTrack::Palette { label, duration, fade_out, layers } => {
+                let timing = PaletteTiming::new(*duration, *fade_out);
+                let mut timed = TimedSelection {
+                    label: label.clone(), palette: Some(ActivePalette::new(timing, layers)), timing,
+                    elapsed: 0.0, voices: Default::default(),
+                };
+                timed.step(0.0, layer, level, fade, &mut self.shuffle, out);
+                if *duration > 0.0 && !timed.palette.as_ref().is_some_and(ActivePalette::has_selection) {
+                    return false;
+                }
+                self.timed = Some(timed);
+            }
+        }
+        true
     }
 
 }
@@ -189,7 +466,7 @@ impl MusicController {
         }
         let state = &mut self.layers[layer as usize];
         match (&state.directive, &directive) {
-            (Some(old), Some(new)) if old.same_music(new) => {
+            (Some(old), Some(new)) if old.same_music(new) && !(layer == Layer::Script && state.playlist_finished) => {
                 state.directive = directive.map(Arc::new);
                 return;
             }
@@ -200,7 +477,13 @@ impl MusicController {
             Some(new) => new.change_fade_secs.unwrap_or(new.fade_secs),
             None => state.directive.as_ref().map_or(0.0, |old| old.fade_secs),
         };
+        if directive.as_ref().is_some_and(|d| matches!(d.content, Content::AuthoredPlaylist { .. })) {
+            state.shuffle.reset();
+        }
         state.stop_all(out, fade);
+        state.selection = 0;
+        state.selection_started = false;
+        state.playlist_finished = false;
         state.start_fade = directive.as_ref().and_then(|d| d.change_fade_secs);
         state.directive = directive.map(Arc::new);
         if let Some(d) = state.directive.clone() {
@@ -267,49 +550,63 @@ impl MusicController {
         self.hold = inputs.hold;
         self.step_battle(inputs, battle, out);
 
-        let playing = |music: &Self, layer: Layer| music.state(layer).directive.as_ref().is_some_and(|d| d.outcome() == Outcome::Playing);
         // Battle replaces an Oblivion stream: arriving in combat, or combat starting under it, ends
         // it, and Location follows combat (Oblivion.exe `0x6acd10`, MUS-CMB-004, #6903).
-        if playing(self, Layer::Battle) && self.state(Layer::Script).directive.as_ref().is_some_and(|d| d.ends_on_battle) {
+        if self.state(Layer::Battle).outcome() == Some(Outcome::Playing)
+            && self.state(Layer::Script).directive.as_ref().is_some_and(|d| d.ends_on_battle)
+        {
             self.set(Layer::Script, None, out);
         }
         // Top down, so a layer sees the higher layers as this frame left them (a sting that just
         // ended releases Location the same frame).
         for layer in Layer::ALL {
-            let by = self.suspended_by(layer, inputs);
-            self.suspend(layer, by, out);
+            let mix = self.mix_for(layer, inputs);
+            self.apply_mix(layer, mix, out);
             self.play(layer, inputs, out);
         }
     }
 
-    /// What holds `layer` silent now, if anything: the rule [`Self::step`] suspends each layer by,
-    /// and the one a battle set's intro and outro obey too (#6928).
-    fn suspended_by(&self, layer: Layer, inputs: Inputs) -> Option<&'static str> {
+    /// How the current stack affects this layer, including a battle set's intro and outro (#6928).
+    fn mix_for(&self, layer: Layer, inputs: Inputs) -> Mix {
         if inputs.hold {
-            return Some("Hold");
+            return Mix::Paused("Hold");
         }
-        let playing = |layer: Layer| self.state(layer).directive.as_ref().is_some_and(|d| d.outcome() == Outcome::Playing);
+        let playing = |layer: Layer| self.state(layer).outcome() == Some(Outcome::Playing);
         let sting_audible = playing(Layer::Sting) && self.state(Layer::Sting).directive.as_ref().is_some_and(|d| !d.over_music);
         if layer != Layer::Sting && sting_audible {
-            return Some("Sting");
+            return Mix::Paused("Sting");
         }
         if matches!(layer, Layer::Battle | Layer::Location) && self.silenced {
-            return Some("a sting's silence");
+            return Mix::Paused("a sting's silence");
         }
         if layer != Layer::Sting && let Some(winner) = self.music_type_winner() {
-            return (layer != winner).then(|| winner.name());
+            if layer == winner {
+                return Mix::Full;
+            }
+            let current = self.state(layer);
+            let leading = self.state(winner).directive.as_ref().expect("winner has a directive");
+            let lower = current.directive.as_ref().and_then(|d| d.priority)
+                .zip(leading.priority).is_some_and(|(current, leading)| current > leading);
+            let already_playing = (current.track.is_some() || current.timed.is_some())
+                && (current.suspended.is_none() || current.suspended == Some("Hold"));
+            if lower && playing(winner) && already_playing
+                && let Some(db) = leading.ducking_db
+            {
+                return Mix::Ducked(Ducking { by: winner, db, fade_secs: leading.fade_secs });
+            }
+            return Mix::Paused(winner.name());
         }
         let battle_audible = playing(Layer::Battle);
         // A scripted track replaces the music below it, and a scripted silence (`PlayMusic
         // 1NoMusic`) silences it (MUS-SCR-005, #6899).
         let script = self.state(Layer::Script).directive.as_ref();
-        let script_holds = script.is_some_and(|d| matches!(d.outcome(), Outcome::Playing | Outcome::Silent));
+        let script_holds = script.is_some_and(|d| d.outcome() == Outcome::Silent) || playing(Layer::Script);
         let beside_script = self.state(Layer::Location).directive.as_ref().is_some_and(|d| d.beside_script);
         match layer {
-            Layer::Battle if script_holds => Some("Script"),
-            Layer::Location if script_holds && !beside_script => Some("Script"),
-            Layer::Location if battle_audible => Some("Battle"),
-            _ => None,
+            Layer::Battle if script_holds => Mix::Paused("Script"),
+            Layer::Location if script_holds && !beside_script => Mix::Paused("Script"),
+            Layer::Location if battle_audible => Mix::Paused("Battle"),
+            _ => Mix::Full,
         }
     }
 
@@ -318,6 +615,9 @@ impl MusicController {
         [Layer::Script, Layer::Battle, Layer::Location].into_iter()
             .filter_map(|layer| {
                 let directive = self.state(layer).directive.as_ref()?;
+                if self.state(layer).playlist_finished {
+                    return None;
+                }
                 match directive.outcome() {
                     Outcome::Playing | Outcome::Silent => directive.priority.map(|priority| (priority, layer)),
                     Outcome::Unresolved | Outcome::Missing => None,
@@ -334,7 +634,7 @@ impl MusicController {
                 self.set(Layer::Battle, Some(directive), out);
                 // The intro is Battle's music too: a movie's hold, a sting or a scripted track
                 // that holds Battle holds it (#6928).
-                if self.suspended_by(Layer::Battle, inputs).is_none() {
+                if !matches!(self.mix_for(Layer::Battle, inputs), Mix::Paused(_)) {
                     self.one_shot(Layer::Battle, true, out);
                 }
             }
@@ -347,7 +647,7 @@ impl MusicController {
                 self.set(Layer::Battle, None, out);
                 // Not after a death sting, under a movie, or under a scripted track: the original
                 // stops all music there (#6928).
-                if let Some((key, level)) = outro.filter(|_| self.suspended_by(Layer::Battle, inputs).is_none()) {
+                if let Some((key, level)) = outro.filter(|_| !matches!(self.mix_for(Layer::Battle, inputs), Mix::Paused(_))) {
                     let voice = Layer::Battle.voice(ONE_SHOT_SLOT);
                     if out.play(voice, &key, level, 0.0, false) {
                         self.layers[Layer::Battle as usize].one_shot = Some(Playing { key, voice, clock: 0.0 });
@@ -366,6 +666,33 @@ impl MusicController {
         if out.play(voice, &key, d.level, 0.0, false) {
             state.one_shot = Some(Playing { key, voice, clock: 0.0 });
         }
+    }
+
+    fn apply_mix(&mut self, layer: Layer, mix: Mix, out: &mut dyn MusicOutput) {
+        let by = match mix {
+            Mix::Paused(by) => Some(by),
+            Mix::Full | Mix::Ducked(_) => None,
+        };
+        if by.is_none() {
+            let ducking = match mix {
+                Mix::Ducked(ducking) => Some(ducking),
+                _ => None,
+            };
+            let state = &mut self.layers[layer as usize];
+            if ducking != state.ducking {
+                let fade = ducking.or(state.ducking).map_or(0.0, |duck| duck.fade_secs);
+                state.ducking = ducking;
+                if let Some(directive) = &state.directive {
+                    let level = state.level(directive.level);
+                    let palette = state.timed.iter().flat_map(TimedSelection::voices)
+                        .filter(|voice| !voice.fading).map(|voice| &voice.playing);
+                    for track in state.track.iter().chain(palette) {
+                        out.set_level(track.voice, level, fade);
+                    }
+                }
+            }
+        }
+        self.suspend(layer, by, out);
     }
 
     fn suspend(&mut self, layer: Layer, by: Option<&'static str>, out: &mut dyn MusicOutput) {
@@ -413,32 +740,61 @@ impl MusicController {
                 let ended = state.track.as_ref().is_some_and(|p| live && !d.looping && !out.active(p.voice));
                 if ended {
                     state.track = None;
-                    // A sting plays once; a scripted track hands back to Location (MUS-SCR-003), or to
-                    // what follows it, or plays on (an Oblivion stream, #6903).
+                    // A legacy sting or script can hand back to Location or to a follow-up directive.
                     if matches!(layer, Layer::Sting | Layer::Script) && !d.persists {
                         state.directive = d.then.as_deref().cloned().map(Arc::new);
                         return;
                     }
                 }
                 if state.track.is_none() {
-                    let index = state.shuffle.next(tracks.len());
                     let voice = layer.voice(0);
-                    // A one-track playlist loops its track (Q1); so does a looping directive.
-                    let looping = d.looping || tracks.len() == 1 && !matches!(layer, Layer::Sting | Layer::Script);
                     let fade = state.start_fade.take().unwrap_or(d.fade_secs);
-                    // AUD-3 — a track that will not play (a corrupt or empty file among good ones) is
-                    // skipped for the next in the list; only a playlist none of whose tracks plays is
-                    // Missing. Demoting on the first failure silenced the whole place until it changed.
+                    let index = state.shuffle.next(tracks.len());
+                    let looping = d.looping || tracks.len() == 1 && !matches!(layer, Layer::Sting | Layer::Script);
+                    // AUD-3: skip a file that cannot play and try the rest of this playlist.
                     let played = (0..tracks.len())
                         .map(|offset| &tracks[(index + offset) % tracks.len()])
                         .find(|key| out.play(voice, key, d.level, fade, looping));
                     match played {
                         Some(key) => state.track = Some(Playing { key: key.clone(), voice, clock: 0.0 }),
                         None => {
-                            let missing = Directive { content: Content::Missing(tracks[index].clone()), ..(*d).clone() };
+                            let path = tracks.get(index).cloned().unwrap_or_else(|| d.source.label.clone());
+                            let missing = Directive { content: Content::Missing(path), ..(*d).clone() };
                             state.directive = Some(Arc::new(missing.clone()));
                             self.report(layer, &missing);
                         }
+                    }
+                }
+            }
+            Content::AuthoredPlaylist { tracks, policy } => {
+                if state.playlist_finished {
+                    return;
+                }
+                let level = state.level(d.level);
+                let timed_ended = state.timed.as_mut().is_some_and(|timed| {
+                    timed.step(inputs.dt, layer, level, 0.0, &mut state.shuffle, out)
+                });
+                if timed_ended {
+                    state.timed = None;
+                }
+                let file_ended = state.track.as_ref().is_some_and(|track| live && !out.active(track.voice));
+                if file_ended && let Some(track) = state.track.take() {
+                    out.stop(track.voice, 0.0);
+                }
+                if policy.one_selection && (timed_ended || file_ended) {
+                    state.playlist_finished = true;
+                    return;
+                }
+                if state.timed.is_none() && state.track.is_none() {
+                    let fade = state.start_fade.take().unwrap_or(d.fade_secs);
+                    if !state.start_authored(tracks, *policy, layer, level, fade, out) && !state.playlist_finished {
+                        let path = match tracks.first() {
+                            Some(AuthoredTrack::File(key)) => key.clone(),
+                            _ => d.source.label.clone(),
+                        };
+                        let missing = Directive { content: Content::Missing(path), ..(*d).clone() };
+                        state.directive = Some(Arc::new(missing.clone()));
+                        self.report(layer, &missing);
                     }
                 }
             }
@@ -494,19 +850,33 @@ impl MusicController {
                 lines.push(format!("{}: none", layer.name()));
                 continue;
             };
-            let outcome = match (&d.content, state.suspended) {
-                (Content::Playlist(_) | Content::Stems { .. }, Some(by)) => format!("Playing (paused under {by})"),
-                (Content::Playlist(_) | Content::Stems { .. }, None) => "Playing".to_string(),
-                (Content::Silent, _) => "Silent".to_string(),
-                (Content::Unresolved(reason), _) => format!("Unresolved ({reason})"),
-                (Content::Missing(path), _) => format!("Missing ({path})"),
+            let outcome = match (&d.content, state.suspended, state.ducking) {
+                _ if state.playlist_finished => "Silent (selection complete)".to_string(),
+                (Content::AuthoredPlaylist { .. }, paused, ducking) if state.timed.as_ref().is_some_and(|timed| timed.voices().next().is_none()) =>
+                    match (paused, ducking) {
+                        (Some(by), _) => format!("Silent (timed selection, paused under {by})"),
+                        (None, Some(duck)) => format!("Silent (timed selection, ducked under {} by {:.1} dB)", duck.by.name(), duck.db),
+                        (None, None) => "Silent (timed selection)".to_string(),
+                    },
+                (Content::Playlist(_) | Content::AuthoredPlaylist { .. } | Content::Stems { .. }, Some(by), _) =>
+                    format!("Playing (paused under {by})"),
+                (Content::Playlist(_) | Content::AuthoredPlaylist { .. }, None, Some(duck)) =>
+                    format!("Playing (ducked under {} by {:.1} dB)", duck.by.name(), duck.db),
+                (Content::Playlist(_) | Content::AuthoredPlaylist { .. } | Content::Stems { .. }, None, _) => "Playing".to_string(),
+                (Content::Silent, _, _) => "Silent".to_string(),
+                (Content::Unresolved(reason), _, _) => format!("Unresolved ({reason})"),
+                (Content::Missing(path), _, _) => format!("Missing ({path})"),
             };
             let mut line = format!("{}: {outcome} — {}", layer.name(), d.source);
             for playing in state.voices() {
                 let position = out.position(playing.voice).unwrap_or(playing.clock);
                 line.push_str(&format!(" — {} at {position:.1}s", playing.key));
             }
-            if layer == Layer::Battle && d.outcome() == Outcome::Playing && self.battle_hold > 0.0 {
+            if let Some(timed) = &state.timed {
+                let kind = if timed.palette.is_some() { "palette" } else { "silence" };
+                line.push_str(&format!(" — {kind} {} {:.1}/{:.1}s", timed.label, timed.elapsed, timed.timing.end_at));
+            }
+            if layer == Layer::Battle && state.outcome() == Some(Outcome::Playing) && self.battle_hold > 0.0 {
                 line.push_str(&format!(" — recovery {:.1}s", self.battle_hold));
             }
             for note in &d.notes {
@@ -531,6 +901,14 @@ pub(crate) mod tests {
     use crate::music::directive::Source;
     use std::collections::HashMap;
 
+    fn authored(label: &str, tracks: Vec<AuthoredTrack>, policy: PlaylistPolicy) -> Directive {
+        Directive::new(Source::keyword(label, "test"), Content::AuthoredPlaylist { tracks, policy })
+    }
+
+    fn files(keys: &[&str]) -> Vec<AuthoredTrack> {
+        keys.iter().map(|key| AuthoredTrack::File((*key).into())).collect()
+    }
+
     #[test]
     fn authored_priority_can_keep_location_audible_or_switch_to_battle() {
         let mut music = MusicController::seeded(1);
@@ -549,6 +927,143 @@ pub(crate) mod tests {
         music.step(combat, || unreachable!("the battle request still exists"), &mut out);
         assert_eq!(music.track(Layer::Battle, &out).unwrap().0, "combat");
         assert_eq!(music.state(Layer::Location).suspended, Some("Battle"));
+    }
+
+    #[test]
+    fn ducking_keeps_the_same_voice_advancing_and_restores_its_level() {
+        let mut music = MusicController::seeded(1);
+        let mut out = FakeOutput { live: true, ..Default::default() };
+        let location = Directive { priority: Some(90), level: 0.5, ..playlist("exterior", &["explore"]) };
+        let battle = Directive {
+            priority: Some(8),
+            ducking_db: Some(20.0),
+            fade_secs: 3.0,
+            ..authored("combat", files(&["battle", "extra"]), PlaylistPolicy {
+                one_selection: true, cycle: true, ordered: true,
+            })
+        };
+        let ambient = Layer::Location.voice(0);
+        music.set(Layer::Location, Some(location), &mut out);
+        music.step(frame(1.0), no_battle, &mut out);
+        let combat = Inputs { in_combat: true, ..frame(1.0) };
+        music.step(combat, || battle, &mut out);
+        assert_eq!(out.levels, [(ambient, 0.05, 3.0)]);
+        assert_eq!(music.track(Layer::Location, &out), Some(("explore".into(), 1.0)));
+
+        music.step(Inputs { hold: true, ..combat }, no_battle, &mut out);
+        assert!(out.voices[&ambient].1);
+        music.step(combat, no_battle, &mut out);
+        assert!(!out.voices[&ambient].1);
+        assert_eq!(out.levels.len(), 1);
+        assert_eq!(music.track(Layer::Location, &out), Some(("explore".into(), 2.0)));
+
+        // Completing the winning selection releases the duck even if combat itself continues.
+        out.voices.remove(&Layer::Battle.voice(0));
+        music.step(combat, no_battle, &mut out);
+        assert_eq!(out.levels.last(), Some(&(ambient, 0.5, 3.0)));
+        assert_eq!(music.track(Layer::Location, &out), Some(("explore".into(), 3.0)));
+        assert_eq!(out.log.iter().filter(|line| line.starts_with(&format!("play {ambient} "))).count(), 1);
+        assert_eq!(music.state(Layer::Battle).outcome(), Some(Outcome::Silent));
+        assert!(music.track(Layer::Battle, &out).is_none());
+    }
+
+    #[test]
+    fn authored_playlists_follow_order_cycle_and_one_selection_independently() {
+        let tracks = ["a", "b", "c"];
+        for (ordered, cycle, one_selection, expected) in [
+            (true, false, false, vec!["a", "b", "c"]),
+            (true, true, false, vec!["a", "b", "c", "a", "b"]),
+            (true, true, true, vec!["a"]),
+            (true, false, true, vec!["a"]),
+            (false, false, false, vec!["a", "b", "c"]),
+            (false, true, false, vec!["a", "b", "c", "a", "b"]),
+        ] {
+            let policy = PlaylistPolicy { ordered, cycle, one_selection };
+            let authored = Directive {
+                priority: Some(90), ..authored("exterior", files(&tracks), policy)
+            };
+            let mut music = MusicController::seeded(1);
+            let mut out = FakeOutput { live: true, ..Default::default() };
+            music.set(Layer::Location, Some(authored.clone()), &mut out);
+            let voice = Layer::Location.voice(0);
+            let mut actual = Vec::new();
+            for _ in 0..5 {
+                music.step(frame(1.0), no_battle, &mut out);
+                if let Some((key, _)) = out.voices.remove(&voice) {
+                    actual.push(key);
+                }
+            }
+            assert_eq!(actual.len(), expected.len(), "{policy:?}");
+            if ordered {
+                assert_eq!(actual, expected, "{policy:?}");
+            } else {
+                let mut first_pass = actual[..3].to_vec();
+                first_pass.sort();
+                assert_eq!(first_pass, tracks, "{policy:?}");
+                if cycle {
+                    assert_ne!(actual[2], actual[3]);
+                }
+            }
+            assert!(out.log.iter().all(|line| !line.ends_with(" loop")));
+            if one_selection || !cycle {
+                music.set(Layer::Location, Some(authored), &mut out);
+                music.step(frame(1.0), no_battle, &mut out);
+                assert!(out.voices.is_empty(), "an unchanged location keeps its completed playlist");
+                assert!(music.status(&out).iter().any(|line| line.contains("Silent (selection complete)")));
+            }
+        }
+    }
+
+    #[test]
+    fn authored_silence_advances_after_its_duration_and_freezes_during_hold() {
+        let mut music = MusicController::seeded(1);
+        let mut out = FakeOutput { live: true, ..Default::default() };
+        let tracks = vec![AuthoredTrack::Silence { label: "rest".into(), duration: 2.0 }, AuthoredTrack::File("song".into())];
+        let policy = PlaylistPolicy { one_selection: false, cycle: false, ordered: true };
+        music.set(Layer::Location, Some(authored("exterior", tracks, policy)), &mut out);
+        music.step(frame(1.0), no_battle, &mut out);
+        assert!(out.voices.is_empty());
+        music.step(frame(1.0), no_battle, &mut out);
+        music.step(Inputs { hold: true, ..frame(5.0) }, no_battle, &mut out);
+        assert!(music.status(&out).iter().any(|line| line.contains("silence rest 1.0/2.0s")));
+        music.step(frame(1.0), no_battle, &mut out);
+        assert_eq!(music.track(Layer::Location, &out), Some(("song".into(), 0.0)));
+    }
+
+    #[test]
+    fn a_palette_starts_all_selected_layers_and_fades_as_one_selection() {
+        let mut music = MusicController::seeded(1);
+        let mut out = FakeOutput { live: true, ..Default::default() };
+        let palette = AuthoredTrack::Palette {
+            label: "ensemble".into(), duration: 3.0, fade_out: 2.0,
+            layers: vec![
+                files(&["a", "b"]).into(),
+                files(&["c"]).into(),
+                vec![AuthoredTrack::Silence { label: "rest".into(), duration: 1.0 }].into(),
+            ],
+        };
+        let policy = PlaylistPolicy { one_selection: true, cycle: true, ordered: true };
+        let tracks = vec![palette, AuthoredTrack::File("extra".into())];
+        music.set(Layer::Location, Some(authored("exterior", tracks, policy)), &mut out);
+        music.step(frame(0.0), no_battle, &mut out);
+        let first = Layer::Location.palette_voice(0);
+        let second = Layer::Location.palette_voice(1);
+        assert_eq!(out.voices.len(), 2);
+        assert!(matches!(out.voices[&first].0.as_str(), "a" | "b"));
+        assert_eq!(out.voices[&second].0, "c");
+        assert!(out.levels.is_empty());
+        out.voices.remove(&first);
+        music.step(frame(1.0), no_battle, &mut out);
+        assert!(matches!(out.voices[&first].0.as_str(), "a" | "b"));
+        assert_eq!(out.voices[&second].0, "c");
+        music.step(frame(2.0), no_battle, &mut out);
+        assert_eq!(out.levels, [(first, 0.0, 2.0), (second, 0.0, 2.0)]);
+        music.step(frame(1.0), no_battle, &mut out);
+        assert_eq!(out.voices.len(), 2);
+        music.step(frame(1.0), no_battle, &mut out);
+        assert!(out.voices.is_empty());
+        assert!(music.state(Layer::Location).playlist_finished);
+        assert_eq!(out.log.iter().filter(|event| event.starts_with("play ")).count(), 3);
     }
 
     /// AUD-3 — one track that will not play does not silence its playlist: the next one plays, and
@@ -583,6 +1098,7 @@ pub(crate) mod tests {
         pub(crate) log: Vec<String>,
         /// `play` / `stop` with their fades.
         pub(crate) faded: Vec<String>,
+        pub(crate) levels: Vec<(u32, f32, f32)>,
         /// Keys whose `play` fails (a file that cannot be read or decoded).
         pub(crate) unplayable: std::collections::HashSet<String>,
     }
@@ -616,6 +1132,9 @@ pub(crate) mod tests {
             if let Some(v) = self.voices.get_mut(&voice) {
                 v.1 = false;
             }
+        }
+        fn set_level(&mut self, voice: u32, level: f32, fade: f32) {
+            self.levels.push((voice, level, fade));
         }
         fn active(&self, voice: u32) -> bool {
             self.voices.contains_key(&voice)

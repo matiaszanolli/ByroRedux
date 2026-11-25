@@ -155,7 +155,7 @@ pub struct MustRecord {
     pub finale_file: String,
     /// `LNAM`.
     pub loop_data: Option<MustLoop>,
-    /// `SNAM` — a palette's member tracks.
+    /// `SNAM` — a palette's member tracks, with null FormIDs separating layers.
     pub sub_tracks: Vec<u32>,
 }
 
@@ -180,8 +180,7 @@ pub fn parse_must(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     .u32_array()
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|id| remap_fid(id, remap))
-                    .filter(|track| *track != 0)
+                    .map(|id| if id == 0 { 0 } else { remap_fid(id, remap) })
                     .collect();
             }
             _ => {}
@@ -193,12 +192,7 @@ pub fn parse_must(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 /// How deep a palette may nest before the walk gives up (vanilla nests one level).
 const MUST_PALETTE_DEPTH_CAP: u32 = 4;
 
-/// The track a Skyrim `MUSC` plays, in the one deterministic case this engine models: the first
-/// `SingleTrack` with a file, in `TNAM` order, descending into a palette's `SNAM` members in order.
-///
-/// This is *a valid pick* under every flag combination, not the whole policy: `Plays One Selection`
-/// and an ordered `Cycle Tracks` both start at the first track, and an unordered cycle may start
-/// anywhere. Cycling, random order, finale tracks and loop regions are not modelled (#3816).
+/// The first file reachable in a `MUSC`, used by record inspection independently of runtime selection.
 pub fn first_playable_track<'a>(
     musc: &MuscRecord,
     tracks: &'a HashMap<u32, MustRecord>,
@@ -208,7 +202,8 @@ pub fn first_playable_track<'a>(
         match track.kind {
             MustKind::SingleTrack if !track.file.is_empty() => Some(track),
             MustKind::Palette if depth < MUST_PALETTE_DEPTH_CAP => {
-                track.sub_tracks.iter().find_map(|&member| walk(member, tracks, depth + 1))
+                track.sub_tracks.iter().filter(|&&member| member != 0)
+                    .find_map(|&member| walk(member, tracks, depth + 1))
             }
             _ => None,
         }
@@ -360,6 +355,14 @@ mod tests {
         let palette = parse_must(1, &[sub(b"CNAM", 0x23F6_78C3u32.to_le_bytes())], &None);
         assert_eq!(palette.kind, MustKind::Palette);
         assert_eq!(parse_must(2, &[sub(b"CNAM", 7u32.to_le_bytes())], &None).kind, MustKind::Other(7));
+    }
+
+    #[test]
+    fn a_palette_remaps_files_and_preserves_null_layer_separators() {
+        let snam: Vec<_> = [0x0100_0123u32, 0, 0x0000_0456].into_iter().flat_map(u32::to_le_bytes).collect();
+        let remap = Some(FormIdRemap::regular(2, vec![1]));
+        let track = parse_must(1, &[sub(b"SNAM", snam)], &remap);
+        assert_eq!(track.sub_tracks, [0x0200_0123, 0, 0x0100_0456]);
     }
 
     #[test]

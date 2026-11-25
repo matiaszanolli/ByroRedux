@@ -26,6 +26,8 @@ A **directive** is what translation produces and the controller plays:
 - its **content**: one of
   - **Playlist**: one file or a folder's files, played one after another (or one
     file looping);
+  - **Authored playlist**: file, timed silence, and layered palette selections
+    from Skyrim or Fallout 4;
   - **Stems**: a New Vegas Location set's tracks, played together (§6);
   - **Silent**: the data asks for silence (`1NoMusic`, or no source at all);
   - **Unresolved**: a source this build does not translate, with the reason;
@@ -48,18 +50,24 @@ The controller holds at most one directive per layer (PRD §3.1):
 A paused voice keeps its position: a layer that a higher one suspended resumes where it
 stopped, it is not restarted. A higher layer crossfades over the one it suspends; the Hold
 layer pauses and releases at once, so the music stops where the movie begins. A layer's **outcome** (PRD §3.2) is **Playing**, **Silent**,
-**Unresolved** or **Missing**; a Playing layer under a higher one reports
-`Playing (paused under <layer>)`.
+**Unresolved** or **Missing**. A Playing layer reports whether a higher layer pauses it
+or lowers its gain.
 
 ### Track selection (MUS-SEL)
 
-A playlist plays one track at a time. Its order is a shuffle (Q1): every track of the
+A playlist plays one track at a time. Legacy directives use a shuffle (Q1): every track of the
 folder plays once before any repeats, and a new round never starts on the track the last
 one ended on. A one-track playlist and a looping directive loop the track. When a
 non-looping track ends, the next track of the same directive starts (MUS-SEL-002). A
 new Location directive equal to the playing one (same source, same files) does not
 restart it (MUS-SEL-005); a different one crossfades over the directive's fade time
 (MUS-SEL-004).
+
+Skyrim and Fallout 4 music types use their authored selection flags. **Maintain Track
+Order** plays the list in order. Other lists shuffle once per pass. **Cycle Tracks**
+starts another pass after the last selection. **Plays One Selection** ends the request
+after one track and takes precedence over cycling. An unchanged location keeps its
+finished request. [Music Type](https://ck.uesp.net/wiki/Music_Type).
 
 ## 3. The Location layer per game
 
@@ -79,11 +87,18 @@ The Skyrim and Fallout 4 order is provisional. The source fields are verified, a
 runtime's precedence and parent-Location inheritance are still open. Region selection uses
 the sound entry selected for the current cell. [Location source findings](xwma-phase0-findings.md#v5--location-music-sources-and-precedence).
 
-These music types resolve their `TNAM` single tracks through the ordinary playlist. The provider
-uses the authored path when present and falls back from the author's `.wav` to the shipped `.xwm`.
-All-silent lists resolve to silence. A palette-only list reports an unresolved track type. Timed
-silence, palettes, conditions, authored loop regions and music finales are tracked in
-[xWMA Phase 4](../prd/xwma-audio.md#55-music-stack-musc-and-must-xwma-musc).
+These music types resolve their `TNAM` entries as selections. A file streams through
+the sound provider, which uses the authored path when present and falls back from `.wav`
+to the shipped `.xwm`. A silent selection holds the type for its authored duration.
+A palette splits `SNAM` at null FormIDs and starts one random choice per layer in the
+same update. A layer draws again when its clip or silent interval ends. At the palette
+duration, new choices stop and active voices fade over the authored fade-out. A nested
+palette stays within its parent's fade and end times. Palette playback uses up to
+16 voices per music layer. [Creation Kit Music Track](https://skyrimck.uesp.net/wiki/Music_Track).
+
+The entire palette counts as one playlist selection. The controller's hold pauses
+timed selections and their voices. Authored conditions, loop regions and combat
+finales are tracked in [xWMA Phase 4](../prd/xwma-audio.md#55-music-stack-musc-and-must-xwma-musc).
 
 On Oblivion the winning region is the one the engine's region selection already picks
 (`select_active_region_sound`: override flag, then priority). A music type with no file
@@ -195,8 +210,11 @@ code, and its executable is encrypted.
   New Vegas the active controller's Battle sets first and the region's `RDSB` set next
   (§6), Oblivion `Data\Music\Battle`, and Skyrim / Fallout 4 the `DOBJ.BTMS` music type.
   For the latter two, the lowest numeric `MUSC.PNAM` priority wins among active music types,
-  with the existing layer order resolving ties. `WNAM` supplies the fade duration. When combat ends, the layer holds for the recovery
-  time (§7), then Location resumes. Oblivion has none: it counts the actors whose combat
+  with the existing layer order resolving ties. **Ducks Current Track** keeps the playing lower-priority
+  track advancing at a reduced gain. The winner's `PNAM` attenuation and `WNAM` fade apply when
+  ducking begins and the same fade restores gain when it ends. Kira treats gain at or below −60 dB
+  as silence while the playhead continues. When combat ends, the layer holds for the recovery
+  time (§7), then Location returns to its normal gain or resumes. Oblivion has none: it counts the actors whose combat
   targets include the player (`0x6136b0` / `0x6136e0`) and switches back when the count
   reaches 0.
 - **Stings (MUS-STG, #6901).** Oblivion plays `Special\death.mp3` on the player's death
@@ -360,8 +378,10 @@ Vegas leg, `music-oblivion.sh` scenario 7.
 
 The [xWMA music smoke](../smoke-tests/xwma-music.sh) runs xWMA scenario 4 for Skyrim SE
 and Fallout 4. With an audio device active, it checks the position of an exterior track,
-starts combat through a placed actor, and checks that the battle track advances while the
-exterior layer is suspended.
+starts combat through a placed actor, and checks that both selections advance during ducking.
+Ending combat restores the exterior selection's gain. The ignored
+`real_data_palettes_keep_three_layers_and_resolve_their_streams` test checks real three-layer
+palettes, their authored durations, and one stream from each layer in both games.
 
 ## 9. Saves
 
