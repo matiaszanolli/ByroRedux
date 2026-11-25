@@ -493,6 +493,10 @@ No path calls `device_wait_idle` (TXS-RES-004).
 
 ## 12. Measured results (2026-11-04)
 
+The current summary and its repro command are in
+[ROADMAP § Texture streaming](../../ROADMAP.md#texture-streaming-m39); this
+section is the dated record of the runs.
+
 Measured on the 4070 Ti dev box (desktop resident; the driver reported 9–10
 GiB of device-local budget), release build, free camera at each cell's
 default pose, one run per arm unless stated (the FO4 arms were repeated three

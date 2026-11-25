@@ -123,8 +123,6 @@ all-slots fence wait that dominates GPU-bound frames (#5365, the throughput half
   blocks the slice.
 - M-LIGHT (#6595) has closed Phases 0–4. Phase 3 (#6603) closed on 2026-11-20 with A2–A5, A14 and the far-sun gate passing, A11 judged against a re-anchored entry and A13 by the brackets the phase adds ([evidence](docs/audits/MLIGHT_phase3_exit_2026-11-20.md)). Phase 4 (#6604, sky IBL) closed on 2026-11-22 (PRD rev 50): the split-sum sky probe from an exact table, the probe mip above roughness 0.6, traced sky-specular occlusion, the sun counted once, π-scaled light-loop specular and the portal-sky GI escape, with A6 / A17 passing and A9, A11, A12, A13 recorded. Phase 5 (#6599) is next; L4's exit waits on the RCG radiance cache (#7069).
   [Reference Lighting PRD](docs/prd/reference-lighting.md) · [Phase 3 results](docs/audits/MLIGHT_phase3_exit_2026-11-18.md).
-- Texture streaming (M39, #6626): Phases 0–1 closed 2026-11-03; Phases 2–4 (#6629–#6631) built
-  and measured on five games, open on the gates in its [Tier 5 row](#tier-5--renderer-polish-quality-not-capability).
 - Fire, smoke and explosions (#6531, [plan](docs/engine/fire-volumetrics-plan.md)):
   Phases 1–3 (local grid, integration, species scattering) are built and await review.
 - RT lighting and material recovery: R0–R3 are complete. The rest is tracked
@@ -151,21 +149,14 @@ raw rows for every matrix are in `docs/audits/BENCH_*.tsv`.
 
 ### Bench-of-record (LIVE) — stepped-camera refresh (2026-10-22, HEAD `d9a201c71`)
 
-Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
-1280×720 output, per-scene CWD set to that game's `Data/`. **75 runs, zero
-rejections**, every fingerprint gate passing. Raw rows:
-`docs/audits/BENCH_stepped-camera_d9a201c71.tsv`. Repro:
-`scripts/fsr-bench-matrix.sh 3 300`, harness `994620123` (the previous harness
-plus two appended timer columns the outgoing build does not emit).
+Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range, 1280×720 output, per-scene CWD set to that game's `Data/`. **75 runs, zero rejections**, every fingerprint gate passing.
+Raw rows: `docs/audits/BENCH_stepped-camera_d9a201c71.tsv`. Repro: `scripts/fsr-bench-matrix.sh 3 300`, harness `994620123` (the previous harness plus two appended timer columns the outgoing build
+does not emit).
 
-**Same-machine control:** the outgoing record `a3a7a43b0` rebuilt in a
-worktree and run scene by scene, alternating with HEAD, under HEAD's harness
-copied in byte-identically (its TSV header still stamps `a4ede5fa0`):
-`docs/audits/CONTROL_stepped-camera_a3a7a43b0_under-994620123.tsv`. Same camera
-pose (Prospector within 1 BU) and same draw counts on all five scenes.
+**Same-machine control:** the outgoing record `a3a7a43b0` rebuilt in a worktree and run scene by scene, alternating with HEAD, under HEAD's harness copied in byte-identically (its TSV header still
+stamps `a4ede5fa0`): `docs/audits/CONTROL_stepped-camera_a3a7a43b0_under-994620123.tsv`. Same camera pose (Prospector within 1 BU) and same draw counts on all five scenes.
 
-**Run conditions:** RTX 4070 Ti at 20–25% utilisation, 1-minute load 1.9–2.9 per
-launch (7.7 at Whiterun HEAD), desktop resident, settings path fresh per run. Not idle.
+**Run conditions:** RTX 4070 Ti at 20–25% utilisation, 1-minute load 1.9–2.9 per launch (7.7 at Whiterun HEAD), desktop resident, settings path fresh per run. Not idle.
 
 | Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
 |---|---:|---:|---:|---:|
@@ -177,19 +168,11 @@ launch (7.7 at Whiterun HEAD), desktop resident, settings path fresh per run. No
 
 FSR Quality nets +18% to +41%, Performance +39% to +56%; `native-aa` loses 2% to 5%.
 
-**Against the control (frame ms, `a3a7a43b0` → `d9a201c71`), TAA / Quality:**
-Cornell 10.60 → 11.59 (+9.3%) / 8.09 → 8.36 (+3.3%); Prospector 11.73 → 11.93
-(+1.7%) / 9.43 → 9.81 (+4.0%); Whiterun 11.17 → 11.94 (+6.9%) / 6.85 → 7.40
-(+8.0%); MedTek 26.30 → 28.22 (+7.3%) / 15.48 → 16.75 (+8.2%); Dugout
-14.78 → 15.12 (+2.3%) / 10.63 → 10.73 (+0.9%). Every scene is slower at HEAD,
-with run ranges of at most 0.7 ms. Cornell is the content-identical control
-(37 entities, 32 draws on both builds), so its +0.99 ms TAA is renderer cost
-(R6a-regress-23); the game scenes' populations moved by under 3%. The outgoing
-record's own figures differ from the control's by up to ±4% (Cornell TAA 10.23
-vs 10.60 ms), hence the control. Prospector's TAA *gpu_main* is bimodal on both
-builds (about 4–5 or 10 ms between runs) with steady wall time: use frame ms.
-**No scene mounts `--scripts-bsa`, so this record cannot see the Papyrus
-interpreter** (first Known Issue).
+**Against the control (frame ms, `a3a7a43b0` → `d9a201c71`), TAA / Quality:** Cornell 10.60 → 11.59 (+9.3%) / 8.09 → 8.36 (+3.3%); Prospector 11.73 → 11.93 (+1.7%) / 9.43 → 9.81 (+4.0%); Whiterun
+11.17 → 11.94 (+6.9%) / 6.85 → 7.40 (+8.0%); MedTek 26.30 → 28.22 (+7.3%) / 15.48 → 16.75 (+8.2%); Dugout 14.78 → 15.12 (+2.3%) / 10.63 → 10.73 (+0.9%). Every scene is slower at HEAD, with run ranges
+of at most 0.7 ms. Cornell is the content-identical control (37 entities, 32 draws on both builds), so its +0.99 ms TAA is renderer cost (R6a-regress-23); the game scenes' populations moved by under
+3%. The outgoing record's own figures differ from the control's by up to ±4% (Cornell TAA 10.23 vs 10.60 ms), hence the control. Prospector's TAA *gpu_main* is bimodal on both builds (about 4–5 or 10
+ms between runs) with steady wall time: use frame ms. **No scene mounts `--scripts-bsa`, so this record cannot see the Papyrus interpreter** (first Known Issue).
 
 ### Lighting fidelity (M-LIGHT, [PRD](docs/prd/reference-lighting.md))
 
@@ -208,6 +191,19 @@ baseline (`688f42705`, RTX 4070 Ti, 1280×720, stepped orbit, tier histogram pas
 
 The baseline is 1466 commits old at the Session 119 close (Session 108's Phase 2 exit A13
 last checked cost against it); re-run `scripts/m-light-baselines.sh` before citing it.
+
+### Texture streaming (M39)
+
+Streaming off → on, release build, RTX 4070 Ti, measured 2026-11-04 (Starfield 2026-11-05); settle is the on arm; the A8 ratio is resident ÷ budget at the reading, not the session peak. A8 predates the eviction change TXS-BUD-003 / -004 still need, so it has to be re-run. A10 (FNV, 2026-11-04) read 16.6 MiB above floors and whole textures on a 96 MiB budget; its total was not recorded. Open: that change, A8 (Oblivion and FO3 never run), A10 under the new limit, A11, A9 (#6632) and the default flip. [PRD](docs/prd/texture-streaming.md) · [run record](docs/engine/texture-streaming.md#12-measured-results-2026-11-04).
+
+| Scene | Resident MiB | Floor-ready ms | Settle ms | A8 budget → resident MiB (ratio) |
+|---|---:|---:|---:|---|
+| FO4 MedTekResearch01 | 766.2 → 135.9 | 3 825 → 1 433 | 1 053 | 120 → 121.7 (1.014); 100 → 101.7 (1.017) |
+| FNV GSProspectorSaloonInterior | 76.7 → 38.5 | 595 → 440 | 315 | 30 → 30.4 (1.013); 24 → 24.4 (1.017) |
+| Skyrim SE WhiterunBanneredMare | 399.0 → 54.8 | 1 787 → 1 309 | 268 | 40 → 40.5 (1.013); 30 → 30.5 (1.017) |
+| Oblivion AnvilHeinrichOakenHallsHouse | 15.9 → 10.5 | 467 → 403 | 57 | not run |
+| FO3 MegatonMoriartysSaloon | 36.8 → 17.3 | 414 → 341 | 225 | not run |
+| Starfield citycydoniamainlevel | 1 370.8 → 116.4 | 10 754 → 9 580 | 3 512 | 100 → 101.8 (1.018); 85 → 86.8 (1.021) |
 
 ### Compatibility matrix
 
@@ -290,7 +286,7 @@ design doc.
 
 | #     | Milestone | State | Depends on |
 |-------|-----------|-------|------------|
-| M39   | Texture streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction. **Phases 0–1 closed (2026-11-03):** BA2 chunk and BSA mip census plus design ([`texture-streaming.md`](docs/engine/texture-streaming.md)), mip-range uploads, floor-first residency, `tex.residency`. **Phases 2–4 built (2026-11-04):** BA2 DX10 reads from a mip level down, a streamer pool, a per-frame wanted-mip pass (0.5 ms on MedTek), the `tex-stream:` bench line, a texture budget derived from the live device-local budget with oldest-last-wanted eviction and counted declines (`render.texture_budget_mib`), BSA floors from one extraction. Measured resident texture bytes off → on: FO4 MedTek 766 → 136 MiB, Skyrim Bannered Mare 399 → 55, FNV Prospector 77 → 39, FO3 37 → 17, Oblivion 16 → 10, Starfield 1 371 → 116; floor-ready 3.8 → 1.4 s on MedTek; zero deficits and churn at settle ([tables](docs/engine/texture-streaming.md#12-measured-results-2026-11-04)). **Open gates:** A11, a clean FO4 A9 soak (its `physics_bodies` failure predates M39), default on. [PRD](docs/prd/texture-streaming.md) ACTIVE 2026-11-03, tracking #6626. | — |
+| M39   | Texture streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction. **Phases 0–1 closed (2026-11-03):** BA2 chunk and BSA mip census plus design ([`texture-streaming.md`](docs/engine/texture-streaming.md)), mip-range uploads, floor-first residency, `tex.residency`. **Phases 2–4 built (2026-11-04):** BA2 DX10 reads from a mip level down, a streamer pool, a per-frame wanted-mip pass (0.5 ms on MedTek), the `tex-stream:` bench line, a texture budget derived from the live device-local budget with oldest-last-wanted eviction and counted declines (`render.texture_budget_mib`), BSA floors from one extraction. Measured resident texture bytes off → on: FO4 MedTek 766 → 136 MiB, Skyrim Bannered Mare 399 → 55, FNV Prospector 77 → 39, FO3 37 → 17, Oblivion 16 → 10, Starfield 1 371 → 116; floor-ready 3.8 → 1.4 s on MedTek; zero deficits and churn at settle ([tables](docs/engine/texture-streaming.md#12-measured-results-2026-11-04)). **Open gates:** A11, a clean FO4 A9 soak (its `physics_bodies` failure predates M39), default on. [PRD](docs/prd/texture-streaming.md) ACTIVE 2026-11-25, tracking #6626; current figures under [Texture streaming](#texture-streaming-m39). | — |
 | M29.3 | Pre-skinned raster path | Make `triangle.vert` read pre-skinned vertices from the per-entity `SkinSlot` output instead of doing inline bone blending, and re-add the `VERTEX_BUFFER` usage dropped in #681. This saves ~50 ALU ops per skinned vertex, but makes raster depend on the compute pass. The recorded precondition is that the compute + BLAS-refit chain has proved stable on visible animated content. | `1ae235b`, #681 |
 
 #### Tier 6 — Engine infrastructure
@@ -727,6 +723,7 @@ Workspace counts at the Session 120 close (2026-11-24, `54d314395`). The NIF swe
 
 | Claim                                                                     | Command                                                                                                                                                                                        |
 |---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Texture streaming (M39)** — every figure under §Texture streaming except the A10 reading | `BYRO_DEBUG_SERVER=1 BYROREDUX_SETTINGS_PATH=<toml> target/release/byroredux --game <g> --cell <cell> --bench-frames 300 --bench-hold`, then `tex.residency` and `tex.missing` through `byro-dbg`; the `tex-stream:` line prints floor-ready and settle. The TOML holds `version = 1`, `[settings]`, `"render.texture_streaming" = true` (`false` for the control) and, for A8, `"render.texture_budget_mib" = <MiB>.0` |
 | **Bench-of-record (LIVE)** — the command behind every FPS/ms figure in the live bench table above (§Bench-of-record, HEAD `d9a201c71`, 2026-10-22). Per-scene CWD applies; scene subset via `FSR_BENCH_SCENES`, output via `FSR_BENCH_OUT`. The default set is four interiors plus Cornell — no ground cover (R6a-groundcover-1). | `scripts/fsr-bench-matrix.sh 3 300` |
 | **Papyrus interpreter cost census** — every µs/ms figure in the interpreter Known Issue (idle scan, `OnCellLoad` burst, polling, runaway cap) | `cargo test -p byroredux-scripting --release --lib -- --ignored --nocapture vm_cost` |
 | **Scripted-scene A/B** — the +0.16 ms / +1.0% figure: BleakFallsBarrow01 from Skyrim `Data/`, 3 alternating runs with and without `--scripts-bsa` (the ~70 µs per-system figures come from the log patch recorded in the audit file) | `byroredux --esm Skyrim.esm --cell BleakFallsBarrow01 --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" --textures-bsa "Skyrim - Textures0.bsa" … --upscaler taa --bench-frames 600 --bench-mode renderer-stepped --bench-camera orbit [--scripts-bsa "Skyrim - Misc.bsa"]` |

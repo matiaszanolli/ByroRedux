@@ -1,7 +1,13 @@
 # Texture Streaming — Product Requirements
 
-**Status**: ACTIVE (2026-11-04). Revision 7 records the Phase 2–4 build and
-its open gates (§12). Revision 6 folds in the Phase 0
+**Status**: ACTIVE (2026-11-25). Revision 9 records the owner's approval of
+revision 8's reworded requirements and of the Q4 amendment; the eviction
+code does not yet meet TXS-BUD-003 or TXS-BUD-004. Revision 8 folds in
+review round 3: the claims about HEAD re-measured after the Phase 2–4 build,
+and the owner's answers on the budget limit, eviction order, soak rules, A8,
+A11, the Q4 reserve and where the metrics live.
+Revision 7 records the Phase 2–4 build and the
+gates open at that revision (§12). Revision 6 folds in the Phase 0
 results: both verify items are closed (TXS-UP-001's long run is clean,
 TXS-SRC-001's chunk census is in the design). Revision 5 filed the
 tracking issues; revision 4 recorded the owner's §10 decisions, every one
@@ -42,9 +48,8 @@ re-baking of archives into mip-ordered bundles (M82), geometry streaming
 upscaling (`tools/texture-upscale`).
 
 **Related**: this document states the *promise*; the designs below own the
-*how*. The streamer itself has no design yet; Phase 0 writes it
-(`docs/engine/texture-streaming.md`, to be registered in
-[docs/engine/index.md](../engine/index.md)).
+*how*. The streamer's own design is
+[Texture Streaming](../engine/texture-streaming.md), written in Phase 0.
 
 | Mechanism | Owning design |
 |---|---|
@@ -56,7 +61,7 @@ upscaling (`tools/texture-upscale`).
 | `SettingsRegistry`, settings persistence, graphics presets, GPU pre-flight | [Launcher § 4 Settings](../engine/launcher.md#4-settings-one-model-two-skins) |
 | Dotted console commands (`tex.*`) served to `byro-dbg` | [Debug CLI § CommandRegistry dispatch](../engine/debug-cli.md#commandregistry-dispatch-dotted-names) |
 | Per-mesh UV texel density captured at import (Q2 (a)) | [NIFAL](../engine/nifal.md) |
-| Wanted-mip signal, residency state machine, budget arithmetic, eviction order | `docs/engine/texture-streaming.md` (Phase 0 writes it) |
+| Wanted-mip signal, residency state machine, budget arithmetic, eviction order, run records | [Texture Streaming design](../engine/texture-streaming.md) |
 
 Normative terms **MUST**, **SHOULD** and **MAY** have their RFC 2119
 meanings, as in the related designs. Requirement IDs use the `TXS-` prefix.
@@ -65,21 +70,23 @@ meanings, as in the related designs. Requirement IDs use the `TXS-` prefix.
 
 ## 1. Product thesis
 
-Texture memory is the one large VRAM consumer with no ceiling. The
-[Memory Budget](../engine/memory-budget.md) page states the owner's frame
-(the dev card, the ray-tracing minimum card and the whole-renderer target,
-in its opening paragraph and under its
+Without streaming, texture memory is the one large VRAM consumer with no
+ceiling. The [Memory Budget](../engine/memory-budget.md) page states the
+owner's frame (the dev card, the ray-tracing minimum card and the
+whole-renderer target, in its opening paragraph and under its
 [VRAM Rough Budget](../engine/memory-budget.md#vram-rough-budget-rtx-4070-ti-typical-fnv-interior)
 table); the minimum card is the one this feature exists for. Static
 BLAS residency is held to a fixed budget with LRU eviction
-([Memory Budget § LRU eviction](../engine/memory-budget.md#lru-eviction));
-textures are uploaded as full mip chains and stay resident until the last
-cell that references them unloads
-([Memory Budget § Texture Registry](../engine/memory-budget.md#texture-registry)).
+([Memory Budget § LRU eviction](../engine/memory-budget.md#lru-eviction)).
+With streaming off, the default at HEAD on 2026-11-25
+(`render.texture_streaming`, `crates/core/src/settings/builtin.rs`),
+textures are uploaded as full mip chains, stay resident until the last cell
+that references them unloads
+([Memory Budget § Texture Registry](../engine/memory-budget.md#texture-registry))
+and have no byte ceiling; with it on, the pool of §5.5 bounds them.
 The rough budget's texture row is the content row with the widest
 typical-to-peak spread in bytes
-([Memory Budget § VRAM Rough Budget](../engine/memory-budget.md#vram-rough-budget-rtx-4070-ti-typical-fnv-interior)),
-and nothing bounds it.
+([Memory Budget § VRAM Rough Budget](../engine/memory-budget.md#vram-rough-budget-rtx-4070-ti-typical-fnv-interior)).
 
 The feature is for two readers. The player on the minimum card needs exteriors
 and dense interiors (FO4 MedTek, Commonwealth grid-crosses) to fit; the
@@ -102,9 +109,16 @@ texture quality setting (iTexMipMapSkip in Oblivion.ini)", CS wiki,
 `cs-uesp-wiki/(main)/Oblivion XML Reference.wiki`), and its video
 presets set it from 2 (Very Low, Low) through 1 (Medium) to 0 (High, Ultra
 High) (UESP, *Oblivion Mod:Oblivion.ini*, § Video Settings Presets; local
-dump `uesp-wiki/Oblivion Mod/Oblivion.ini.wiki`). The local sources
-document no texture-quality key for the later titles. Redux replaces the
-global skip with a per-texture decision.
+dump `uesp-wiki/Oblivion Mod/Oblivion.ini.wiki`). The GECK wiki's INI list
+for Fallout: New Vegas, which covers used and unused properties, lists
+`iTexMipMapSkip` and `iTexMipMapMinimum` in `[Display]`, each with default
+0 (*INI Settings*, local dump `geckwiki/(main)/INI Settings.wiki`).
+**Phase 0: verify** (Phase 0 has closed, so this is to be filed as an
+issue): whether Fallout: New Vegas reads either key and what each does; a
+source stating their effect, or captures of the original game with each
+value changed, would settle it. A search of the local wiki dumps for
+`iTexMipMapSkip` found it only in the Oblivion pages and that list. Redux
+replaces the global skip with a per-texture decision.
 
 **Corollary that shapes every requirement below: resolution is spent per
 texture, where it is seen, under one byte budget; the floor of every
@@ -126,6 +140,8 @@ budget overrun turn a surface into the missing-texture checker.
 | **Resident range** | The levels `[first_resident, mip_count)` present in GPU memory for one texture. `first_resident = 0` means the full chain |
 | **Wanted mip** | The finest level the streamer wants resident for a texture this update. The term is this document's; Unreal Engine's overview calls the comparable quantities the texture's "ideal" resolution and, after the budget pass, its "planned" one (Epic Games, *Texture Streaming Overview*, <https://dev.epicgames.com/documentation/en-us/unreal-engine/texture-streaming-overview-for-unreal-engine>) |
 | **Mip deficit** | A texture whose resident range is coarser than its wanted mip |
+| **Payload bytes** | A streamed texture's resident levels as its DDS header prices them. The image's allocation runs slightly larger ([design §7.2](../engine/texture-streaming.md#72-eviction-txs-bud-002004--007)) |
+| **Last-wanted frame** | The latest frame in which an instance referencing the texture was in the raster draw list or the TLAS (§5.4). Every texture wanted in one frame has the same last-wanted frame |
 | **Promotion / demotion** | Moving `first_resident` toward level 0 / away from it |
 | **Texture pool budget** | The byte ceiling on the GPU memory that resident texture images may hold (§5.5, decision Q4) |
 | **Holder** | One acquisition of a texture's handle, counted by `TextureEntry::ref_count` (`crates/renderer/src/texture_registry/mod.rs`). The registry calls it a "reference" (#524) and its batch release a "holder-counted" drop (`drop_textures`, `texture_registry/release.rs`) |
@@ -170,30 +186,31 @@ texture in its prior state.
 
 ### 3.3 Inventory at HEAD
 
-The inventory below is the state at HEAD on 2026-11-03 (`8fb9b21d8`),
-re-verified row by row against the code; the only commit since the
-2026-11-01 draft (`66550cf8a`) to touch these files changed no row. It is
-hand-written; Phase 1 replaces the residency rows with the output of
-`tex.residency`, and the [Memory Budget](../engine/memory-budget.md) ledger
-remains the home of the constants.
+The inventory below is the code at HEAD on 2026-11-25 (`25d12ae76`), after
+the Phase 2–4 build; it replaces the pre-build inventory of 2026-11-03,
+which is in this file's history. It is hand-written and describes code, not
+a running session: `tex.residency` (TXS-TEL-001) is the source for
+residency states and byte counts, and the
+[Memory Budget](../engine/memory-budget.md) ledger remains the home of the
+constants. "Streaming" means `render.texture_streaming` is on.
 
 | # | Piece | Today |
 |---|---|---|
 | 1 | DDS parse | `parse_dds` (`crates/renderer/src/vulkan/dds.rs`) clamps the header mip count to the full chain and rejects edges above `MAX_TEXTURE_DIMENSION` |
-| 2 | Upload | `Texture::record_dds_upload` (`crates/renderer/src/vulkan/texture.rs:212`) creates the image with `meta.mip_count` levels and copies every level from one staging buffer; `build_dds_copy_regions` (`texture.rs:590`) walks `dds::mip_size` for every level and layer and returns the byte total from that same walk (#4512). There is no mip-range entry point |
-| 3 | Staging-size check | a short payload is a release error (`ensure!`, #4511, `texture.rs:228`) and the staging buffer is acquired at `dds::total_data_size`; the region total is compared with that size and with the buffer through `debug_assert!` only (`texture.rs:381`–`388`). The live +8 B overrun was traced by #4512 (closed 2026-09-20, `80813026a`) to pooled staging released at the driver-rounded `allocation.size()`, not to region pricing; pool entries now record the requested size |
-| 4 | Batched flush | `TextureRegistry::enqueue_dds_with_clamp*` reserves the slot with a fallback descriptor and `flush_pending_uploads` drains the queue in sub-batches of at most `MAX_UPLOAD_BATCH_BYTES` (`crates/renderer/src/texture_registry/upload.rs`, `mod.rs`) |
-| 5 | Holders and release | `TextureEntry::ref_count`; the last `drop_texture` / `drop_textures` moves the image to the entry's `pending_destroy` ring, redirects the slot to the fallback and purges the path cache (`texture_registry/release.rs`); cell unload calls `drop_textures` (`byroredux/src/cell_loader/unload.rs`) |
-| 6 | Slot space | grow-only: a dropped slot's index is never reused (`release.rs` module doc, #372). #2030 closed (`cae95112`) with the slot telemetry only (`live_slot_count` / `dead_slot_count`); the free-list is tracked as tech debt with no open issue ([Memory Budget § Texture Registry](../engine/memory-budget.md#texture-registry)) |
-| 7 | Texture budget | none. The allocator warns once at 80% of the smallest DEVICE_LOCAL heap (`allocator::approaching_oom_line`). `GpuMemoryBudget` (`crates/renderer/src/vulkan/allocator.rs`) holds the heap sizes from device selection and the last live `VK_EXT_memory_budget` usage and budget, refreshed on the throttled telemetry sample (`VulkanContext::sample_live_memory_budget`, `vulkan/context/telemetry.rs:22`, stored by `app_events.rs:900`); on a driver without the extension the live fields stay `None`. Static BLAS has `MAX_BLAS_BUDGET_BYTES` (`acceleration/constants.rs`) |
-| 8 | Eviction | none for textures; BLAS has `AccelerationManager::evict_unused_blas` (`acceleration/blas_static.rs`) |
-| 9 | Sampling clamp | the material samplers are shared per clamp mode with `min_lod(0.0)` / `max_lod(16.0)` (`material_sampler_info`, `texture_registry/mod.rs`), so no per-texture clamp exists; RT hit shaders sample with explicit `textureLod` (`shaders/include/ray_hit.glsl`), several at level 0 |
-| 10 | BA2 DX10 chunks | `Dx10Chunk` keeps `start_mip` (read only by the order validation) and `end_mip` (`#[allow(dead_code)]`); `Ba2Archive::extract` assembles every chunk behind a reconstructed header (`crates/bsa/src/ba2.rs`) |
-| 11 | BSA and loose | `Archive::extract` (`byroredux/src/asset_provider/archive.rs`) returns the whole file |
-| 12 | CPU prefetch | `PrefetchStore` stages extracted DDS bytes on the stream pool under `STAGED_BYTE_CAP` (`byroredux/src/asset_provider/texture_prefetch.rs`) |
-| 13 | Per-texture derived data | `average_rgb` reads the smallest mip (`dds.rs`); `has_alpha` comes from the format (`format_has_alpha`) |
-| 14 | Telemetry | `tex.loaded` / `tex.missing` count entities and paths (`byroredux/src/commands/assets.rs`); the stats line's `textures=` is `TextureRegistry::len()`, dead slots included (`byroredux/src/app_events.rs`); `ownership_sample.rs` samples `texture_live_slots`; no resident-bytes figure exists |
-| 15 | Image replacement under a held handle | `TextureRegistry::update_rgba` (`texture_registry/mod.rs:862`) replaces the image of a live handle when extent or format changes and retires the old one through `pending_destroy`; it refuses a released handle (#4879). No DDS path replaces an image under a held handle |
+| 2 | Upload | `Texture::record_dds_upload` (`crates/renderer/src/vulkan/texture.rs:595`) takes a first level and creates an image of the levels from it to the end of the chain; `build_dds_copy_regions` (`texture.rs:866`) records their copy regions and returns the byte total of that same walk. A residency change builds a new image and copies the shared levels on the GPU |
+| 3 | Staging-size check | a short payload is a release error (`check_dds_payload`, #4511), and so are copy regions that address past the staging buffer (`check_regions_fit_staging`, `texture.rs:638`). The live +8 B overrun was traced by #4512 (closed 2026-09-20, `80813026a`) to pooled staging released at the driver-rounded `allocation.size()`, not to region pricing |
+| 4 | Batched flush | `TextureRegistry::enqueue_dds_with_clamp*` reserves the slot with a fallback descriptor and `flush_pending_uploads` drains the queue in sub-batches of at most `MAX_UPLOAD_BATCH_BYTES` (`crates/renderer/src/texture_registry/upload.rs`, `mod.rs`). Residency changes queue apart and `flush_pending_promotions` applies them under the per-frame caps in `texture_registry/budget.rs` |
+| 5 | Holders and release | `TextureEntry::ref_count`; the last `drop_texture` / `drop_textures` moves the image to the entry's `pending_destroy` ring, redirects the slot to the fallback, purges the path cache and cancels the handle's queued upload and residency changes (`texture_registry/release.rs`); cell unload calls `drop_textures` (`byroredux/src/cell_loader/unload.rs`) |
+| 6 | Slot space | grow-only: a dropped slot's index is never reused (`release.rs` module doc, #372). #2030 closed with the slot telemetry only (`live_slot_count` / `dead_slot_count`); the free-list is tracked as tech debt ([Memory Budget § Texture Registry](../engine/memory-budget.md#texture-registry)) |
+| 7 | Texture budget | with streaming, `derive_budget` (`texture_registry/budget.rs:92`) takes a fraction of the live `VK_EXT_memory_budget` DEVICE_LOCAL budget, or of the smallest DEVICE_LOCAL heap, less a measured non-texture reserve, or takes the `render.texture_budget_mib` override; `refresh_texture_budget` (`vulkan/context/telemetry.rs:57`) re-derives it. With streaming off no budget is derived. The allocator also warns once at 80% of the smallest DEVICE_LOCAL heap (`allocator::approaching_oom_line`); static BLAS has `MAX_BLAS_BUDGET_BYTES` (`acceleration/constants.rs`) |
+| 8 | Eviction | with streaming, `apply_wanted` (`texture_registry/upload.rs:539`) queues demotions after the hysteresis window and, through `spend_budget`, budget evictions and declines. Its order and its choice of victims do not yet meet TXS-BUD-003 and TXS-BUD-004. Static BLAS has `AccelerationManager::evict_unused_blas` (`acceleration/blas_static.rs`) |
+| 9 | Sampling clamp | the material samplers are shared per clamp mode with `min_lod(0.0)` / `max_lod(16.0)` (`material_sampler_info`, `texture_registry/mod.rs`), so there is no per-texture sampler clamp; each image view spans only its image's levels. Explicit full-chain levels pass through `residentLod` (`shaders/include/bindings.glsl`) with a per-slot first-level table (TXS-RES-009) |
+| 10 | BA2 DX10 chunks | `Ba2Archive::extract` assembles every chunk; `extract_dx10_mips` (`crates/bsa/src/ba2.rs:431`) reads only the chunks that reach a first level, and `dx10_layout` exposes each chunk's range |
+| 11 | BSA and loose | `Archive::extract` (`byroredux/src/asset_provider/archive.rs`) returns the whole file. `extract_texture_floor_or_warn` reads only the last chunk of a multi-chunk 2D BA2 record and everything else whole; `extract_texture_from_or_warn` reads a BA2 DX10 record from a level down and everything else whole |
+| 12 | CPU prefetch | `PrefetchStore` stages DDS bytes on the stream pool under `STAGED_BYTE_CAP` (`byroredux/src/asset_provider/texture_prefetch.rs`); with streaming it stages floor reads |
+| 13 | Per-texture derived data | `average_rgb` reads the smallest mip, and `average_rgb_levels` does so for a payload that starts at a later level (`dds.rs`); `has_alpha` comes from the format (`format_has_alpha`) |
+| 14 | Telemetry | `tex.loaded` / `tex.missing` count entities and paths, and `tex.residency` prints states, classes, bytes, the budget and one texture's state (`byroredux/src/commands/assets.rs`); the stats line's `textures=` is `TextureRegistry::len()`, dead slots included (`byroredux/src/app_events.rs`); `ownership_sample.rs` samples `texture_live_slots` and `texture_resident_bytes` |
+| 15 | Image replacement under a held handle | `TextureRegistry::update_rgba` (`texture_registry/mod.rs:1357`) replaces an RGBA handle's image when extent or format changes; with streaming, promotions and demotions replace a DDS image. Both retire the old image through `pending_destroy` |
 
 ---
 
@@ -204,9 +221,8 @@ remains the home of the constants.
 - **TXS-G-001 — Floor first.** A cell's streamable textures are sampleable at
   their floor no later than the same cell's full chains are today, measured
   by the floor-ready metric (§8).
-- **TXS-G-002 — Bounded texture memory.** Resident texture bytes stay at or
-  under the texture pool budget, floors and **whole** textures excepted
-  (TXS-BUD-002), in every in-scope game's acceptance scenes.
+- **TXS-G-002 — Bounded texture memory.** Resident texture bytes stay within
+  TXS-BUD-002's limit in every in-scope game's acceptance scenes.
 - **TXS-G-003 — No loss at settle.** With the budget not exceeded, a pinned
   camera bench scene settles with zero mip deficits.
 - **TXS-G-004 — No new slots.** Streaming adds no bindless slot: a scene's
@@ -236,9 +252,9 @@ remains the home of the constants.
   Those belong to `tools/texture-upscale` (ROADMAP Known Issue "Offline
   texture-set upscale finalization").
 - **TXS-NG-006.** Reading the original games' INI texture-quality settings.
-  Redux does not honour Oblivion's `iTexMipMapSkip` (§1) or any other
-  title's INI texture-quality key, should one exist; the budget setting
-  replaces them (TXS-BUD-005, §6 row 1).
+  Redux does not honour Oblivion's `iTexMipMapSkip`, the keys the GECK wiki
+  lists for Fallout: New Vegas (§1) or any other title's INI texture-quality
+  key; the budget setting replaces them (TXS-BUD-005, §6 row 1).
 
 ---
 
@@ -259,13 +275,13 @@ remains the home of the constants.
   staging release, not to `dds::mip_size`. The "with it on" half is A5.
 - **TXS-UP-002.** `record_dds_upload` MUST return an error, in release
   builds, when the copy regions address more bytes than the staging buffer
-  holds. Today: `debug_assert!` only (§3.3 row 3).
+  holds. Met at HEAD on 2026-11-25 (§3.3 row 3; the
+  `staging_overrun_is_a_release_error` test).
 - **TXS-UP-003.** The upload path MUST accept a mip range
   `[first, mip_count)` of a parsed DDS and record copy regions for exactly
   those levels, with the staging size taken from the same walk that builds
-  the regions. Today: every upload covers every level, and
-  `build_dds_copy_regions` already returns its walk's byte total (§3.3
-  row 2).
+  the regions. Met at HEAD on 2026-11-25 (§3.3 row 2; the
+  `copy_regions_for_mip_range_match_staging` test).
 - **TXS-UP-004.** A promotion's upload MUST go through the same staging pool
   and the same `MAX_UPLOAD_BATCH_BYTES` sub-batch bound as a cell-load
   flush; it MUST NOT add a second staging retention budget.
@@ -275,16 +291,18 @@ remains the home of the constants.
 - **TXS-SRC-001.** The BA2 DX10 reader MUST expose an extraction of the
   chunks covering a requested mip range, returning their bytes and the
   covered `start_mip`/`end_mip`, without decompressing any other chunk of
-  the record. Today: `end_mip` is dead code and `extract` assembles every
-  chunk (§3.3 row 10). Archive2, the FO4 Creation Kit archiver, splits a DDS
-  into at most `-maxChunkCount` chunks (default 4) and gives a mip its own
-  chunk when it is at least `-singleMipChunkX` × `-singleMipChunkY`
-  (default 512 × 512) (Fallout 4 CK wiki, *Archive2*, local dump
+  the record. At HEAD on 2026-11-25 `extract_dx10_mips` returns the bytes
+  and the covered first level, and the payload runs to the end of the chain
+  (§3.3 row 10; the `dx10_extract_mip_range_reads_only_tail_chunks` test).
+  Archive2, the FO4 Creation Kit archiver, splits a DDS into at most
+  `-maxChunkCount` chunks (default 4) and gives a mip its own chunk when it
+  is at least `-singleMipChunkX` × `-singleMipChunkY` (default 512 × 512)
+  (Fallout 4 CK wiki, *Archive2*, local dump
   `falloutck-uesp-wiki/(main)/Archive2.wiki`). The Phase 0 census (A4,
   [design §2.1](../engine/texture-streaming.md#21-ba2-dx10-chunk-layout-txs-src-001-a4))
-  confirms it on every multi-chunk vanilla record: one level per head
-  chunk, the rest of the chain in the last chunk, which tops out at 256 px
-  for 97.5 % of FO4's and 89.4 % of Starfield's.
+  confirms it on every multi-chunk vanilla record, one level per head chunk
+  and the rest of the chain in the last chunk, and records how large the
+  last chunk's top level is.
 - **TXS-SRC-002.** For a BSA texture the provider MUST serve the floor's
   bytes from one extraction of the file. A BSA file is stored either raw or
   as one zlib (v103/v104) or LZ4 (v105) block, with a per-file inversion of
@@ -317,10 +335,10 @@ remains the home of the constants.
 - **TXS-RES-003.** The image view written into a texture's bindless slot
   MUST address no level outside that texture's resident range, so no
   sampling path, raster or RT hit, can read a non-resident level. A
-  Vulkan-free registry test (new, `slot_view_covers_only_resident_range`)
+  Vulkan-free registry test (`slot_view_covers_only_resident_range`)
   checks the view's level range against the resident range after a
-  promotion and after a demotion. Today every image exposes all of its
-  levels because every level is resident. The mechanism is decision Q1.
+  promotion and after a demotion; it exists at HEAD on 2026-11-25. The
+  mechanism is decision Q1.
 - **TXS-RES-004.** A replaced image MUST retire through the entry's
   `pending_destroy` ring with the existing `MAX_FRAMES_IN_FLIGHT` aging
   ([Memory Budget § Deferred-Destroy Queue](../engine/memory-budget.md#deferred-destroy-queue));
@@ -330,19 +348,27 @@ remains the home of the constants.
 - **TXS-RES-005.** The classes in §3.2 marked **whole** MUST be uploaded
   whole, and `tex.residency` MUST print the count and bytes of each class.
 - **TXS-RES-006.** `avg_rgb` and `has_alpha` MUST be available from the
-  floor upload and MUST NOT change on promotion. A `dds.rs` unit test (new,
-  `average_rgb_from_floor_matches_full_chain`) checks that `average_rgb`
-  over a floor's bytes equals it over the whole file. Today `average_rgb`
-  already reads the smallest mip, but locates it by walking from the file's
-  data offset over every larger level (§3.3 row 13).
+  floor upload and MUST NOT change on promotion. A `dds.rs` unit test
+  (`average_rgb_from_floor_matches_full_chain`) checks that the average
+  over a floor's bytes equals it over the whole file; at HEAD on 2026-11-25
+  `average_rgb_levels` takes the first level present (§3.3 row 13).
 - **TXS-RES-007.** When the last holder drops, every resident level MUST be
   released in that drop, whatever the residency state, and a promotion still
   queued or in flight for that handle MUST be cancelled, as #4879 does for a
   queued first upload today (`release_ref`). A Vulkan-free registry test
   (new, `last_drop_cancels_queued_promotion`) checks it.
 - **TXS-RES-008.** Disabling streaming with one switch (a setting, decision
-  Q5) MUST restore today's full-chain upload, so every A/B in §7.2 has a
-  same-binary control.
+  Q5) MUST restore the full-chain upload used before M39, so every A/B in
+  §7.2 has a same-binary control.
+- **TXS-RES-009.** On a streamed texture, a sample with an explicit level
+  counted from the full chain MUST read that chain level when it is
+  resident, and otherwise the finest resident level. At HEAD on 2026-11-25
+  the shaders pass such levels through `residentLod` (`f754eee28`;
+  [design §3.2](../engine/texture-streaming.md#32-states-and-transitions)).
+  The `explicit_bindless_lods_are_view_relative_under_streaming` test holds
+  every `textureLod` and `texelFetch` on the 2D bindless array, in every
+  shader source, to level 0, `residentLod` or a reviewed exception. A11 is
+  the on-screen check.
 
 ### 5.4 Wanted mip (`TXS-WANT`)
 
@@ -364,36 +390,56 @@ remains the home of the constants.
   load-priority criterion Unreal documents, "Load visible mips first" (Epic
   Games, *Texture Streaming Overview*).
 - **TXS-WANT-005.** A texture MUST NOT be demoted within a hysteresis window
-  of its last promotion; the window is design-owned and printed by
-  `tex.residency`. The churn counter (TXS-TEL-002) MUST read zero on a
-  pinned-camera bench.
+  of its last promotion, with one exception: over budget, TXS-BUD-003 MAY
+  demote such a texture when no texture outside its window is above its
+  floor. The window is design-owned and printed by `tex.residency`. The
+  churn counter (TXS-TEL-002) MUST read zero on a pinned-camera bench whose
+  budget is not exceeded.
 
 ### 5.5 Budget and eviction (`TXS-BUD`)
 
-- **TXS-BUD-001.** The texture pool budget MUST be one number of bytes,
-  logged once at renderer start with its derivation (decision Q4) and
-  printed by `tex.residency`.
-- **TXS-BUD-002.** Resident texture bytes MUST stay at or under the budget,
-  except that floors and **whole** textures are never evicted; when they
-  alone exceed the budget a single warning line MUST name both totals.
-- **TXS-BUD-003.** Over budget, the streamer MUST demote the textures with
-  the oldest last-wanted frame first, one level per demotion, never below
-  the floor. Unreal's overview describes its budget pass as "dropping one
-  mip at a time, until the planned solution gets under budget", with the
-  rule "Drop mips that are not visible, dropping the last recently seen
-  first" (Epic Games, *Texture Streaming Overview*).
+- **TXS-BUD-001.** The texture pool budget MUST be one number of bytes.
+  While streaming is on it MUST be logged with its derivation (decision Q4)
+  at the first derivation and on each change of source, and `tex.residency`
+  MUST print it.
+- **TXS-BUD-002.** The streamer MUST plan against the budget with each
+  streamed texture counted at its payload bytes and each **whole** texture
+  at its allocation size. The resident texture bytes `tex.residency` prints
+  (allocation sizes, retiring images excluded) MUST stay at or under 1.03
+  times the budget. Floors and **whole** textures are never evicted; when
+  they alone exceed the budget, every streamed texture MUST be brought to
+  its floor, and a single warning line MUST name both totals.
+- **TXS-BUD-003.** Over budget, the streamer MUST demote textures outside
+  TXS-WANT-005's window before textures inside it, and within each group
+  the oldest last-wanted frame first. Textures with the same last-wanted
+  frame MUST first give up levels finer than they are wanted, then wanted
+  levels; in each of those two stages each of them gives up one level before
+  any gives up a second. The plan MUST drop one level at a time until it
+  fits the budget, never below a floor; the levels planned for one texture
+  MAY be applied as one image replacement. Unreal's overview describes its
+  budget pass as "dropping one mip at a time, until the planned solution
+  gets under budget", with the rule "Drop mips that are not visible,
+  dropping the last recently seen first" (Epic Games, *Texture Streaming
+  Overview*). Not met at HEAD on 2026-11-25: `spend_budget`
+  (`texture_registry/upload.rs`) takes levels finer than wanted from
+  textures of every age and window before any wanted level, and takes all it
+  can from one texture before the next.
 - **TXS-BUD-004.** A promotion that would exceed the budget MUST first
-  evict per TXS-BUD-003 and MUST be declined when eviction cannot make room,
-  leaving the texture in its state and counting the decline.
+  evict, in TXS-BUD-003's order, only from textures whose last-wanted frame
+  is strictly older than the promoted texture's and that are outside
+  TXS-WANT-005's window. It MUST be declined when that cannot make room: a
+  declined promotion evicts nothing, leaves the texture in its state and is
+  counted. Not met at HEAD on 2026-11-25: `spend_budget` evicts for a
+  promotion any texture resident finer than it is wanted, whatever its age,
+  including one inside its window.
 - **TXS-BUD-005.** The budget MUST be overridable through one registered
   setting in `SettingsRegistry` (`crates/core/src/settings/`), so the
   minimum card can be emulated on the dev card and presets in
   `assets/graphics_presets.toml` can move it
   ([Launcher § 4.3](../engine/launcher.md#43-presets-and-hardware-pre-flight)).
-  Today `core::settings::builtin` registers five `render.*` settings
-  (`render.upscaler` and four terrain knobs, `builtin.rs:31`–`57`); none is a
-  texture setting, and `render.upscaler` is the only one the shipped
-  presets move.
+  At HEAD on 2026-11-25 `core::settings::builtin` registers it as
+  `render.texture_budget_mib`, beside the `render.texture_streaming` switch,
+  and the shipped presets set neither.
 - **TXS-BUD-006.** Promotion upload bytes per frame MUST be capped by a
   design-owned constant, and the cap MUST appear in the
   [Memory Budget](../engine/memory-budget.md) ledger with a ledger test of
@@ -416,9 +462,14 @@ remains the home of the constants.
 - **TXS-TEL-002.** A per-session bench line (new, `tex-stream:`) MUST carry
   resident bytes (current and peak), promotions, demotions, evictions,
   declines, churn and the floor-ready time of the last cell load.
-- **TXS-TEL-003.** `ownership_sample.rs` MUST sample resident texture bytes
-  beside `texture_live_slots`, so `m-exteriors.sh soak` gates their return
-  to baseline with the other owners.
+- **TXS-TEL-003.** `ownership_sample.rs` MUST sample resident texture bytes,
+  live and retiring, beside `texture_live_slots`, and `m-exteriors.sh soak`
+  MUST fail when the figure rises on every cycle and by more than 1% of its
+  first sample. It is not held to an exact return, because with streaming
+  the bytes follow the camera
+  ([design §9](../engine/texture-streaming.md#9-telemetry-txs-tel)). At HEAD
+  on 2026-11-25 this is the `Occupancy` policy
+  (`crates/core/src/ecs/resources/ownership.rs`).
 - **TXS-TEL-004.** The [Memory Budget](../engine/memory-budget.md) Texture
   Registry section MUST describe the pool, its budget and its eviction, and
   its "no explicit texture-count eviction policy" paragraph MUST be
@@ -435,7 +486,8 @@ remains the home of the constants.
 | 3 | An Oblivion menu texture exported with a mip count of 1 instead of 0 shows corrupted pixels below maximum texture quality (CS wiki, *Oblivion XML Reference*) | Single-mip files are **whole** and always full resolution | The header hex-edit workaround the CS wiki describes | Large single-mip files bypass streaming → counted against the budget and reported by class (TXS-RES-005, TXS-BUD-002) |
 | 4 | FO4 BA2 textures are split into mip chunks by Archive2 (CK wiki) | The last chunk is read first as the floor (TXS-SRC-001) | — | A mod archive built with `-maxChunkCount 1` or unusual chunk settings has no separate tail → whole-file fallback, counted (TXS-SRC-004) |
 | 5 | Engine-internal: RT hits sample explicit LODs, some at level 0 (`ray_hit.glsl`) | Off-screen surfaces seen by rays may hold coarser mips than raster would | — | Blurrier reflections or alpha-tested shadow cutouts of off-screen objects → TXS-WANT-002 and the Phase 2 reflection A/B |
-| 6 | Engine-internal: a held DDS texture's image is never replaced; only `update_rgba` replaces a held image, for engine-generated RGBA (§3.3 row 15) | DDS images are replaced on promotion and demotion, on the same `pending_destroy` path `update_rgba` uses | — | Use-after-free of a retiring image → deferred destroy ring and validation-clean soak (TXS-RES-004, A9); VRAM held by retiring images → counted and printed apart (TXS-TEL-001) |
+| 6 | Engine-internal: with streaming off, a held DDS texture's image is not replaced; only `update_rgba` replaces a held image, for engine-generated RGBA (§3.3 row 15) | DDS images are replaced on promotion and demotion, on the same `pending_destroy` path `update_rgba` uses | — | Use-after-free of a retiring image → deferred destroy ring and validation-clean soak (TXS-RES-004, A9); VRAM held by retiring images → counted and printed apart (TXS-TEL-001) |
+| 7 | Engine-internal: shaders count some explicit levels from the full chain (reflection blur, refraction floor, glass blurs) | A streamed image starts at its first resident level | — | The same level number reads a coarser chain level than on the fully resident texture → TXS-RES-009 |
 
 ---
 
@@ -474,22 +526,39 @@ the TXS-RES-008 switch as its control. Release builds need
 | A3 | Handle stability | new Vulkan-free registry test `promotion_keeps_handle_and_slot_count` | none | TXS-RES-002 holds |
 | A4 | Chunk-layout census | new example `crates/bsa/examples/ba2_mip_chunk_census.rs` | vanilla FO4 and Starfield texture BA2s | every DX10 record classified (floor-readable / whole fallback) |
 | A5 | Staging overrun stays closed | the long-run command Phase 0 records (TXS-UP-001), `BYRO_VALIDATION=1`, streaming off and on | the game and cell Phase 0 records | zero "exceeds VkBuffer total size" messages in both runs |
-| A6 | Floor first | `--bench-hold` on FO4 `--cell MedTekResearch01` and Starfield `--cell citycydoniamainlevel`, then `byro-dbg` `tex.residency` | FO4, Starfield | floor-ready time ≤ control's full-chain flush time; zero **reserved** after the flush |
-| A7 | Settle | same scenes, pinned camera, `tex.residency` after settle | FO4, Starfield; Wave 2 adds FNV GSProspectorSaloonInterior, Skyrim WhiterunBanneredMare | zero deficits; zero churn; `textures=` equals control |
-| A8 | Budget clamp | same scenes with the TXS-BUD-005 setting lowered below the control's resident bytes (`BYROREDUX_SETTINGS_PATH` isolated) | FO4, Starfield | resident ≤ budget + floors + whole; `tex.missing` unique count equals control |
-| A9 | Streaming soak | `docs/smoke-tests/m-exteriors.sh fo4 soak` (existing script; Phase 3 adds the TXS-TEL-003 owner) | FO4 Commonwealth | resident texture bytes return to baseline each cycle; zero validation errors under `BYRO_VALIDATION=1` |
-| A10 | Long session | `docs/smoke-tests/p5-soak.sh fnv` (existing; FNV is the only game that declares the route; Phase 4 adds a `tex.residency` probe before shutdown) | FNV | passes as today, with the session-peak resident bytes, less floors and **whole**, at or under the budget (TXS-BUD-002) |
-| A11 | Reflection A/B | pinned mirror-like pose chosen in Phase 2, `screenshot` with streaming on and off | FO4 | pixel delta within the control's run-to-run noise |
+| A6 | Floor first | `--bench-hold` on `--cell` FO4 `MedTekResearch01` and Starfield `citycydoniamainlevel`; Wave 2 adds FNV `GSProspectorSaloonInterior`, Skyrim `WhiterunBanneredMare`, Oblivion `AnvilHeinrichOakenHallsHouse` and FO3 `MegatonMoriartysSaloon`; then `byro-dbg` `tex.residency` | the six games named | floor-ready time ≤ control's full-chain flush time; zero **reserved** after the flush |
+| A7 | Settle | A6's FO4 and Starfield scenes, pinned camera, `tex.residency` after settle; Wave 2 adds its FNV and Skyrim scenes | FO4, Starfield, FNV, Skyrim SE | zero deficits; zero churn; `textures=` equals control |
+| A8 | Budget clamp | A6's scenes with the TXS-BUD-005 setting below the scene's streaming-on resident bytes and above its floors plus **whole** textures (`BYROREDUX_SETTINGS_PATH` isolated); where a scene leaves no such value, a denser cell replaces it and the design records the cell | the six games of A6 | resident within TXS-BUD-002's limit; `tex.missing` unique count equals control |
+| A9 | Streaming soak | `docs/smoke-tests/m-exteriors.sh fo4 soak` (existing script) | FO4 Commonwealth | the whole script passes, #6632's `physics_bodies` failure not excepted; resident texture bytes pass TXS-TEL-003's growth check; zero validation errors under `BYRO_VALIDATION=1` |
+| A10 | Long session | `docs/smoke-tests/p5-soak.sh fnv` (existing; FNV is the only game that declares the route) with its `tex.residency` probe before shutdown | FNV | passes as today, with the session-peak resident bytes within TXS-BUD-002's limit. At HEAD on 2026-11-25 the probe compares the bytes above floors and **whole** with the budget and has to change |
+| A11 | Reflection A/B | `--bench-mode renderer-static` captures at the most reflective FO4 pose found, streaming on and off, at least three runs of each; the design records the cell, camera pose and frame count before the judged runs | FO4 | the measure below |
+
+**A11 measure.** The *reflection mask* is the set of pixels that, between a
+streaming-off capture with `DBG_DISABLE_REFLECTION_GLASS_RAYS` set and one
+without it, differ by more than the same pixel differs between any two
+streaming-off captures without it. The flag covers reflection, glass,
+fire-refraction and window-portal queries
+(`crates/renderer/src/shader_constants_data.rs`). A pose qualifies when the
+mask holds at least 1% of the frame's pixels. The difference of a pair of
+captures over a pixel set is the mean absolute per-pixel difference on a
+0–255 scale. Inside and outside the mask, the *excess* is the mean over all
+on/off pairs less the mean over all pairs from the same setting. The *run
+variation* is the largest less the smallest in-mask difference among the
+same-setting pairs. A11 passes when the excess inside the mask less the
+excess outside it is no larger than the run variation. It has not been run
+under this measure.
 
 ---
 
 ## 8. Metrics
 
-Definitions and granularity only. The numbers go in a new texture-streaming
-row set in ROADMAP's bench-of-record section, measured per
-[ROADMAP § How to run a bench](../../ROADMAP.md#how-to-run-a-bench), with
-their repro command in ROADMAP's repro table, and the constants in
-[Memory Budget](../engine/memory-budget.md).
+Definitions and granularity only. The current numbers, dated, live in
+ROADMAP's [Texture streaming table](../../ROADMAP.md#texture-streaming-m39),
+with their repro command in ROADMAP's repro table; the
+[design](../engine/texture-streaming.md#12-measured-results-2026-11-04) links
+to it and keeps the dated record of the Phase 2–4 runs. Measurements follow
+[ROADMAP § How to run a bench](../../ROADMAP.md#how-to-run-a-bench), and the
+constants live in [Memory Budget](../engine/memory-budget.md).
 
 | Metric | Definition | Granularity |
 |---|---|---|
@@ -497,7 +566,7 @@ their repro command in ROADMAP's repro table, and the constants in
 | Settle time | camera stop → no promotion queued or in flight | per scene, pinned pose |
 | Deficit rate | textures with a deficit ÷ streamable textures with a holder, at settle | per scene |
 | Resident texture bytes | sum of resident levels' allocation sizes, current and session peak | per scene, per soak cycle |
-| Budget adherence | peak (resident − floors − whole) ÷ budget | per scene, per budget setting |
+| Budget adherence | peak resident texture bytes ÷ budget; TXS-BUD-002 sets the limit | per scene, per budget setting |
 | Churn | demotions within the hysteresis window of a promotion | per bench run |
 | Promotion bandwidth | promotion upload bytes per frame, p99 | per bench run |
 | Fallback whole-file reads | DX10 records read whole ÷ DX10 records resolved | per game |
@@ -540,19 +609,20 @@ TXS-RES-007 name pass, and A9 runs validation-clean with the forced
 sequence.
 
 **Phase 2 — Wave 1: BA2 floor first and on-demand promotion.** TXS-SRC-001,
-TXS-SRC-003, TXS-SRC-004, TXS-SRC-005, TXS-RES-001, TXS-WANT-001…005,
+TXS-SRC-003, TXS-SRC-004, TXS-SRC-005, TXS-RES-001, TXS-RES-009,
+TXS-WANT-001…005,
 TXS-TEL-002. Exit: A2 passes, A6 and A7 pass on FO4 and Starfield, A11
 passes on FO4, and the floor-ready and settle rows are published in
 ROADMAP.
 
 **Phase 3 — Budget and eviction.** TXS-BUD-001…007, TXS-TEL-003, TXS-TEL-004.
-Exit: A8 passes at two budget settings on FO4 and Starfield, A9 passes with
-the new owner, and the budget-adherence row is published.
+Exit: A8 passes at two budget settings on FO4 and Starfield, A9 passes, and
+the budget-adherence row is published.
 
 **Phase 4 — Wave 2: BSA games.** TXS-SRC-002 for Oblivion, FO3, FNV and
 Skyrim SE, per the Q2 (b) decision. Exit: A6–A8 pass on FNV and Skyrim SE,
-A10 passes on FNV, A6 passes on Oblivion and FO3, and streaming is on by
-default for every in-scope game.
+A6 and A8 pass on Oblivion and FO3, A10 passes on FNV, and streaming is on
+by default for every in-scope game.
 
 ---
 
@@ -647,6 +717,12 @@ default for every in-scope game.
    non-texture rows, recomputed at the throttled telemetry sample, falling
    back to the same fraction of the smallest DEVICE_LOCAL heap; benches pin
    it through the TXS-BUD-005 override.
+   **Amended** (2026-11-25, owner): the reserve is measured instead of summed
+   from ledger rows. It is the device-local bytes the process holds that are
+   not texture images, plus the room static BLAS may still take under its own
+   budget
+   ([design §7.1](../engine/texture-streaming.md#71-budget)). The rest of the
+   decision stands.
 5. **Q5 — User-facing settings.** Depends on Q4. Recommended: two
    registered settings — the budget override (TXS-BUD-005), whose default
    means "use Q4's derivation", and the streaming on/off switch
@@ -672,6 +748,7 @@ default for every in-scope game.
 
 | Need | Go to |
 |---|---|
+| Residency states, wanted-mip rule, budget arithmetic, eviction order, Phase 0 census, run records | [texture-streaming.md](../engine/texture-streaming.md) |
 | VRAM targets, texture registry slots, staging pool, BLAS LRU precedent | [memory-budget.md](../engine/memory-budget.md) |
 | Prefetch store and its cap | [memory-budget.md § Texture Prefetch Store](../engine/memory-budget.md#texture-prefetch-store-cpu-side), [archives.md § Texture prefetch](../engine/archives.md#texture-prefetch) |
 | DX10 chunk record layout, DDS reconstruction | [archives.md](../engine/archives.md#dds-header-reconstruction) |
@@ -700,3 +777,5 @@ default for every in-scope game.
 | 5 | 2026-11-03 | → ACTIVE: parent #6626 and phase issues #6627–#6631 filed, `**Tracking**:` line added; the Phase 0 verify items are acceptance criteria of #6627 | — |
 | 6 | 2026-11-03 | Phase 0 results folded in: TXS-UP-001 verified clean with its recorded command and the BC2 Known Issue closed (#4512); TXS-SRC-001's chunk census cited from the design; Phase 0 exit marked met | — |
 | 7 | 2026-11-04 | Phases 2–4 built and measured (ROADMAP § Texture streaming): the budget derivation measures the non-texture reserve instead of summing ledger rows (design §7.1), the per-frame cap is 32 MiB and 64 changes, and a deferred-descriptor replay hazard that streaming exposed is fixed. Open gates, none waived: Starfield A6–A8 not run, A11's on/off delta exceeds the equal-arm noise, A9 on FO4 hard-fails on an unrelated owner, the default is not flipped | — |
+| 8 | 2026-11-25 | Review round 3 folded in with the owner's answers of the same day: §3.3 and the claims about HEAD re-measured after the Phase 2–4 build; the Fallout: New Vegas texture-quality keys (§1, TXS-NG-006); budget limit of payload accounting and 1.03 times the budget (TXS-BUD-002, TXS-G-002, §8); eviction order, promotion victims and the window exception (TXS-BUD-003, -004, TXS-WANT-005), not yet met by the code; budget logging (TXS-BUD-001); soak growth rule with A9 still requiring the whole script (TXS-TEL-003, A9); Q4's measured reserve; A8 on all six games, the A10 limit and the A11 measure; TXS-RES-009 added; metric home, document map and links | claude: revise |
+| 9 | 2026-11-25 | Revision 8's text approved: the reworded requirements, TXS-RES-009, the Q4 amendment, and the wording for the A11 measure and its 1% mask minimum, the hysteresis window against promotion victims, the order among eviction ties and the budget limit | owner: approved |
