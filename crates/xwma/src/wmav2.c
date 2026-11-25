@@ -4,10 +4,16 @@
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
+#include <libavutil/log.h>
 #include <libavutil/mem.h>
 
 /* A WMA v2 superframe contains at most 15 codec frames of 2,048 PCM frames each. */
 enum { MAX_SUPERFRAME_FRAMES = 15 * 2048 };
+
+void byro_xwma_log_errors_only(void)
+{
+    av_log_set_level(AV_LOG_ERROR);
+}
 
 AVCodecContext *byro_xwma_context_alloc(void)
 {

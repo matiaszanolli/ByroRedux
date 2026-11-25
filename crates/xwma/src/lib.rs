@@ -1,4 +1,8 @@
 //! Bounded RIFF xWMA parsing and incremental WMA v2 decoding.
+//!
+//! The first native decoder open sets FFmpeg's process-wide log level to
+//! errors once. This only filters native diagnostics. PCM output and decoder
+//! return values are unaffected.
 
 mod codec;
 mod riff;

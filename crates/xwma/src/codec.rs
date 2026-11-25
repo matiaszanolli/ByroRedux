@@ -3,6 +3,7 @@ use std::{
     io::Read,
     ops::Range,
     ptr::{self, NonNull},
+    sync::Once,
 };
 
 use crate::{Error, MAX_CHUNK_FRAMES, MAX_CHUNK_SAMPLES, Metadata, riff::Stream};
@@ -24,6 +25,7 @@ struct AVFrame {
 }
 
 unsafe extern "C" {
+    fn byro_xwma_log_errors_only();
     fn byro_xwma_context_alloc() -> *mut AVCodecContext;
     fn byro_xwma_context_open(
         ctx: *mut AVCodecContext,
@@ -59,6 +61,13 @@ struct Context(NonNull<AVCodecContext>);
 
 impl Context {
     fn open(stream: &Stream) -> Result<Self, Error> {
+        static INIT_LOG_LEVEL: Once = Once::new();
+        // Playable WMA packets can trigger thousands of warnings on stderr.
+        // Set the linked library's global level before any decoder uses it.
+        INIT_LOG_LEVEL.call_once(|| {
+            // SAFETY: the shim takes no arguments and Once serializes initialization.
+            unsafe { byro_xwma_log_errors_only() };
+        });
         // SAFETY: the shim takes no arguments and transfers ownership on success.
         let raw = unsafe { byro_xwma_context_alloc() };
         let ctx = Self(NonNull::new(raw).ok_or(Error::Allocation("AVCodecContext"))?);
