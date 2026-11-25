@@ -177,6 +177,8 @@ pub struct WorldspaceRecord {
     /// Default music FormID (ZNAM, MUSC record). `None` when the
     /// worldspace defers to the DefaultObjectManager music.
     pub default_music: Option<u32>,
+    /// Skyrim / Fallout 4 `XLCN`, the worldspace's authored location.
+    pub location_form: Option<u32>,
     /// Oblivion `SNAM` — the worldspace's music category (`0` Default, `1` Public, `2` Dungeon), the
     /// raw enum. `None` on other games and where unauthored (Game Music MUS-SRC-008, #6870).
     pub music_category: Option<u32>,

@@ -74,6 +74,7 @@ pub mod carried {
     pub const MASTER_SPECIAL: u16 = 1 << 9;
     pub const ADDED_SPECIAL: u16 = 1 << 10;
     pub const REMOVED_SPECIAL: u16 = 1 << 11;
+    pub const MUSIC: u16 = 1 << 12;
 }
 
 /// One parsed `LCTN`.
@@ -86,6 +87,8 @@ pub struct LctnRecord {
     pub keywords: Vec<u32>,
     /// `PNAM` parent location, `None` at the top of the hierarchy.
     pub parent: Option<u32>,
+    /// Skyrim / Fallout 4 `NAM1`, the location's music type.
+    pub music: Option<u32>,
     /// The Master tables (`LC*`).
     pub master: LctnRefTables,
     /// The Added tables (`AC*`).
@@ -143,6 +146,7 @@ impl LctnRecord {
             full_name: if has(FULL) { self.full_name.clone() } else { previous.full_name.clone() },
             keywords: pick(KEYWORDS, &self.keywords, &previous.keywords),
             parent: if has(PARENT) { self.parent } else { previous.parent },
+            music: if has(MUSIC) { self.music } else { previous.music },
             carried: self.carried | previous.carried,
             ..Default::default()
         };
@@ -198,6 +202,13 @@ pub fn parse_lctn(
                 if sub.data.len() >= 4 {
                     let parent = remap_fid(r.u32_or_default(), remap);
                     out.parent = (parent != 0).then_some(parent);
+                }
+            }
+            b"NAM1" if matches!(game, GameKind::Skyrim | GameKind::Fallout4) => {
+                if let Ok(form) = r.u32() {
+                    out.carried |= MUSIC;
+                    let form = remap_fid(form, remap);
+                    out.music = (form != 0).then_some(form);
                 }
             }
             // {ref, cell/world, grid y i16, grid x i16}
@@ -400,5 +411,13 @@ mod tests {
         // A group the partial form does carry replaces the earlier one, even when empty.
         let renamed = parse_lctn(7, &[edid("CityNewAtlantis"), sub(b"KSIZ", words(&[0]))], &None, GameKind::Starfield);
         assert!(renamed.overlaid_on(&master).keywords.is_empty());
+    }
+
+    #[test]
+    fn partial_locations_inherit_music_unless_the_override_supplies_nam1() {
+        let parse = |subs: &[SubRecord]| parse_lctn(7, subs, &None, GameKind::Skyrim);
+        let master = parse(&[sub(b"NAM1", words(&[0x51]))]);
+        assert_eq!(parse(&[]).overlaid_on(&master).music, Some(0x51));
+        assert_eq!(parse(&[sub(b"NAM1", words(&[0]))]).overlaid_on(&master).music, None);
     }
 }

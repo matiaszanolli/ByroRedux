@@ -75,6 +75,8 @@ pub(crate) enum Outcome {
 pub(crate) struct Directive {
     pub(crate) source: Source,
     pub(crate) content: Content,
+    /// Authored music-type priority, with smaller PNAM values taking precedence.
+    pub(crate) priority: Option<u16>,
     pub(crate) looping: bool,
     /// Linear level, before the music volume.
     pub(crate) level: f32,
@@ -115,6 +117,7 @@ impl Directive {
         Self {
             source,
             content,
+            priority: None,
             looping: false,
             level: 1.0,
             fade_secs: 0.0,
@@ -173,6 +176,22 @@ impl MusicFiles {
 
     pub(crate) fn len(&self) -> usize {
         self.keys.len()
+    }
+
+    /// A MUST names a Data path, often a source WAV shipped in the archive as xWMA.
+    pub(crate) fn resolve_track(&self, path: &str) -> Content {
+        let path = path.trim().replace('/', "\\").to_ascii_lowercase();
+        let relative = path.trim_start_matches('\\');
+        let relative = relative.strip_prefix("data\\").unwrap_or(relative);
+        let relative = relative.strip_prefix("music\\").unwrap_or(relative);
+        let authored = self.resolve(relative);
+        if matches!(authored, Content::Missing(_))
+            && let Some(stem) = relative.strip_suffix(".wav")
+            && let fallback @ Content::Playlist(_) = self.resolve(&format!("{stem}.xwm"))
+        {
+            return fallback;
+        }
+        authored
     }
 
     /// A path relative to `Data\Music` as a directive's content: one file; a folder form's playable

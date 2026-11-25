@@ -42,6 +42,7 @@ mod location;
 mod media_location;
 mod media_set;
 mod music;
+pub(crate) use music::parse_named_default_music;
 mod relationship;
 mod magic;
 pub(crate) use magic::oblivion_effect_chain;

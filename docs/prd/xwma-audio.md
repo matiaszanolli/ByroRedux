@@ -1,6 +1,7 @@
 # xWMA Audio Decoding — Product Requirements
 
-**Status**: ACTIVE (2026-11-24). Revision 9 records the owner's decision on the Fallout 4 voice lines over
+**Status**: ACTIVE (2026-11-25). Revision 10 records live exterior and combat music on Skyrim SE and Fallout 4.
+Revision 9 records the owner's decision on the Fallout 4 voice lines over
 the static PCM budget (the 15 `npcfmagnolia` songs): the static limit stays, they belong to the Streamed
 route, and scenario 5 is amended to say so (XWMA-VOX-003). Revision 8 records the build-time FFmpeg fetch and the 627
 short entries measured in Phase 1 slices A to C. Revision 7 files the tracking issues.
@@ -258,12 +259,12 @@ Track*), and whether the behaviour is the same is **Phase 0: verify** in the
 original runtime ([V4 evidence on the shared fields](../engine/xwma-phase0-findings.md#v4--palette-layout-loop-data-and-fallout-4-behavior)).
 
 - **XWMA-MUSC-001.** On Skyrim and Fallout 4 the Location layer MUST translate the
-  sources Phase 0 settles (V5) to a directive that plays, where it reports Unresolved
-  today (`byroredux/src/music/translate.rs:333`). The per-game difference stays in the
-  translate step ([Music](../engine/music.md) §1, R5).
+  sources Phase 0 settles (V5) to a directive that plays. The translate step now resolves
+  the authored sources for single-file tracks. The provisional source order is documented
+  in [Music](../engine/music.md#3-the-location-layer-per-game) (§1, R5).
 - **XWMA-MUSC-002.** When two music types are requested, the one with the higher `PNAM`
-  priority MUST be the audible one ("a Combat music type should always have a relatively
-  high priority in relation to Ambient music", CK wiki, *Music Type*).
+  priority MUST be the audible one (lower numeric value, [Phase 0 V4](../engine/xwma-phase0-findings.md#v4--palette-layout-loop-data-and-fallout-4-behavior)).
+  The controller compares active authored types, and the live gate exercises the combat transition.
 - **XWMA-MUSC-003.** A type flagged Ducks Current Track and playing over a lower-priority
   one MUST attenuate that one by its `ducking_db` over its `fade_secs` (CK wiki, *Music
   Type*, Ducking and Fade Duration).
@@ -349,7 +350,8 @@ digests and counts. A scenario passes when:
    effect and the sound failure listing (XWMA-REP-002) is empty for it.
 4. On a Skyrim exterior cell and a Fallout 4 exterior cell, `music.status` reports Playing
    with a `.xwm` file and an advancing position, and a combat request reports the
-   higher-priority type as audible (XWMA-MUSC-002).
+   higher-priority type as audible (XWMA-MUSC-002). Run the
+   [music smoke](../smoke-tests/xwma-music.sh) for `skyrim_se` and `fo4` with an active audio device.
 5. With `ffmpeg` absent from `PATH`, every vanilla `.fuz` line of both voice archives decodes
    (XWMA-VOX-001) except the 15 `npcfmagnolia` lines over the static budget, which are refused with
    the static-limit reason and listed by `snd.failed` (XWMA-VOX-003): 191,494 of 191,509 lines
@@ -493,3 +495,4 @@ is published for Skyrim and Fallout 4.
 | 7 | 2026-11-24 | APPROVED to ACTIVE: parent #7411 and phase issues #7412 to #7416 filed; the three open Phase 0 verify markers are tracked in #7412; `**Tracking**` line added | — |
 | 8 | 2026-11-24 | Fetch-at-build wording and the 627-entry count folded in after Phase 1 slices A to C; no requirement observable changed | — |
 | 9 | 2026-11-24 | Voice lines over the static budget (owner, Option 1): XWMA-VOX-003 added, scenario 5 amended to 191,494 of 191,509 lines, §3 voice rows and XWMA-VOX-001's Today brought to HEAD (#7415 slices A to C), Phase 3 and the voice metric reworded; no existing requirement's observable changed | — |
+| 10 | 2026-11-25 | Translated authored location and battle types to single-file playlists, applied PNAM priority, and passed the live Skyrim SE and Fallout 4 exterior and combat gates (#7416). | — |

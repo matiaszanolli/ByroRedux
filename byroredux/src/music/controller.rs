@@ -285,8 +285,20 @@ impl MusicController {
     /// What holds `layer` silent now, if anything: the rule [`Self::step`] suspends each layer by,
     /// and the one a battle set's intro and outro obey too (#6928).
     fn suspended_by(&self, layer: Layer, inputs: Inputs) -> Option<&'static str> {
+        if inputs.hold {
+            return Some("Hold");
+        }
         let playing = |layer: Layer| self.state(layer).directive.as_ref().is_some_and(|d| d.outcome() == Outcome::Playing);
         let sting_audible = playing(Layer::Sting) && self.state(Layer::Sting).directive.as_ref().is_some_and(|d| !d.over_music);
+        if layer != Layer::Sting && sting_audible {
+            return Some("Sting");
+        }
+        if matches!(layer, Layer::Battle | Layer::Location) && self.silenced {
+            return Some("a sting's silence");
+        }
+        if layer != Layer::Sting && let Some(winner) = self.music_type_winner() {
+            return (layer != winner).then(|| winner.name());
+        }
         let battle_audible = playing(Layer::Battle);
         // A scripted track replaces the music below it, and a scripted silence (`PlayMusic
         // 1NoMusic`) silences it (MUS-SCR-005, #6899).
@@ -294,15 +306,25 @@ impl MusicController {
         let script_holds = script.is_some_and(|d| matches!(d.outcome(), Outcome::Playing | Outcome::Silent));
         let beside_script = self.state(Layer::Location).directive.as_ref().is_some_and(|d| d.beside_script);
         match layer {
-            _ if inputs.hold => Some("Hold"),
-            // Stopped, not paused: nothing resumes when the sting ends (#6901).
-            Layer::Battle | Layer::Location if self.silenced => Some("a sting's silence"),
-            Layer::Script | Layer::Battle | Layer::Location if sting_audible => Some("Sting"),
             Layer::Battle if script_holds => Some("Script"),
             Layer::Location if script_holds && !beside_script => Some("Script"),
             Layer::Location if battle_audible => Some("Battle"),
             _ => None,
         }
+    }
+
+    fn music_type_winner(&self) -> Option<Layer> {
+        // Authored types share a priority stack. Ties retain the controller's layer order.
+        [Layer::Script, Layer::Battle, Layer::Location].into_iter()
+            .filter_map(|layer| {
+                let directive = self.state(layer).directive.as_ref()?;
+                match directive.outcome() {
+                    Outcome::Playing | Outcome::Silent => directive.priority.map(|priority| (priority, layer)),
+                    Outcome::Unresolved | Outcome::Missing => None,
+                }
+            })
+            .min_by_key(|(priority, _)| *priority)
+            .map(|(_, layer)| layer)
     }
 
     fn step_battle(&mut self, inputs: Inputs, battle: impl FnOnce() -> Directive, out: &mut dyn MusicOutput) {
@@ -508,6 +530,26 @@ pub(crate) mod tests {
     use super::*;
     use crate::music::directive::Source;
     use std::collections::HashMap;
+
+    #[test]
+    fn authored_priority_can_keep_location_audible_or_switch_to_battle() {
+        let mut music = MusicController::seeded(1);
+        let mut out = FakeOutput::default();
+        let authored = |file: &str, priority| Directive {
+            priority: Some(priority),
+            ..Directive::new(Source::keyword(file, "test"), Content::Playlist(vec![file.into()]))
+        };
+        music.set(Layer::Location, Some(authored("location", 5)), &mut out);
+        let combat = Inputs { in_combat: true, ..Default::default() };
+        music.step(combat, || authored("combat", 8), &mut out);
+        assert!(music.track(Layer::Battle, &out).is_none());
+        assert_eq!(music.state(Layer::Battle).suspended, Some("Location"));
+
+        music.set(Layer::Location, Some(authored("location", 90)), &mut out);
+        music.step(combat, || unreachable!("the battle request still exists"), &mut out);
+        assert_eq!(music.track(Layer::Battle, &out).unwrap().0, "combat");
+        assert_eq!(music.state(Layer::Location).suspended, Some("Battle"));
+    }
 
     /// AUD-3 — one track that will not play does not silence its playlist: the next one plays, and
     /// only a playlist with no playable track is Missing.

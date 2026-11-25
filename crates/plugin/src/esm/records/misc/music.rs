@@ -216,9 +216,8 @@ pub fn first_playable_track<'a>(
     musc.tracks.iter().find_map(|&form_id| walk(form_id, tracks, 0))
 }
 
-/// The five Fallout 3 / New Vegas default music objects: `DOBJ` `DATA` entries 9 to 13 (xEdit
-/// `wbDefinitionsFO3.pas:5672-5676`, GECK *Default Form*: DefaultMusic, BattleMusic, DefaultDeath,
-/// SuccessMusic, LevelUpMusic), each a `MUSC` FormID; `None` where the slot is null.
+/// Default music objects from `DOBJ`. Fallout 3 / New Vegas use positional `DATA` slots.
+/// Skyrim / Fallout 4 name their defaults with `DNAM` keys.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DefaultMusic {
     pub default: Option<u32>,
@@ -244,6 +243,26 @@ pub fn parse_default_music(subs: &[SubRecord], remap: &Option<FormIdRemap>) -> O
     r.skip_to_or_eof(DOBJ_FIRST_MUSIC_SLOT * 4);
     let mut slot = || Some(remap_fid(r.u32_or_default(), remap)).filter(|&form| form != 0);
     Some(DefaultMusic { default: slot(), battle: slot(), death: slot(), success: slot(), level_up: slot() })
+}
+
+/// Read the Skyrim / Fallout 4 music entries of the named default-object table.
+/// xEdit's TES5 and FO4 DOBJ definitions give the four-character keys.
+pub(crate) fn parse_named_default_music(subs: &[SubRecord], remap: &Option<FormIdRemap>) -> Option<DefaultMusic> {
+    let data = &subs.iter().find(|sub| &sub.sub_type == b"DNAM")?.data;
+    let mut out = DefaultMusic::default();
+    let mut present = false;
+    for entry in data.as_chunks::<8>().0 {
+        let slot = match &entry[..4] {
+            b"DFMS" => &mut out.default,
+            b"BTMS" => &mut out.battle,
+            b"DTMS" => &mut out.death,
+            _ => continue,
+        };
+        present = true;
+        let form = remap_fid(u32::from_le_bytes([entry[4], entry[5], entry[6], entry[7]]), remap);
+        *slot = (form != 0).then_some(form);
+    }
+    present.then_some(out)
 }
 
 #[cfg(test)]
@@ -388,5 +407,19 @@ mod tests {
         assert_eq!((music.success, music.level_up), (Some(0x13), Some(0x14)));
         let short = [SubRecord { sub_type: *b"DATA", data: data[..4 * 12].to_vec() }];
         assert_eq!(parse_default_music(&short, &None), None);
+    }
+
+    #[test]
+    fn named_default_music_reads_only_music_keys_and_remaps_their_forms() {
+        let mut data = Vec::new();
+        for (key, form) in [(b"BTMS", 0x0100_0123u32), (b"CMPX", 0x100), (b"DTMS", 0)] {
+            data.extend_from_slice(key);
+            data.extend_from_slice(&form.to_le_bytes());
+        }
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let music = parse_named_default_music(&[sub(b"DNAM", data)], &remap).unwrap();
+        assert_eq!(music.battle, Some(0x0200_0123));
+        assert_eq!((music.default, music.death), (None, None));
+        assert_eq!(parse_named_default_music(&[sub(b"DNAM", b"CMPX\x01\0\0\0")], &None), None);
     }
 }

@@ -472,8 +472,8 @@ pub struct EsmIndex {
     /// non-zero, which holds back random NPC conversations (CK *Scenes*, *SetSceneIsComplex*). `None`
     /// before a merge and on games without a `DOBJ`; a later plugin's entry replaces an earlier one's.
     pub complex_scene_object: Option<u32>,
-    /// The Fallout 3 / New Vegas `DOBJ` music slots (Default, Battle, Death, Success, Level Up; Game
-    /// Music MUS-SRC-003, #6870). `None` on other games; a later plugin's `DOBJ` replaces an earlier one's.
+    /// The `DOBJ` music slots. Fallout 3 / New Vegas use positional entries and Skyrim / Fallout 4
+    /// use named entries. A later plugin's music table replaces the earlier one.
     pub default_music: Option<DefaultMusic>,
     /// Skyrim+ `DLBR` dialogue branches, keyed by form id — the
     /// Top-Level / Blocking structure `DialRecord::branch` points into
@@ -2315,10 +2315,10 @@ mod tests {
                 "complex_scene_object",
                 "scalar read from the DOBJ `CMPX` entry; the DOBJ record itself is counted in `default_objects`",
             ),
-            // #6870 — the five music slots of the same `DOBJ`, another scalar read out of one record.
+            // The music slots of the same `DOBJ`, another scalar read out of one record.
             (
                 "default_music",
-                "scalar read from the FO3/FNV DOBJ `DATA` music slots; the DOBJ record itself is counted in `default_objects`",
+                "scalar read from positional or named DOBJ music slots; the DOBJ record itself is counted in `default_objects`",
             ),
             (
                 "oblivion_actor_value_slot",

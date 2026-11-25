@@ -2,10 +2,13 @@
 //! `docs/engine/music.md` §3, §5, §7).
 
 use super::directive::{Area, Content, Directive, MusicFiles, Source, Stem};
-use byroredux_plugin::esm::cell::CellData;
+use byroredux_plugin::esm::cell::{CellData, WorldspaceRecord};
 use byroredux_plugin::esm::reader::GameKind;
+use byroredux_plugin::esm::records::misc::MUSC_ABRUPT_TRANSITION;
 use byroredux_sdk::relationships::CombatReaction;
-use byroredux_plugin::esm::records::{select_active_region_sound, EsmIndex, MediaSetKind, MediaSetRecord, RegionDataPayload};
+use byroredux_plugin::esm::records::{
+    select_active_region_sound, EsmIndex, MediaSetKind, MediaSetRecord, MuscRecord, MustKind, RegionDataPayload,
+};
 use std::collections::HashMap;
 
 /// Where the player is, as far as music cares: an interior cell, or an exterior grid cell of a
@@ -16,7 +19,7 @@ pub(crate) enum Place {
     Exterior { worldspace: String, grid: (i32, i32) },
 }
 
-/// The crossfade where a game names none (Skyrim and later, whose music is Unresolved).
+/// The crossfade where a game names none.
 pub(crate) const FALLBACK_FADE_SECS: f32 = 3.0;
 /// Oblivion.exe's music transition (`0x6acd10` with the update at `0x6ad030`, #6903): 1700 ms, the
 /// old track fading out over the first half and the new one in over the second.
@@ -329,14 +332,16 @@ impl Catalog {
     /// Why a game's music is not translated.
     fn untranslated(&self) -> Option<&'static str> {
         match self.game {
-            GameKind::Fallout3NV | GameKind::Oblivion => None,
-            GameKind::Skyrim | GameKind::Fallout4 => Some("xWMA music waits on its own PRD (MUS-NG-001)"),
+            GameKind::Fallout3NV | GameKind::Oblivion | GameKind::Skyrim | GameKind::Fallout4 => None,
             _ => Some("Wwise music is out of scope (MUS-NG-005)"),
         }
     }
 
-    /// A Fallout 3 / New Vegas music type (`MUSC`): its file or folder, looping when New Vegas's
-    /// `ANAM` is positive, at `-|ANAM|` dB: the GECK's Loop flag and attenuation (MUS-SEL-003, #6902).
+    fn authored_music_types(&self) -> bool {
+        matches!(self.game, GameKind::Skyrim | GameKind::Fallout4)
+    }
+
+    /// Translate a music type into a playable directive.
     pub(crate) fn music_type(&self, index: &EsmIndex, form: u32, via: &'static str) -> Directive {
         let Some(musc) = index.music_types.get(&form) else {
             return Directive::unresolved(
@@ -348,10 +353,43 @@ impl Catalog {
         if let Some(reason) = self.untranslated() {
             return Directive::unresolved(source, reason);
         }
+        if self.authored_music_types() {
+            return self.authored_directive(index, musc, source);
+        }
+        // Fallout 3 / New Vegas: one file or folder, looping with a positive ANAM at -|ANAM| dB.
         Directive {
             looping: musc.looping(),
             level: 10f32.powf(-musc.decibels.abs() / 20.0),
             ..self.directive(source, self.files.resolve(&musc.file))
+        }
+    }
+
+    fn authored_directive(&self, index: &EsmIndex, musc: &MuscRecord, source: Source) -> Directive {
+        let mut playlist = Vec::new();
+        let mut issue = None;
+        for &form in &musc.tracks {
+            let content = match index.music_tracks.get(&form) {
+                Some(track) if track.kind == MustKind::SingleTrack && !track.file.is_empty() => self.files.resolve_track(&track.file),
+                Some(track) if track.kind == MustKind::SilentTrack => continue,
+                Some(track) => Content::Unresolved(format!("unsupported or incomplete {:?} track {form:#010x}", track.kind)),
+                None => Content::Unresolved(format!("music track {form:#010x} is absent from the load order")),
+            };
+            match content {
+                Content::Playlist(files) => playlist.extend(files),
+                failed => { issue.get_or_insert(failed); }
+            }
+        }
+        let content = if playlist.is_empty() {
+            issue.unwrap_or(Content::Silent)
+        } else {
+            Content::Playlist(playlist)
+        };
+        let fade_secs = if musc.fade_secs.is_finite() { musc.fade_secs.max(0.0) } else { self.fade_secs };
+        Directive {
+            priority: Some(musc.priority),
+            fade_secs,
+            change_fade_secs: (musc.flags & MUSC_ABRUPT_TRANSITION != 0).then_some(0.0),
+            ..Directive::new(source, content)
         }
     }
 
@@ -363,7 +401,7 @@ impl Catalog {
     /// cell's music follows combat. So Battle ends the directive (#6946). New Vegas keeps the shared
     /// music code; its executable is encrypted.
     pub(crate) fn play_music(&self, index: &EsmIndex, form: u32) -> Directive {
-        Directive { ends_on_battle: true, ..self.music_type(index, form, "PlayMusic") }
+        Directive { ends_on_battle: !self.authored_music_types(), ..self.music_type(index, form, "PlayMusic") }
     }
 
     fn cell<'a>(index: &'a EsmIndex, place: &Place) -> Option<&'a CellData> {
@@ -419,6 +457,13 @@ impl Catalog {
             // A cell change starts another category's music at once (`0x6ab160` stops the old track).
             return Directive { category: Some(value), change_fade_secs: Some(0.0), ..self.category(value, via) };
         }
+        if self.authored_music_types() {
+            let source = Self::authored_location_type(index, cell, worldspace);
+            return match source {
+                Some((form, via)) => self.music_type(index, form, via),
+                None => self.directive(Source::keyword("no music source", "none"), Content::Silent),
+            };
+        }
         // Fallout 3 / New Vegas: cell XCMO → worldspace ZNAM (an exterior's) → DOBJ Default Music
         // (#6900). Fallout3.exe's `TESObjectCELL::GetMusicType` (0x745460) reads the cell's
         // `ExtraCellMusicType`, else an exterior's worldspace music; a null result plays
@@ -436,6 +481,26 @@ impl Catalog {
         }
     }
 
+    fn authored_location_type(
+        index: &EsmIndex,
+        cell: Option<&CellData>,
+        worldspace: Option<&WorldspaceRecord>,
+    ) -> Option<(u32, &'static str)> {
+        // V5 verifies the source fields. Cross-source ordering is provisional.
+        let location_music = |location| index.locations.get(&location).and_then(|record| record.music);
+        cell.and_then(|cell| cell.music_type_form).map(|form| (form, "cell XCMO"))
+            .or_else(|| cell?.location_form.and_then(location_music).map(|form| (form, "cell location NAM1")))
+            .or_else(|| worldspace?.location_form.and_then(location_music).map(|form| (form, "worldspace location NAM1")))
+            .or_else(|| {
+                worldspace?;
+                let entry = select_active_region_sound(&cell?.regions, &index.regions)?;
+                let RegionDataPayload::Sound { music: Some(form), .. } = entry.payload else { return None };
+                Some((form, "region RDMO"))
+            })
+            .or_else(|| worldspace?.default_music.map(|form| (form, "worldspace ZNAM")))
+            .or_else(|| index.default_music?.default.map(|form| (form, "DOBJ Default Music")))
+    }
+
     /// An Oblivion category's folder (MUS-SRC-009).
     pub(crate) fn category(&self, value: u32, via: &'static str) -> Directive {
         match category_folder(value) {
@@ -449,8 +514,6 @@ impl Catalog {
     /// then the region's `RDSB` set, then the Battle Music object (that order between
     /// them is the engine's, #6906); Oblivion's `Battle` folder.
     pub(crate) fn battle(&self, index: &EsmIndex, place: Option<&Place>, marker: Option<&Marker>, around: Surroundings, roll: u64) -> Directive {
-        // Declined explicitly, as `location_with` and `music_type` are: Skyrim+ combat walked the
-        // New Vegas marker and region path and resolved to nothing (#6931).
         if let Some(reason) = self.untranslated() {
             return Directive::unresolved(Source::keyword("Battle", "game"), reason);
         }
@@ -473,7 +536,8 @@ impl Catalog {
             let RegionDataPayload::Sound { music: Some(form), .. } = &entry.payload else { return None };
             index.media_sets.get(form).map(|set| (set, "region RDSB"))
         };
-        if let Some((set, via)) = controller_set.or_else(dungeon_set).or_else(region_set) {
+        if self.game == GameKind::Fallout3NV
+            && let Some((set, via)) = controller_set.or_else(dungeon_set).or_else(region_set) {
             return self.battle_set(index, set, via);
         }
         let directive = match index.default_music.and_then(|music| music.battle) {
@@ -542,7 +606,7 @@ impl Catalog {
     pub(crate) fn sting(&self, index: &EsmIndex, sting: Sting) -> Option<Directive> {
         // No sting where the music is not translated: it would also silence the music (#6931).
         // `sting()` scanned every `SOUN` for `MUSDeath` on Skyrim+ to find none.
-        if self.untranslated().is_some() {
+        if self.untranslated().is_some() || self.authored_music_types() {
             return None;
         }
         if self.game == GameKind::Oblivion {
@@ -567,8 +631,49 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_plugin::esm::cell::WorldspaceRecord;
-    use byroredux_plugin::esm::records::{DefaultMusic, MuscRecord};
+    use byroredux_plugin::esm::records::{DefaultMusic, LctnRecord, MustRecord};
+
+    #[test]
+    fn authored_music_sources_resolve_tracks_and_combat_uses_the_default_object() {
+        for game in [GameKind::Skyrim, GameKind::Fallout4] {
+            let mut index = EsmIndex { game, ..Default::default() };
+            index.music_types.insert(1, MuscRecord {
+                editor_id: "Explore".into(), priority: 90, fade_secs: 12.0, tracks: vec![11], ..Default::default()
+            });
+            index.music_types.insert(2, MuscRecord {
+                editor_id: "Combat".into(), priority: 8, tracks: vec![12], ..Default::default()
+            });
+            index.music_tracks.insert(11, MustRecord {
+                kind: MustKind::SingleTrack, file: r"\Data\Music\Ambient\Explore.wav".into(), ..Default::default()
+            });
+            index.music_tracks.insert(12, MustRecord {
+                kind: MustKind::SingleTrack, file: "data/Music/Combat.wav".into(), ..Default::default()
+            });
+            index.default_music = Some(DefaultMusic { default: Some(1), battle: Some(2), ..Default::default() });
+            index.locations.insert(20, LctnRecord { music: Some(1), ..Default::default() });
+            index.cells.worldspaces.insert("world".into(), WorldspaceRecord {
+                location_form: Some(20), default_music: Some(2), ..Default::default()
+            });
+            index.cells.exterior_cells.entry("world".into()).or_default().insert((0, 0), CellData {
+                music_type_form: Some(2), location_form: Some(20), ..Default::default()
+            });
+            let catalog = Catalog::new(&index, MusicFiles::new([
+                "music\\ambient\\explore.xwm".to_string(),
+                "music\\combat.xwm".to_string(),
+                "music\\combat.wav".to_string(),
+            ]), None);
+            let exterior = |grid| Place::Exterior { worldspace: "world".into(), grid };
+            let cell = catalog.location(&index, &exterior((0, 0)));
+            assert_eq!(cell.source.via, "cell XCMO");
+            assert_eq!(cell.content, Content::Playlist(vec!["music\\combat.wav".into()]));
+            let location = catalog.location(&index, &exterior((1, 1)));
+            assert_eq!(location.source.via, "worldspace location NAM1");
+            assert_eq!(location.content, Content::Playlist(vec!["music\\ambient\\explore.xwm".into()]));
+            assert_eq!((location.priority, location.fade_secs), (Some(90), 12.0));
+            let battle = catalog.battle(&index, None, None, Surroundings::default(), 0);
+            assert_eq!((battle.source.via, battle.priority), ("DOBJ Battle Music", Some(8)));
+        }
+    }
 
     fn musc(form: u32, edid: &str, file: &str) -> MuscRecord {
         MuscRecord { form_id: form, editor_id: edid.into(), file: file.into(), ..Default::default() }
@@ -1001,12 +1106,12 @@ mod tests {
     }
 
     /// #6931 — combat and the stings decline where the music is not translated, as the place does:
-    /// Skyrim's Battle is an explicit Unresolved, and there is no sting (which would silence it).
+    /// Starfield's Battle is an explicit Unresolved, and there is no sting (which would silence it).
     #[test]
     fn battle_and_stings_decline_where_the_music_is_not_translated() {
         // The index carries the sting SOUNs, so only the decline can make `sting()` return `None`
         // (INC2 missing test: without them both assertions held before #6931 too).
-        let mut index = EsmIndex { game: GameKind::Skyrim, ..Default::default() };
+        let mut index = EsmIndex { game: GameKind::Starfield, ..Default::default() };
         for (form, edid) in [(0x10, "MUSDeath"), (0x11, "MUSSuccess")] {
             index.sounds.insert(form, byroredux_plugin::esm::records::SounRecord { form_id: form, editor_id: edid.into(), sound_path: "music\\special\\sting.wav".into(), ..Default::default() });
         }

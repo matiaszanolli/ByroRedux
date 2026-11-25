@@ -72,7 +72,18 @@ also follows the audio-marker area the player stands in (§6).
 |---|---|---|
 | Fallout 3, New Vegas | cell `XCMO` → worldspace `ZNAM` (an exterior's) → `DOBJ` Default Music (MUS-SRC-001, -002; #6900) | — |
 | Oblivion | cell `XCMT` (or an OBSE override) → an exterior's winning region's `RDMD` → worldspace `SNAM`, a Default value falling through (MUS-SRC-008, #6903); the category picks `Data\Music\Public`, `Dungeon` or, for Default, `Explore` (MUS-SRC-009, Q6) | Default |
-| Skyrim and later | **Unresolved** ("xWMA music waits on its own PRD", MUS-NG-001) | — |
+| Skyrim, Fallout 4 | cell `XCMO` → cell or worldspace Location `NAM1` → exterior region `RDMO` → worldspace `ZNAM` → `DOBJ` Default Music | Skyrim's `DFMS` where authored. Fallout 4's Commonwealth authors a worldspace default. |
+| Fallout 76, Starfield | **Unresolved** | — |
+
+The Skyrim and Fallout 4 order is provisional. The source fields are verified, and the original
+runtime's precedence and parent-Location inheritance are still open. Region selection uses
+the sound entry selected for the current cell. [Location source findings](xwma-phase0-findings.md#v5--location-music-sources-and-precedence).
+
+These music types resolve their `TNAM` single tracks through the ordinary playlist. The provider
+uses the authored path when present and falls back from the author's `.wav` to the shipped `.xwm`.
+All-silent lists resolve to silence. A palette-only list reports an unresolved track type. Timed
+silence, palettes, conditions, authored loop regions and music finales are tracked in
+[xWMA Phase 4](../prd/xwma-audio.md#55-music-stack-musc-and-must-xwma-musc).
 
 On Oblivion the winning region is the one the engine's region selection already picks
 (`select_active_region_sound`: override flag, then priority). A music type with no file
@@ -182,7 +193,9 @@ code, and its executable is encrypted.
 - **Battle (MUS-CMB-001, -002).** While the player is in combat, the Battle layer plays
   the game's battle directive: Fallout 3 / New Vegas the `DOBJ` Battle Music object,
   New Vegas the active controller's Battle sets first and the region's `RDSB` set next
-  (§6), Oblivion `Data\Music\Battle`. When combat ends, the layer holds for the recovery
+  (§6), Oblivion `Data\Music\Battle`, and Skyrim / Fallout 4 the `DOBJ.BTMS` music type.
+  For the latter two, the lowest numeric `MUSC.PNAM` priority wins among active music types,
+  with the existing layer order resolving ties. `WNAM` supplies the fade duration. When combat ends, the layer holds for the recovery
   time (§7), then Location resumes. Oblivion has none: it counts the actors whose combat
   targets include the player (`0x6136b0` / `0x6136e0`) and switches back when the count
   reaches 0.
@@ -344,6 +357,11 @@ game's master and official DLC (PRD §7.2 scenario 1, §8), 2026-11-14:
 `docs/smoke-tests/music-fo3.sh` drives scenarios 2 to 5, `music-fnv.sh` scenario 6 (at
 Sloan, and at Goodsprings its Neutral and, after `SetFactionReaction`, Enemy set) and scenario 5's New
 Vegas leg, `music-oblivion.sh` scenario 7.
+
+The [xWMA music smoke](../smoke-tests/xwma-music.sh) runs xWMA scenario 4 for Skyrim SE
+and Fallout 4. With an audio device active, it checks the position of an exterior track,
+starts combat through a placed actor, and checks that the battle track advances while the
+exterior layer is suspended.
 
 ## 9. Saves
 

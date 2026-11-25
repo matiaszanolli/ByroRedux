@@ -86,6 +86,10 @@ pub(super) fn dispatch_misc_stub_group(
                 && let Some(music) = parse_default_music(subs, &remap) {
                     index.default_music = Some(music);
                 }
+            if matches!(game, GameKind::Skyrim | GameKind::Fallout4)
+                && let Some(music) = super::misc::parse_named_default_music(subs, &remap) {
+                    index.default_music = Some(music);
+                }
             index
                 .default_objects
                 .insert(fid, parse_minimal_esm_record(fid, subs));

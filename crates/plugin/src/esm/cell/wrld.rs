@@ -155,6 +155,9 @@ pub(crate) fn parse_wrld_group(
                         b"ZNAM" if sub.data.len() >= 4 => {
                             record.default_music = read_form_id(reader, &sub.data);
                         }
+                        b"XLCN" if matches!(game, GameKind::Skyrim | GameKind::Fallout4) => {
+                            record.location_form = read_form_id(reader, &sub.data);
+                        }
                         // SNAM — Oblivion's music category enum (Default / Public / Dungeon; xEdit
                         // `wbDefinitionsCommon.pas:7976-7983`), not a FormID: kept raw (#6870).
                         b"SNAM" if game == GameKind::Oblivion && sub.data.len() == 4 => {
