@@ -1582,6 +1582,16 @@ at four. The blades read as tufts rather than needles. The field is still sparse
 on this ground, because most candidates carry a low `d_ground`; that is §11.3's
 calibration question, not this one.
 
+**Root angles (2026-11-25).** The four blades left their shared root along the
+same up axis (yaw only turned the ribbon's face), and the resting lean pointed
+downwind on every blade. Each blade now starts 4-38 degrees off the ground
+normal (`GROUNDCOVER_ROOT_TILT_*`, art direction), leaning out along its own
+facing. Headings step by the golden angle from a per-tuft start, with jitter,
+so any LOD tier's surviving blades still fan apart. The resting droop follows
+that heading; wind and trampling still push in their own directions. The summed
+tip offset is capped at `GROUNDCOVER_MAX_LEAN_FRACTION` of blade length (wind
+plus trampling could previously exceed the length and stretch a blade).
+
 ### 12.10 The flat ribbon shades as a folded leaf (2026-09-13)
 
 **The technique.** Ghost of Tsushima tilts "the normals of the grass blades

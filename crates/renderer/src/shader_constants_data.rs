@@ -899,6 +899,24 @@ pub const GROUNDCOVER_WIND_FLOW_FLOOR: f32 = 0.35;
 pub const GROUNDCOVER_WIND_STIFFNESS_ATTENUATION: f32 = 0.7;
 pub const GROUNDCOVER_REST_LEAN_BASE: f32 = 0.12;
 pub const GROUNDCOVER_REST_LEAN_VARIATION: f32 = 0.10;
+/// The angle off the ground normal at which a blade leaves its root, drawn
+/// per blade (min..max by seed). Blades sharing a root used to start parallel,
+/// so a tuft was one upright brush. Art direction, not a sourced leaf-angle
+/// distribution (EXAL §12.9).
+pub const GROUNDCOVER_ROOT_TILT_MIN_RADIANS: f32 = 4.0 * std::f32::consts::PI / 180.0;
+pub const GROUNDCOVER_ROOT_TILT_MAX_RADIANS: f32 = 38.0 * std::f32::consts::PI / 180.0;
+/// Heading step between consecutive blades of a tuft: the golden angle, whose
+/// every prefix stays spread round the circle, so the blades a far LOD tier
+/// keeps still fan apart.
+pub const GROUNDCOVER_GOLDEN_ANGLE_RADIANS: f32 = 2.399_963;
+/// Full width of the per-blade heading jitter on top of that step, so tufts
+/// are not copies of one rotated rosette. Art direction.
+pub const GROUNDCOVER_ROOT_HEADING_JITTER_RADIANS: f32 = 1.2;
+/// Cap on the tip's offset from the root axis, as a fraction of blade length,
+/// once root tilt, droop, wind and trampling are summed. Under 1 so a blade
+/// cannot stretch, and keeps enough rise that its tangent never lies along its
+/// facing (which would collapse the ribbon's width axis).
+pub const GROUNDCOVER_MAX_LEAN_FRACTION: f32 = 0.98;
 /// Terrain-normal blend used when a ribbon grows from a sloped triangle.
 /// Migrated unchanged from the original shader literal (#4378); it is an
 /// uncited compatibility value tracked in EXAL §12.12.
@@ -3052,6 +3070,11 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float GROUNDCOVER_WIND_STIFFNESS_ATTENUATION),
     shader_define!(Float GROUNDCOVER_REST_LEAN_BASE),
     shader_define!(Float GROUNDCOVER_REST_LEAN_VARIATION),
+    shader_define!(Float GROUNDCOVER_ROOT_TILT_MIN_RADIANS),
+    shader_define!(Float GROUNDCOVER_ROOT_TILT_MAX_RADIANS),
+    shader_define!(Float GROUNDCOVER_GOLDEN_ANGLE_RADIANS),
+    shader_define!(Float GROUNDCOVER_ROOT_HEADING_JITTER_RADIANS),
+    shader_define!(Float GROUNDCOVER_MAX_LEAN_FRACTION),
     shader_define!(Float GROUNDCOVER_TERRAIN_NORMAL_WEIGHT),
     shader_define!(Float GROUNDCOVER_TWIST_RADIANS),
     shader_define!(Float GROUNDCOVER_MIN_VISIBLE_HALF_WIDTH_PIXELS),

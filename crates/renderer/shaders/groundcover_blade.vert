@@ -323,9 +323,12 @@ vec3 byroGcWindBend(
         ? normalize(vec3(windDir.x, 0.0, windDir.y))
         : facing;
     vec3 lateralDir = vec3(-leanDir.z, 0.0, leanDir.x);
+    // The resting droop is gravity, not wind: it arches the blade further the
+    // way its root already points, and gives way as the wind takes over. A
+    // droop along the wind direction combed the whole field one way.
     float restLean = GROUNDCOVER_REST_LEAN_BASE
         + GROUNDCOVER_REST_LEAN_VARIATION * gcSeedStream(seed, 4u);
-    float downwindBend = bendFraction + restLean * (1.0 - bendFraction);
+    vec3 droop = facing * (restLean * (1.0 - bendFraction));
     // The phase is seeded once at the blade base and used for the whole
     // ribbon, so this adds lateral motion without the heat-haze shimmer from
     // per-vertex noise. Its one-third scale is the Step 6 checklist ratio.
@@ -335,12 +338,14 @@ vec3 byroGcWindBend(
     // scale with height² while normalising by the authored species maximum so
     // the tallest blade retains the established full-strength response.
     float heightSquaredScale = height * height / max(maxSpeciesHeight, GROUNDCOVER_BLADE_VECTOR_EPSILON);
-    return (leanDir * downwindBend + lateralDir * lateralBend) * heightSquaredScale;
+    return (leanDir * bendFraction + lateralDir * lateralBend + droop) * heightSquaredScale;
 }
 
+/// `rootLean` is the tip offset the blade's own starting angle gives it, in the
+/// plane perpendicular to `up`: `height * sin(tilt)` along its heading.
 void byroGcControlPoints(
-    vec3 base, vec3 up, float height, vec3 windBend, vec2 disturbance,
-    float bendCarry, out vec3 p1, out vec3 p2
+    vec3 base, vec3 up, float height, vec3 rootLean, vec3 windBend,
+    vec2 disturbance, float bendCarry, out vec3 p1, out vec3 p2
 ) {
     float disturbAmount = min(length(disturbance), 1.0);
     vec3 bend = windBend;
@@ -349,6 +354,14 @@ void byroGcControlPoints(
         float k = GROUNDCOVER_INTERACTION_MAX_BEND * disturbAmount;
         bend += pushDir * (height * k);
     }
+    // Only the part across the blade's up axis leans it; then add the root's
+    // own lean and cap the sum, scaling the root's share with it.
+    bend += rootLean - up * dot(bend, up);
+    float leanScale = min(
+        height * GROUNDCOVER_MAX_LEAN_FRACTION
+            / max(length(bend), GROUNDCOVER_BLADE_VECTOR_EPSILON),
+        1.0);
+    bend *= leanScale;
     // A horizontal Bezier-tip offset without a matching vertical reduction
     // makes the plant grow whenever either a gust or a disturbance bends it.
     // Keep the root-to-tip chord exactly `height`: this is the right bounded
@@ -357,13 +370,15 @@ void byroGcControlPoints(
     // different fictional length.
     float bendFraction = min(length(bend) / max(height, GROUNDCOVER_BLADE_VECTOR_EPSILON), 1.0);
     float uprightScale = sqrt(max(1.0 - bendFraction * bendFraction, 0.0));
-    // The control point stays over the root (`up` axis) and carries only
-    // `bendCarry` of the lean, so the blade rises vertically and bows toward
-    // its tip instead of being a straight stick tilted about the root. At
-    // `bendCarry = 0.5` this is the old collinear chord. The same carry is
-    // used at both clock samples so motion vectors stay consistent.
+    // The control point sets the direction the blade leaves the ground in. It
+    // takes the root lean at the chord midpoint's share, so an undisturbed
+    // blade starts at its own tilt, and only `bendCarry` of everything else,
+    // so droop and wind bow it toward its tip instead of tilting a straight
+    // stick about the root. The same carry is used at both clock samples so
+    // motion vectors stay consistent.
     p1 = base + up * (height * GROUNDCOVER_BEZIER_CONTROL_FRACTION * uprightScale)
-        + bend * bendCarry;
+        + bend * bendCarry
+        + rootLean * (leanScale * (GROUNDCOVER_BEZIER_CONTROL_FRACTION - bendCarry));
     p2 = base + up * (height * uprightScale) + bend;
 }
 
@@ -496,11 +511,22 @@ void main() {
         (base.z - cell.originXZ.y) * (LAND_TEXTURE_TILES_PER_CELL / EXTERIOR_CELL_UNITS)
             + LAND_TEXTURE_TILES_PER_CELL);
 
-    // Per-blade yaw. The ribbon's width axis is perpendicular to both `up` and
-    // the blade's facing, so a blade is a flat ribbon standing on the ground
-    // rather than a billboard.
-    float yaw = gcSeedStream(seed, 2u) * GROUNDCOVER_TWO_PI;
-    vec3 facing = normalize(vec3(cos(yaw), 0.0, sin(yaw)));
+    // Per-blade heading. The ribbon's width axis is perpendicular to both `up`
+    // and the blade's facing, so a blade is a flat ribbon standing on the
+    // ground rather than a billboard. The tuft's blades step round their
+    // shared root from the tuft's own start angle, each leaning out along its
+    // facing, so they fan apart as shoots from one crown do.
+    float yaw = gcSeedStream(byroGcBladeSeed(blade), 2u) * GROUNDCOVER_TWO_PI
+        + float(subBlade) * GROUNDCOVER_GOLDEN_ANGLE_RADIANS
+        + (gcSeedStream(seed, 14u) - 0.5) * GROUNDCOVER_ROOT_HEADING_JITTER_RADIANS;
+    vec3 heading = vec3(cos(yaw), 0.0, sin(yaw));
+    // In the plane across `up`, so it stays square to the blade on a slope.
+    vec3 facing = normalize(heading - up * dot(heading, up));
+    float rootTilt = mix(
+        GROUNDCOVER_ROOT_TILT_MIN_RADIANS,
+        GROUNDCOVER_ROOT_TILT_MAX_RADIANS,
+        gcSeedStream(seed, 15u));
+    vec3 rootLean = facing * (height * sin(rootTilt));
 
     // ── Wind (§8) ───────────────────────────────────────────────────────
     //
@@ -537,9 +563,11 @@ void main() {
         GROUNDCOVER_BEZIER_BEND_CARRY_MIN,
         GROUNDCOVER_BEZIER_BEND_CARRY_MAX,
         gcSeedStream(seed, 10u));
-    byroGcControlPoints(base, up, height, bend, disturbance, bendCarry, p1, p2);
     byroGcControlPoints(
-        base, up, height, prevBend, previousDisturbance, bendCarry, prevP1, prevP2);
+        base, up, height, rootLean, bend, disturbance, bendCarry, p1, p2);
+    byroGcControlPoints(
+        base, up, height, rootLean, prevBend, previousDisturbance, bendCarry,
+        prevP1, prevP2);
 
     if (GC_DEBUG_POINTS == 1u) {
         // The distribution view. One point at the accepted position, sized so
