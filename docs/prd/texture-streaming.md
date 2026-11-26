@@ -1,6 +1,10 @@
 # Texture Streaming — Product Requirements
 
-**Status**: ACTIVE (2026-11-25). Revision 9 records the owner's approval of
+**Status**: ACTIVE (2026-11-25). Revision 11 records the owner's approval of
+revision 10's text (§12). Revision 10 adds the owner's choices on reads in
+flight, streaming CPU time and moving-camera frame time (TXS-BUD-008,
+TXS-PERF, TXS-TEL-005, A12, A13). The engine does not yet meet TXS-BUD-008
+or TXS-TEL-005, so TXS-PERF cannot be judged. Revision 9 records the owner's approval of
 revision 8's reworded requirements and of the Q4 amendment; the eviction
 code does not yet meet TXS-BUD-003 or TXS-BUD-004. Revision 8 folds in
 review round 3: the claims about HEAD re-measured after the Phase 2–4 build,
@@ -113,8 +117,8 @@ dump `uesp-wiki/Oblivion Mod/Oblivion.ini.wiki`). The GECK wiki's INI list
 for Fallout: New Vegas, which covers used and unused properties, lists
 `iTexMipMapSkip` and `iTexMipMapMinimum` in `[Display]`, each with default
 0 (*INI Settings*, local dump `geckwiki/(main)/INI Settings.wiki`).
-**Phase 0: verify** (Phase 0 has closed, so this is to be filed as an
-issue): whether Fallout: New Vegas reads either key and what each does; a
+**Phase 0: verify** (filed as #7418, since Phase 0 has closed):
+whether Fallout: New Vegas reads either key and what each does; a
 source stating their effect, or captures of the original game with each
 value changed, would settle it. A search of the local wiki dumps for
 `iTexMipMapSkip` found it only in the Oblivion pages and that list. Redux
@@ -148,6 +152,11 @@ budget overrun turn a surface into the missing-texture checker.
 | **Retiring image** | An image that a promotion or a demotion has replaced, or that a release has dropped, waiting in its entry's `pending_destroy` ring for `MAX_FRAMES_IN_FLIGHT` frames ([Memory Budget § Deferred-Destroy Queue](../engine/memory-budget.md#deferred-destroy-queue)). Its bytes are counted apart from resident bytes |
 | **Chunk** | One independently compressed piece of a BA2 DX10 texture record, covering a contiguous mip range (`Dx10Chunk` in `crates/bsa/src/ba2.rs`; [Archives § DX10 records](../engine/archives.md#dx10-records-24-bytes-base--24-bytes-per-chunk)) |
 | **Settle** | The point after a load or camera move where no promotion is queued and none is in flight |
+| **Read in flight** | A promotion whose source read has been handed to the host and has not yet landed or failed |
+| **Moving route** | A `--bench-frames 1800 --bench-mode renderer-stepped --bench-camera grid-soak --fly --upscaler taa` run at 1280 × 720 from `--grid 0,0 --radius 1`, in FO4's `Commonwealth` or FNV's `WastelandNV` |
+| **Steady frame** | A frame of a moving-route run after its first 60, excluding any frame period of 1 s or more (a blocking load) |
+| **Frame period** | The time from the start of one frame to the start of the next |
+| **Streaming CPU time** | The main-thread time one frame spends choosing wanted mips, turning them into requests and residency changes (budget and eviction included), re-deriving the budget, taking finished reads and applying changes. It excludes time waiting for earlier frames' GPU work only as far as `draw_frame` would wait for that same work anyway before recording the frame; every other wait made while applying changes is included |
 
 ---
 
@@ -451,6 +460,16 @@ constants. "Streaming" means `render.texture_streaming` is on.
   and a failed flush leaves the slot on the fallback (#1922); those
   first-upload paths are unchanged.
 
+- **TXS-BUD-008.** A promotion MUST count against the budget at its target
+  level from the hand-off of its read to the host until the change lands,
+  the read fails or the texture is released, so that a landing read adds no
+  bytes the budget pass has not counted. Not met at HEAD on 2026-11-25
+  (#7417): the pass counts a change only once it is queued, and
+  `queue_promotion_bytes` (`texture_registry/upload.rs`) queues a finished
+  read without checking the budget. A Vulkan-free registry test (new,
+  `promotion_read_in_flight_counts_against_budget`) checks it, including the
+  release of the count when the read fails and when the texture is released.
+
 ### 5.6 Telemetry (`TXS-TEL`)
 
 - **TXS-TEL-001.** A new console command `tex.residency` MUST print the
@@ -474,6 +493,32 @@ constants. "Streaming" means `render.texture_streaming` is on.
   Registry section MUST describe the pool, its budget and its eviction, and
   its "no explicit texture-count eviction policy" paragraph MUST be
   rewritten in the same change that lands TXS-BUD-003.
+- **TXS-TEL-005.** A `--bench-frames` run MUST report, with streaming on or
+  off, its steady-frame count, the p50 and p99 frame period over those
+  frames, and the mean and p99 streaming CPU time over them (zero with
+  streaming off). Not met at HEAD on 2026-11-25: the `bench:` line carries
+  `frame_p50_ms` and `frame_p95_ms` from per-frame CPU samples
+  (`byroredux/src/app_events.rs`), not the frame period, and no p99 or
+  streaming CPU time.
+
+### 5.7 Performance (`TXS-PERF`)
+
+Both requirements are judged on the reference machine, an RTX 4070 Ti with a
+Ryzen 9 7950X, as the median of three runs, and every run of a judged set is
+recorded with it. Neither can be judged at HEAD on 2026-11-25
+(TXS-TEL-005). The measurements the owner chose the limits from used
+temporary timers that are not checked in.
+
+- **TXS-PERF-001.** On FO4's moving route with streaming on, at the derived
+  budget and with the budget pinned at 340 MiB and at 260 MiB, streaming CPU
+  time MUST average no more than 2.0 ms per steady frame and MUST be no more
+  than 4.0 ms at the 99th percentile.
+- **TXS-PERF-002.** On the FO4 and FNV moving routes, the p50 and the p99
+  frame period with streaming on at the derived budget MUST each be no more
+  than 1.05 times the same figure with streaming off, from the same binary
+  on the same machine. This is a coarse check: the route's camera waits at
+  cell boundaries, so the two settings can render different numbers of
+  frames.
 
 ---
 
@@ -532,6 +577,8 @@ the TXS-RES-008 switch as its control. Release builds need
 | A9 | Streaming soak | `docs/smoke-tests/m-exteriors.sh fo4 soak` (existing script) | FO4 Commonwealth | the whole script passes, #6632's `physics_bodies` failure not excepted; resident texture bytes pass TXS-TEL-003's growth check; zero validation errors under `BYRO_VALIDATION=1` |
 | A10 | Long session | `docs/smoke-tests/p5-soak.sh fnv` (existing; FNV is the only game that declares the route) with its `tex.residency` probe before shutdown | FNV | passes as today, with the session-peak resident bytes within TXS-BUD-002's limit. At HEAD on 2026-11-25 the probe compares the bytes above floors and **whole** with the budget and has to change |
 | A11 | Reflection A/B | `--bench-mode renderer-static` captures at the most reflective FO4 pose found, streaming on and off, at least three runs of each; the design records the cell, camera pose and frame count before the judged runs | FO4 | the measure below |
+| A12 | Moving frame time | the moving route with streaming off and on (derived budget), three runs each, alternating; TXS-TEL-005's figures | FO4, FNV | TXS-PERF-002 holds |
+| A13 | Streaming CPU time | FO4's moving route with streaming on at the derived budget and at 340 MiB and 260 MiB (`BYROREDUX_SETTINGS_PATH` isolated), three runs each; TXS-TEL-005's figures | FO4 | TXS-PERF-001 holds |
 
 **A11 measure.** The *reflection mask* is the set of pixels that, between a
 streaming-off capture with `DBG_DISABLE_REFLECTION_GLASS_RAYS` set and one
@@ -570,6 +617,8 @@ constants live in [Memory Budget](../engine/memory-budget.md).
 | Churn | demotions within the hysteresis window of a promotion | per bench run |
 | Promotion bandwidth | promotion upload bytes per frame, p99 | per bench run |
 | Fallback whole-file reads | DX10 records read whole ÷ DX10 records resolved | per game |
+| Streaming CPU time | §2; mean and p99 over steady frames | per moving route and budget setting |
+| Frame period, streaming on against off | §2; p50 and p99 over steady frames, on ÷ off | per moving route |
 
 ---
 
@@ -615,14 +664,15 @@ TXS-TEL-002. Exit: A2 passes, A6 and A7 pass on FO4 and Starfield, A11
 passes on FO4, and the floor-ready and settle rows are published in
 ROADMAP.
 
-**Phase 3 — Budget and eviction.** TXS-BUD-001…007, TXS-TEL-003, TXS-TEL-004.
+**Phase 3 — Budget and eviction.** TXS-BUD-001…008, TXS-TEL-003, TXS-TEL-004.
 Exit: A8 passes at two budget settings on FO4 and Starfield, A9 passes, and
 the budget-adherence row is published.
 
 **Phase 4 — Wave 2: BSA games.** TXS-SRC-002 for Oblivion, FO3, FNV and
-Skyrim SE, per the Q2 (b) decision. Exit: A6–A8 pass on FNV and Skyrim SE,
-A6 and A8 pass on Oblivion and FO3, A10 passes on FNV, and streaming is on
-by default for every in-scope game.
+Skyrim SE, per the Q2 (b) decision, with TXS-TEL-005, TXS-PERF-001 and
+TXS-PERF-002. Exit: A6–A8 pass on FNV and Skyrim SE, A6 and A8 pass on
+Oblivion and FO3, A10 passes on FNV, A12 and A13 pass and their figures are
+published, and streaming is on by default for every in-scope game.
 
 ---
 
@@ -779,3 +829,5 @@ by default for every in-scope game.
 | 7 | 2026-11-04 | Phases 2–4 built and measured (ROADMAP § Texture streaming): the budget derivation measures the non-texture reserve instead of summing ledger rows (design §7.1), the per-frame cap is 32 MiB and 64 changes, and a deferred-descriptor replay hazard that streaming exposed is fixed. Open gates, none waived: Starfield A6–A8 not run, A11's on/off delta exceeds the equal-arm noise, A9 on FO4 hard-fails on an unrelated owner, the default is not flipped | — |
 | 8 | 2026-11-25 | Review round 3 folded in with the owner's answers of the same day: §3.3 and the claims about HEAD re-measured after the Phase 2–4 build; the Fallout: New Vegas texture-quality keys (§1, TXS-NG-006); budget limit of payload accounting and 1.03 times the budget (TXS-BUD-002, TXS-G-002, §8); eviction order, promotion victims and the window exception (TXS-BUD-003, -004, TXS-WANT-005), not yet met by the code; budget logging (TXS-BUD-001); soak growth rule with A9 still requiring the whole script (TXS-TEL-003, A9); Q4's measured reserve; A8 on all six games, the A10 limit and the A11 measure; TXS-RES-009 added; metric home, document map and links | claude: revise |
 | 9 | 2026-11-25 | Revision 8's text approved: the reworded requirements, TXS-RES-009, the Q4 amendment, and the wording for the A11 measure and its 1% mask minimum, the hysteresis window against promotion victims, the order among eviction ties and the budget limit | owner: approved |
+| 10 | 2026-11-25 | Owner choices after moving-camera measurements with temporary timers: reads in flight count against the budget (TXS-BUD-008, #7417); a streaming CPU ceiling of 2.0 ms mean and 4.0 ms p99 and a frame-period limit of 1.05 times streaming-off (TXS-PERF-001, -002, A12, A13), both due in Phase 4; the telemetry that makes them measurable (TXS-TEL-005); the moving-route terms; §1's verify item recorded as filed (#7418) | — |
+| 11 | 2026-11-25 | Revision 10's text approved: TXS-BUD-008 and its place in Phase 3, TXS-TEL-005, TXS-PERF-001 and -002 with the reference machine and median-of-three rule, A12, A13, and the read-in-flight, moving-route, steady-frame, frame-period and streaming-CPU-time terms | owner: approved |
