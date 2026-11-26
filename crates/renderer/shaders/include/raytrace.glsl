@@ -22,6 +22,85 @@ vec3 reflectionHitIrradiance(vec3 p, vec3 n, uint dbgFlags);
 
 #include "ray_hit.glsl"
 
+// The closest surface a ray covers. `instanceIdx < 0` is a miss.
+struct CoveredHit {
+    int instanceIdx;
+    int primitiveIdx;
+    vec2 uv;
+    vec3 position;
+    float distance;
+};
+
+// Walk past alpha holes and `selfInstance` to the closest covered surface.
+// The reflection ray and the material-map mirror view (SMM-OBS-007) share it.
+void traceClosestCoveredHit(
+    vec3 origin, vec3 direction, float maxDist, int selfInstance,
+    out CoveredHit hit
+) {
+    // Every caller supplies a scale-aware origin from offsetRayOriginForDirection.
+    // Continue alpha/self skips with the same representable-float offset and a
+    // zero tMin; no world-space epsilon is valid across all seven games.
+    // MAX_ALPHA_SKIP_LAYERS is the shared 8-layer budget (#2265 / TD7-001;
+    // shader_constants.glsl).
+    vec3 rayOrigin = origin;
+    float remaining = maxDist;
+    float travelled = 0.0;
+    int hitInstanceIdx = -1;
+    int hitPrimitiveIdx = 0;
+    vec2 hitUV = vec2(0.0);
+    vec3 hitPosition = vec3(0.0);
+
+    for (int layer = 0; layer < int(MAX_ALPHA_SKIP_LAYERS); ++layer) {
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(
+            rq, topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF,
+            rayOrigin, 0.0, direction, remaining);
+        while (rayQueryProceedEXT(rq)) {}
+        if (rayQueryGetIntersectionTypeEXT(rq, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT) break;
+
+        int candidateIdx =
+            rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+        int candidatePrim = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+        vec2 candidateBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+        float candidateT = rayQueryGetIntersectionTEXT(rq, true);
+        GpuInstance candidateInst = instances[candidateIdx];
+        GpuMaterial candidateMat = materials[candidateInst.materialId];
+        vec2 candidateUV = resolveRayHitUV(
+            uint(candidateIdx),
+            uint(candidatePrim),
+            candidateBary,
+            direction,
+            candidateMat);
+        vec4 candidateBase;
+        bool covered = rayHitHasCoverage(
+            uint(candidateIdx), uint(candidatePrim), candidateBary,
+            candidateInst, candidateMat, candidateUV, candidateBase);
+
+        if (candidateIdx != selfInstance && covered) {
+            hitInstanceIdx = candidateIdx;
+            hitPrimitiveIdx = candidatePrim;
+            hitUV = candidateUV;
+            hitPosition = rayOrigin + direction * candidateT;
+            travelled += candidateT;
+            break;
+        }
+
+        vec3 hitPoint = rayOrigin + direction * candidateT;
+        vec3 candidateNormal = getHitTriNormal(
+            uint(candidateIdx), uint(candidatePrim));
+        vec3 nextOrigin = offsetRayOriginForDirection(
+            hitPoint, candidateNormal, direction);
+        float advance = length(nextOrigin - rayOrigin);
+        travelled += advance;
+        remaining -= advance;
+        if (remaining <= 0.0) break;
+        rayOrigin = nextOrigin;
+    }
+    hit = CoveredHit(
+        hitInstanceIdx, hitPrimitiveIdx, hitUV, hitPosition, travelled);
+}
+
 // Cast a reflection ray and return the reflected color.
 //
 // Return contract (#1029 / REN-D9-NEW-06):
@@ -68,68 +147,13 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     vec3 missCol = _isExt
         ? exteriorSkyRadianceOr(direction, skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5, mipBias / 8.0)
         : sceneFlags.yzw;
-    // Every caller supplies a scale-aware origin from offsetRayOriginForDirection.
-    // Continue alpha/self skips with the same representable-float offset and a
-    // zero tMin; no world-space epsilon is valid across all seven games.
-    // MAX_ALPHA_SKIP_LAYERS is the shared 8-layer budget (#2265 / TD7-001;
-    // shader_constants.glsl).
-    vec3 rayOrigin = origin;
-    float remaining = maxDist;
-    float travelled = 0.0;
-    int hitInstanceIdx = -1;
-    int hitPrimitiveIdx = 0;
-    vec2 hitBary = vec2(0.0);
-    vec2 hitUV = vec2(0.0);
-    vec3 hitPosition = vec3(0.0);
-
-    for (int layer = 0; layer < int(MAX_ALPHA_SKIP_LAYERS); ++layer) {
-        rayQueryEXT rq;
-        rayQueryInitializeEXT(
-            rq, topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF,
-            rayOrigin, 0.0, direction, remaining);
-        while (rayQueryProceedEXT(rq)) {}
-        if (rayQueryGetIntersectionTypeEXT(rq, true)
-            == gl_RayQueryCommittedIntersectionNoneEXT) break;
-
-        int candidateIdx =
-            rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
-        int candidatePrim = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
-        vec2 candidateBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
-        float candidateT = rayQueryGetIntersectionTEXT(rq, true);
-        GpuInstance candidateInst = instances[candidateIdx];
-        GpuMaterial candidateMat = materials[candidateInst.materialId];
-        vec2 candidateUV = resolveRayHitUV(
-            uint(candidateIdx),
-            uint(candidatePrim),
-            candidateBary,
-            direction,
-            candidateMat);
-        vec4 candidateBase;
-        bool covered = rayHitHasCoverage(
-            uint(candidateIdx), uint(candidatePrim), candidateBary,
-            candidateInst, candidateMat, candidateUV, candidateBase);
-
-        if (candidateIdx != selfInstance && covered) {
-            hitInstanceIdx = candidateIdx;
-            hitPrimitiveIdx = candidatePrim;
-            hitBary = candidateBary;
-            hitUV = candidateUV;
-            hitPosition = rayOrigin + direction * candidateT;
-            travelled += candidateT;
-            break;
-        }
-
-        vec3 hitPoint = rayOrigin + direction * candidateT;
-        vec3 candidateNormal = getHitTriNormal(
-            uint(candidateIdx), uint(candidatePrim));
-        vec3 nextOrigin = offsetRayOriginForDirection(
-            hitPoint, candidateNormal, direction);
-        float advance = length(nextOrigin - rayOrigin);
-        travelled += advance;
-        remaining -= advance;
-        if (remaining <= 0.0) break;
-        rayOrigin = nextOrigin;
-    }
+    CoveredHit hit;
+    traceClosestCoveredHit(origin, direction, maxDist, selfInstance, hit);
+    int hitInstanceIdx = hit.instanceIdx;
+    int hitPrimitiveIdx = hit.primitiveIdx;
+    vec2 hitUV = hit.uv;
+    vec3 hitPosition = hit.position;
+    float travelled = hit.distance;
 
     if (hitInstanceIdx < 0) {
         // Miss — return sky tint / ambient mix.

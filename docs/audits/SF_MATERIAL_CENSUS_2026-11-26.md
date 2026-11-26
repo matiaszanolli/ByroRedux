@@ -299,3 +299,87 @@ level. None of the six was captured in the viewer.
 **Added resident bytes** on `grasssage01.nif`, streaming off: 2.7 MiB
 (10.9 MiB resident against 8.3 MiB at `1326f9b13`). No GPU time delta was
 measured; Phase 1's exit does not ask for one.
+
+## Phase 2 acceptance (roughness and metalness, #7422)
+
+Run on 2026-11-26 against the installed game, in the Studio viewer.
+
+**Reach** (`starfield_material_property_reach`, SMM-OBS-006), over the same
+68,459 models and 10,073 resolving records as Phase 1. Opacity is unchanged.
+
+| Measure | Roughness | Metalness |
+|---|---:|---:|
+| Records authoring data | 9,447 | 4,291 |
+| …on imported shapes | 272,131 | 183,436 |
+| …reaching on every shape, as Map | 8,500 | 2,285 |
+| …reaching on every shape, as Constant | 947 | 2,006 |
+| …with no recorded rule | 0 | 0 |
+
+Neither property has a holding rule: a record that authors one always has a
+first supplying layer (SMM-SRC-010).
+
+**What a mesh arrives with.** The NIF importer's legacy classifier can fill
+roughness and metalness from names and shader scalars. The merge does not treat
+such a guess as an authored Override. A temporary program, not kept, imported
+the same models: all 339,858 shapes naming a material arrived with neither
+value.
+
+**A5, fixture** (`scripts/starfield-material-acceptance.py a5`): every check
+passed. `mat.dump` named both fixtures as Map. For each property, 15 readings
+on the visible surface and 12 in the mirror held their block's value within
+2/255. The lid's texture coordinates mirror about its middle, both ways, so
+these cover fixture columns 0 to 2 and rows 0 and 1: six pairs. The mirror is
+the room's left wall at the script's pose, which this run fixes. With the wall
+left matte, all 12 mirror points read one value, the wall's own.
+
+What the mirror reading shows: the debug view sends a ray along the reflection
+direction and applies `applyRayHitPbrMaps` at the closest covered hit, the
+function the path loop calls for its hits. The final frame's sharp reflection
+ray shades its hit without roughness or metalness, before this phase and after
+it, so no final-frame mirror pixel depends on either map. That the path loop
+takes the maps before it shades or bounces is checked by source shape
+(`every_pbr_reader_takes_the_maps`), not by a capture. The view also traces
+whatever `rt_lod` says; the run passed `--rt-test-lod-scale` as PRD §7.2 asks.
+
+**A4** was run again on the final shaders and passed.
+
+**A5, vanilla captures** of `gagarinstatue01.nif`, same pose, engine at
+`7377b6b7d` and with Phase 2. `mat.dump` names the statue's own roughness and
+metalness maps. Over a crop around the statue, 14.8 % of pixels differ by more
+than 8 of 255 in luminance (mean difference 4.46); a patch of back wall differs
+by 0.10 on average. By eye the arms and legs lose some broad bright highlights.
+The captures show game content and are not checked in.
+
+**Missing texture** (SMM-SRC-011, -OBS-002): with both of the `pbr` fixture's
+data maps deleted, `mat.dump` showed the two roles as placeholders,
+`tex.missing` listed each file under `slot=roughness` and `slot=metalness`
+with `src=mat`, and the 15 lid points read the fallbacks, roughness 0.85 and
+metalness 0.
+
+**Added resident bytes** on `gagarinstatue01.nif`, streaming off: 1.3 MiB for
+both maps (3.6 MiB resident against 2.3 MiB at `7377b6b7d`).
+
+**GPU time delta** (`scripts/starfield-material-acceptance.py gpu`): main
+render on the table at the default pose, the `pbr` fixture with its maps
+unbound, one bound, or both. Five rounds of each, 1280x720, pooling the
+engine's once-a-second timing samples. Unbound surfaces shade the neutral
+scalars.
+
+| Maps bound | Samples | Median, ms | Quartiles, ms | Median minus unbound, ms |
+|---|---:|---:|---:|---:|
+| none | 113 | 4.00 | 2.80 to 4.60 | |
+| roughness | 111 | 3.90 | 2.80 to 4.80 | -0.10 |
+| metalness | 109 | 4.00 | 2.80 to 4.90 | 0.00 |
+| both | 111 | 3.90 | 2.80 to 4.50 | -0.10 |
+
+**No cost is resolved by this measurement, and it cannot resolve a small one.**
+Single samples run from 0.6 to 9.1 ms under identical settings: the scene
+loads the GPU lightly, its clocks were not held, and the table covers a small
+part of the frame. The bench line's single value per run swung by up to 2.9 ms
+between identical runs, so the script does not use it. A cost on a full scene
+is not measured.
+
+**Not checked.** A placed `TXST` override of TX08 or TX09 in the viewer (a
+parser test covers the slots). The maps under texture streaming (A8 is a unit
+test). The installed loose `.mat` files, which now resolve both properties from
+their own layers and previously forwarded neither.

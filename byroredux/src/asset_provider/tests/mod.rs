@@ -17,6 +17,8 @@ mod loose_override;
 mod material_path;
 mod starfield_mat;
 mod starfield_material_opacity;
+mod starfield_material_pbr;
+mod starfield_material_reach;
 mod xwma_effects;
 
 use byroredux_nif::import::ImportedMesh;

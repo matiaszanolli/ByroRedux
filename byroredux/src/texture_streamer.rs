@@ -465,7 +465,9 @@ mod tests {
         }
         draw.supplemental_texture_indices[slot::TINT] |= TINT_ALPHA_WEIGHT_BIT;
         let visited: Vec<TextureHandle> = material_map_handles(&draw).collect();
-        assert!(visited.contains(&(100 + slot::OPACITY as u32)), "opacity is wanted");
+        for role in [slot::OPACITY, slot::ROUGHNESS, slot::METALNESS] {
+            assert!(visited.contains(&(100 + role as u32)), "material-map lane {role} is wanted");
+        }
         for lane in 0..slot::COUNT {
             assert!(visited.contains(&(100 + lane as u32)), "supplemental lane {lane}");
         }

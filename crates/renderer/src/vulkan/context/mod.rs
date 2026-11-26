@@ -1856,7 +1856,7 @@ mod draw_command_tests {
             // field (zero would dedup with the default and hide a drift).
             greyscale_lut_index: 7,
             supplemental_texture_indices: [
-                31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+                31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
             ],
             // Non-zero translucency so the hash-walk covers these
             // fields too (#1147 Phase 2b).

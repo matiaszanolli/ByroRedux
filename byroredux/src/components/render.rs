@@ -439,6 +439,9 @@ pub(crate) struct MaterialTextureDebugInfo {
     pub(crate) clamp_mode: u8,
     /// The rule holding authored Starfield opacity unused, if any (SMM-OBS-001).
     pub(crate) opacity_held: Option<byroredux_nif::import::OpacityHeld>,
+    /// Where the merge took a Starfield database material's roughness and
+    /// metalness from, in that order (SMM-OBS-001).
+    pub(crate) pbr_sources: [Option<byroredux_nif::import::PbrSource>; 2],
 }
 
 impl Component for MaterialTextureDebugInfo {

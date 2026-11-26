@@ -324,7 +324,10 @@ pub const VERTEX_BONE_WEIGHTS_OFFSET_FLOATS: u32 =
 // shader cannot share, so it indexes `materialWords[materialId * GPU_MATERIAL_STRIDE_WORDS + WORD]`.
 // Literals, because the build script that generates the header cannot see the host struct;
 // `gpu_material_word_constants_match_the_host_struct` pins each to `size_of` / `offset_of`.
-pub const GPU_MATERIAL_STRIDE_WORDS: u32 = 109;
+pub const GPU_MATERIAL_STRIDE_WORDS: u32 = 111;
+// The roughness floor of the CPU resolve (`PbrMaterial::MIN_ROUGHNESS`, pinned by
+// `the_shader_roughness_floor_is_the_resolve_floor`), which a roughness map obeys too.
+pub const MATERIAL_MIN_ROUGHNESS: f32 = 0.04;
 pub const MATERIAL_ALPHA_THRESHOLD_WORD: u32 = 11;
 pub const MATERIAL_OPACITY_MAP_WORD: u32 = 108;
 pub const MATERIAL_ALPHA_TEST_FUNC_WORD: u32 = 20;
@@ -2398,7 +2401,11 @@ pub const RENDER_DEBUG_GI_ELIGIBLE: u32 = 22;
 // SMM-OBS-003 — the opacity value the visible surface's coverage test reads: grey where an opacity map or
 // constant supplies it, blue where it is the colour texture's alpha.
 pub const RENDER_DEBUG_MATERIAL_OPACITY: u32 = 23;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_MATERIAL_OPACITY;
+// SMM-OBS-003 / -007 — the visible surface's base roughness or metalness, unlit; on a map-less mirror,
+// the value the traced-hit sampling read where the reflection ray lands (magenta where it hits nothing).
+pub const RENDER_DEBUG_MATERIAL_ROUGHNESS: u32 = 24;
+pub const RENDER_DEBUG_MATERIAL_METALNESS: u32 = 25;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_MATERIAL_METALNESS;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -2429,6 +2436,8 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_RADIANCE_CACHE", RENDER_DEBUG_RADIANCE_CACHE),
     ("RENDER_DEBUG_GI_ELIGIBLE", RENDER_DEBUG_GI_ELIGIBLE),
     ("RENDER_DEBUG_MATERIAL_OPACITY", RENDER_DEBUG_MATERIAL_OPACITY),
+    ("RENDER_DEBUG_MATERIAL_ROUGHNESS", RENDER_DEBUG_MATERIAL_ROUGHNESS),
+    ("RENDER_DEBUG_MATERIAL_METALNESS", RENDER_DEBUG_MATERIAL_METALNESS),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];
@@ -2929,6 +2938,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Comment("Depth-buffer convention (#3308)"),
     shader_define!(UintPlain BYRO_REVERSED_Z),
     shader_define!(Float BYRO_DEPTH_CLEAR),
+    shader_define!(Float MATERIAL_MIN_ROUGHNESS),
     HeaderLine::Blank,
     HeaderLine::Comment("Rec. 709 luma weights, linear sRGB (#4347)"),
     shader_define!(Vec3 LUMA_REC709),
@@ -3572,6 +3582,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint RENDER_DEBUG_RADIANCE_CACHE),
     shader_define!(Uint RENDER_DEBUG_GI_ELIGIBLE),
     shader_define!(Uint RENDER_DEBUG_MATERIAL_OPACITY),
+    shader_define!(Uint RENDER_DEBUG_MATERIAL_ROUGHNESS),
+    shader_define!(Uint RENDER_DEBUG_MATERIAL_METALNESS),
     shader_define!(Uint RENDER_DEBUG_MODE_MAX),
     shader_define!(Uint RENDER_DEBUG_LEGACY_FLAGS),
     HeaderLine::Blank,

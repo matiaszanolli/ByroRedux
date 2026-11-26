@@ -85,6 +85,12 @@ type EmissiveCaptureMap = std::collections::HashMap<u32, (Option<bool>, Option<[
 pub struct CdbMaterial {
     /// Slot (`SLOT_*`) → texture path, first layer wins per slot.
     pub textures: Vec<(u8, String)>,
+    /// SMM-SRC-010: for each of [`ONE_LAYER_SLOTS`], the texture and the
+    /// replacement of the one layer that slot comes from
+    /// ([`one_layer_slots`]). Consumers of those slots read this, never
+    /// [`Self::textures`] or [`Self::flat_color_slots`], which fill the two
+    /// halves of a slot independently.
+    pub one_layer: CdbSlotSet,
     /// `MaterialParamFloat` values by per-object component Index. The
     /// index→semantics mapping (which is roughness, which metalness) is
     /// NOT yet verified, so these are carried but deliberately
@@ -166,8 +172,8 @@ impl CdbSlotSet {
 }
 
 /// One material's texture data kept apart by layer, for the Starfield
-/// material census (SMM-OBS-004, #7420). Read-only: [`MaterialIndex::lookup`]
-/// still merges the layers its own way and does not use this.
+/// material census (SMM-OBS-004, #7420). [`MaterialIndex::lookup`] applies the
+/// same one-layer rules to the same sets for the slots that follow them.
 #[derive(Debug, Clone, Default)]
 pub struct CdbLayeredMaterial {
     /// Texture sets the root object names directly.
@@ -203,6 +209,32 @@ impl CdbLayeredMaterial {
     pub fn layer(&self, n: u8) -> Option<&CdbSlotSet> {
         self.layers.iter().find(|(i, _)| *i == n).map(|(_, set)| set)
     }
+}
+
+/// The slots whose texture and replacement must come from one layer
+/// (SMM-SRC-010). Occlusion joins them when it gains a reader.
+pub const ONE_LAYER_SLOTS: [u8; 2] = [SLOT_ROUGHNESS, SLOT_METALNESS];
+
+/// SMM-SRC-010 over `sets_in_order` (the root-named set, then the numbered
+/// layers): each of [`ONE_LAYER_SLOTS`] takes the texture and the replacement
+/// of the first set that has either, and nothing from a later one. Shared by
+/// the compiled and loose producers (SMM-SRC-002).
+pub fn one_layer_slots<'a>(
+    sets_in_order: impl Iterator<Item = &'a CdbSlotSet> + Clone,
+) -> CdbSlotSet {
+    let mut out = CdbSlotSet::default();
+    for slot in ONE_LAYER_SLOTS {
+        let Some(set) = sets_in_order.clone().find(|set| set.supplies(slot)) else {
+            continue;
+        };
+        if let Some(path) = set.texture(slot) {
+            out.textures.push((slot, path.to_owned()));
+        }
+        if let Some(color) = set.replacement(slot) {
+            out.flat_color_slots.push((slot, color));
+        }
+    }
+    out
 }
 
 /// `MATERIAL_LAYER_<n>` → `n`, the string form `OpacitySourceLayer` takes
@@ -537,10 +569,12 @@ impl MaterialIndex {
             }
         }
         out.opacity_source_layer = self.opacity_source_layer_of(root);
-        out.opacity_layer = opacity_layer_of(
-            out.opacity_source_layer.as_deref(),
-            self.layer_slot_sets(root),
+        let root_sets = self.slot_set(self.texture_sets_of(root));
+        let layers = self.layer_slot_sets(root);
+        out.one_layer = one_layer_slots(
+            std::iter::once(&root_sets).chain(layers.iter().map(|(_, set)| set)),
         );
+        out.opacity_layer = opacity_layer_of(out.opacity_source_layer.as_deref(), layers);
         Some(out)
     }
 
@@ -1199,6 +1233,67 @@ pub mod test_support {
     /// A Map builtin type ref.
     const T_MAP: i32 = 0xFFFF_FF04u32 as i32;
 
+    /// What one texture set supplies for one slot: (slot, texture path,
+    /// enabled replacement red).
+    pub type SlotEntry<'a> = (u8, Option<&'a str>, Option<f32>);
+
+    /// One material's texture sets, for [`layered_index`].
+    pub struct LayeredCase<'a> {
+        pub path: &'a str,
+        /// The set the root names directly; empty for none.
+        pub root_set: &'a [SlotEntry<'a>],
+        /// Numbered from 0: what each layer's set supplies.
+        pub layers: &'a [&'a [SlotEntry<'a>]],
+    }
+
+    /// An index holding `cases`, in the measured root → layer → material →
+    /// texture-set shape, for consumers that test slot resolution without a
+    /// binary payload.
+    pub fn layered_index(cases: &[LayeredCase]) -> MaterialIndex {
+        let mut idx = MaterialIndex::default();
+        for (case_number, case) in cases.iter().enumerate() {
+            let root = case_root(case_number);
+            idx.objects_by_key.insert(material_key(case.path), root);
+            if !case.root_set.is_empty() {
+                let set = root + 1;
+                idx.child_refs
+                    .entry(root)
+                    .or_default()
+                    .push((RefKind::TextureSet, set, 0));
+                add_slots(&mut idx, set, case.root_set);
+            }
+            for (number, entries) in case.layers.iter().enumerate() {
+                let layer = root + 10 * (number as u32 + 1);
+                let (material, set) = (layer + 1, layer + 2);
+                idx.child_refs
+                    .entry(root)
+                    .or_default()
+                    .push((RefKind::Layer, layer, number as u8));
+                idx.child_refs.insert(layer, vec![(RefKind::Material, material, 0)]);
+                idx.child_refs.insert(material, vec![(RefKind::TextureSet, set, 0)]);
+                add_slots(&mut idx, set, entries);
+            }
+        }
+        idx
+    }
+
+    /// The root object [`layered_index`] gives case `case_number`.
+    fn case_root(case_number: usize) -> u32 {
+        1000 * (case_number as u32 + 1)
+    }
+
+    fn add_slots(idx: &mut MaterialIndex, set: u32, entries: &[SlotEntry]) {
+        for (slot, texture, replacement) in entries {
+            if let Some(texture) = texture {
+                idx.textures.entry(set).or_default().push((*slot, texture.to_string()));
+            }
+            if let Some(red) = replacement {
+                let color = [*red, *red, *red, 1.0];
+                idx.flat_colors.entry(set).or_default().push((*slot, color, Some(true)));
+            }
+        }
+    }
+
     /// One material's authored opacity data, for [`opacity_index`] (SMM).
     pub struct OpacityCase<'a> {
         pub path: &'a str,
@@ -1210,34 +1305,36 @@ pub mod test_support {
         pub layers: &'a [(Option<&'a str>, Option<f32>)],
     }
 
-    /// An index holding `cases`, in the measured root → layer → material →
-    /// texture-set shape, for consumers that test opacity resolution without
-    /// a binary payload.
+    /// [`layered_index`] for opacity cases, with each root's alpha settings.
     pub fn opacity_index(cases: &[OpacityCase]) -> MaterialIndex {
-        let mut idx = MaterialIndex::default();
+        let entries: Vec<Vec<[SlotEntry; 1]>> = cases
+            .iter()
+            .map(|case| {
+                case.layers
+                    .iter()
+                    .map(|&(texture, red)| [(SLOT_OPACITY, texture, red)])
+                    .collect()
+            })
+            .collect();
+        let layers: Vec<Vec<&[SlotEntry]>> = entries
+            .iter()
+            .map(|case| case.iter().map(|layer| layer.as_slice()).collect())
+            .collect();
+        let layered: Vec<LayeredCase> = cases
+            .iter()
+            .zip(&layers)
+            .map(|(case, layers)| LayeredCase {
+                path: case.path,
+                root_set: &[],
+                layers,
+            })
+            .collect();
+        let mut idx = layered_index(&layered);
         for (case_number, case) in cases.iter().enumerate() {
-            let root = 1000 * (case_number as u32 + 1);
-            idx.objects_by_key.insert(material_key(case.path), root);
+            let root = case_root(case_number);
             idx.alpha.insert(root, (case.threshold, case.has_opacity));
             if let Some(name) = case.source_layer {
                 idx.opacity_source_layers.insert(root, name.to_string());
-            }
-            for (number, (texture, replacement)) in case.layers.iter().enumerate() {
-                let layer = root + 10 * (number as u32 + 1);
-                let (material, set) = (layer + 1, layer + 2);
-                idx.child_refs
-                    .entry(root)
-                    .or_default()
-                    .push((RefKind::Layer, layer, number as u8));
-                idx.child_refs.insert(layer, vec![(RefKind::Material, material, 0)]);
-                idx.child_refs.insert(material, vec![(RefKind::TextureSet, set, 0)]);
-                if let Some(texture) = texture {
-                    idx.textures.insert(set, vec![(SLOT_OPACITY, texture.to_string())]);
-                }
-                if let Some(red) = replacement {
-                    let color = [*red, *red, *red, 1.0];
-                    idx.flat_colors.insert(set, vec![(SLOT_OPACITY, color, Some(true))]);
-                }
             }
         }
         idx
@@ -2336,6 +2433,60 @@ mod tests {
         assert_eq!(set.texture(SLOT_ROUGHNESS), None);
         assert_eq!(set.replacement(SLOT_ROUGHNESS), Some([0.25, 0.0, 0.0, 1.0]));
         assert!(layered.first_supplying(SLOT_METALNESS).is_none());
+    }
+
+    /// SMM-SRC-010: two layers that each supply half of a slot. The first one
+    /// supplying either half is the only source; the colour slot keeps the
+    /// independent first-wins merge.
+    #[test]
+    fn a_slots_texture_and_replacement_come_from_one_layer() {
+        use super::test_support::{layered_index, LayeredCase};
+        let idx = layered_index(&[LayeredCase {
+            path: "materials\\halves.mat",
+            root_set: &[],
+            layers: &[
+                &[
+                    (SLOT_ROUGHNESS, None, Some(0.25)),
+                    (SLOT_METALNESS, Some("zero_metal.dds"), None),
+                    (SLOT_COLOR, None, Some(0.5)),
+                ],
+                &[
+                    (SLOT_ROUGHNESS, Some("one_rough.dds"), None),
+                    (SLOT_METALNESS, None, Some(1.0)),
+                    (SLOT_COLOR, Some("one_color.dds"), None),
+                ],
+            ],
+        }]);
+        let found = idx.lookup("materials\\halves.mat").expect("resolves");
+        let chosen = &found.one_layer;
+        assert_eq!(chosen.texture(SLOT_ROUGHNESS), None);
+        assert_eq!(chosen.replacement(SLOT_ROUGHNESS), Some([0.25, 0.25, 0.25, 1.0]));
+        assert_eq!(chosen.texture(SLOT_METALNESS), Some("zero_metal.dds"));
+        assert_eq!(chosen.replacement(SLOT_METALNESS), None);
+        // Only the one-layer slots are in it.
+        assert_eq!(chosen.texture(SLOT_COLOR), None);
+        assert_eq!(found.textures.iter().find(|(s, _)| *s == SLOT_COLOR),
+            Some(&(SLOT_COLOR, "one_color.dds".to_string())));
+        assert!(found.flat_color_slots.iter().any(|(s, _)| *s == SLOT_COLOR));
+    }
+
+    /// The root-named set is checked before the layers, and a later layer
+    /// supplies a slot no earlier one does. An empty path supplies nothing.
+    #[test]
+    fn the_one_layer_is_the_first_supplying_in_order() {
+        use super::test_support::{layered_index, LayeredCase};
+        let idx = layered_index(&[LayeredCase {
+            path: "materials\\order.mat",
+            root_set: &[(SLOT_ROUGHNESS, None, Some(0.75))],
+            layers: &[
+                &[(SLOT_ROUGHNESS, Some("zero_rough.dds"), None), (SLOT_METALNESS, Some(""), None)],
+                &[(SLOT_METALNESS, Some("one_metal.dds"), None)],
+            ],
+        }]);
+        let chosen = idx.lookup("materials\\order.mat").expect("resolves").one_layer;
+        assert_eq!(chosen.texture(SLOT_ROUGHNESS), None);
+        assert_eq!(chosen.replacement(SLOT_ROUGHNESS), Some([0.75, 0.75, 0.75, 1.0]));
+        assert_eq!(chosen.texture(SLOT_METALNESS), Some("one_metal.dds"));
     }
 
     /// SMM-OPA-005: texture and replacement come from the named layer only.

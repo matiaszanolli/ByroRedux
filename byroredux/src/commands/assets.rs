@@ -1502,6 +1502,7 @@ mod tex_missing_tests {
                 sources,
                 clamp_mode: 0,
                 opacity_held: None,
+                pbr_sources: [None; 2],
             },
         );
 
@@ -1538,6 +1539,7 @@ mod tex_missing_tests {
                 sources,
                 clamp_mode: 0,
                 opacity_held: None,
+                pbr_sources: [None; 2],
             },
         );
 
@@ -1576,6 +1578,7 @@ mod tex_missing_tests {
                 },
                 clamp_mode: 0,
                 opacity_held: None,
+                pbr_sources: [None; 2],
             },
         );
 

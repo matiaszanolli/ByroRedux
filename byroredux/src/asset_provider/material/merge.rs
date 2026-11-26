@@ -12,7 +12,7 @@ use byroredux_bgsm::BgsmFile;
 
 use super::cdb::apply_cdb_pbr_fallback;
 use byroredux_sfmaterial::CdbMaterial;
-use byroredux_nif::import::{ImportedMaterial, ImportedTextureSource, MaterialTextureSet};
+use byroredux_nif::import::{ImportedMaterial, ImportedTextureSource, MaterialTextureSet, PbrSource};
 
 /// What [`merge_external_material`] actually did, for the caller and for
 /// diagnostics.
@@ -228,16 +228,39 @@ fn fill(
     }
 }
 
+/// [`fill`] for a material-map role, labelling what it fills. Labelled here,
+/// not only by the `.mat` arm's provenance pass: the sidecar-miss routes reach
+/// this too, and `mat.dump` reads the label to tell a database Map from an
+/// Override (SMM-OBS-001).
+fn fill_database_map(
+    path: Option<String>,
+    role: &mut Option<byroredux_core::string::FixedString>,
+    source: &mut ImportedTextureSource,
+    touched: &mut bool,
+    pool: &mut byroredux_core::string::StringPool,
+    texture_exists: &dyn Fn(&str) -> bool,
+) {
+    let Some(path) = path else {
+        return;
+    };
+    let before = *role;
+    fill(role, &path, touched, pool, texture_exists);
+    if *role != before {
+        *source = ImportedTextureSource::Mat;
+    }
+}
+
 /// #3398 Phase 2 — translate one resolved CDB material into the
 /// canonical `ImportedMaterial` payload. Pure role translation at the
 /// NIFAL boundary: no game branch, no render-time fallback.
 ///
 /// **Texture slots** (measured census, 2026-09-30): 0=color, 1=normal,
 /// 7=emissive land in their canonical `MaterialTextureSet` roles through
-/// the same NIF-first [`fill`] precedence the BGSM/BGEM arms use, and slot 2
-/// (opacity) through [`super::opacity::apply_cdb_opacity`]'s one-layer rule.
-/// Slots 3/4/5/6/8 (roughness, metalness, AO, height, transmissive)
-/// are deliberately NOT forwarded: `MaterialTextureSet` has no such
+/// the same NIF-first [`fill`] precedence the BGSM/BGEM arms use, slot 2
+/// (opacity) through [`super::opacity::apply_cdb_opacity`]'s one-layer rule,
+/// and slots 3/4 (roughness, metalness) through
+/// [`super::pbr::apply_cdb_pbr`]'s.
+/// Slots 5/6/8 (AO, height, transmissive) are deliberately NOT forwarded: `MaterialTextureSet` has no such
 /// fields (beyond the roles below), and those Starfield kinds stay in
 /// nifal.md's parked table under the #4429 XOR guard until the struct +
 /// GPU slots grow them. #5381: slot 6 (`_height`) is a layer
@@ -250,9 +273,8 @@ fn fill(
 /// exact near-miss class nifal.md forbids.
 ///
 /// **Scalars**: `MaterialParamFloat` values stay untranslated — which
-/// param index is roughness versus metalness is not yet verified, and a
-/// guess would poison `roughness_override`/`metalness_override` for
-/// every Starfield surface. Alpha/glass/translucency settings carry
+/// param index means what is not verified. Roughness and metalness come from
+/// slots and replacements instead. Alpha/glass/translucency settings carry
 /// field names, not positions, so they DO land.
 fn apply_cdb_material(
     material: &mut ImportedMaterial,
@@ -268,27 +290,35 @@ fn apply_cdb_material(
     material.is_pbr = true;
     material.external_material_resolved = true;
 
-    // #5197 — a CDB hit with no authored scalars must NOT let
-    // `Material::resolve_pbr`'s NaN backstop re-run the keyword classifier
-    // over the CDB colour path: Starfield authors metalness/roughness
-    // (metal/rough slots — parked, and `MaterialParamFloat` — deliberately
-    // untranslated), and a filename guess on the resolved path fabricates
-    // conductors out of asset names (`iris_iron_color.dds` → a 0.9-metal
-    // eye; 275 of 12,581 corpus colour maps hit a metal arm). Stamp the
-    // classifier's own no-signal neutral instead — exactly what a
-    // signal-free path would have landed on — and only where neither the
-    // NIF import nor an inline-shader non-stub already authored real
-    // overrides. When the authoritative sources are translated (#3398),
-    // they overwrite this through the same fields.
-    if material.metalness_override.is_none() {
-        material.metalness_override =
-            Some(byroredux_core::ecs::components::material::PbrMaterial::NO_SIGNAL_NEUTRAL.metalness);
-        *touched = true;
+    // Roughness and metalness, scalars and Maps (SMM-SRC / SMM-PBR, #7422).
+    // Every database hit leaves with both scalars set (#5197).
+    let pbr_maps = super::pbr::apply_cdb_pbr(material, cdb_mat, touched);
+    fill_database_map(
+        pbr_maps.roughness,
+        &mut material.textures.roughness,
+        &mut material.texture_sources.roughness,
+        touched,
+        pool,
+        texture_exists,
+    );
+    fill_database_map(
+        pbr_maps.metalness,
+        &mut material.textures.metalness,
+        &mut material.texture_sources.metalness,
+        touched,
+        pool,
+        texture_exists,
+    );
+    // A role something else had already filled keeps it (SMM-SRC-006).
+    if material.roughness_source == Some(PbrSource::Map)
+        && material.texture_sources.roughness != ImportedTextureSource::Mat
+    {
+        material.roughness_source = Some(PbrSource::Override);
     }
-    if material.roughness_override.is_none() {
-        material.roughness_override =
-            Some(byroredux_core::ecs::components::material::PbrMaterial::NO_SIGNAL_NEUTRAL.roughness);
-        *touched = true;
+    if material.metalness_source == Some(PbrSource::Map)
+        && material.texture_sources.metalness != ImportedTextureSource::Mat
+    {
+        material.metalness_source = Some(PbrSource::Override);
     }
 
     for (slot, path) in &cdb_mat.textures {
@@ -314,9 +344,9 @@ fn apply_cdb_material(
                 pool,
                 texture_exists,
             ),
-            // Opacity is not taken from this merged walk: it comes from one
-            // named layer, below (SMM-OPA-005).
-            // Parked slots (roughness/metal/ao/height/transmissive):
+            // Roughness, metalness and opacity are not taken from this merged
+            // walk: each comes from one layer (SMM-SRC-010, SMM-OPA-005).
+            // Parked slots (ao/height/transmissive):
             // present in the CDB, no canonical destination yet. #5381 moved
             // height here: a Starfield `_height` map blends alpha layers —
             // it is not a parallax input, and the canonical `height` role
@@ -350,22 +380,15 @@ fn apply_cdb_material(
         }
 
     // Opacity and its cutout (SMM-SRC / SMM-OPA, #7421).
-    if let Some(path) = super::opacity::apply_cdb_opacity(material, cdb_mat, touched) {
-        let before = material.textures.opacity;
-        fill(
-            &mut material.textures.opacity,
-            &path,
-            touched,
-            pool,
-            texture_exists,
-        );
-        // Labelled here, not only by the `.mat` arm's provenance pass: the
-        // sidecar-miss routes reach this too, and `mat.dump` reads the label
-        // to tell a database Map from an Override (SMM-OBS-001).
-        if material.textures.opacity != before {
-            material.texture_sources.opacity = ImportedTextureSource::Mat;
-        }
-    }
+    let opacity_map = super::opacity::apply_cdb_opacity(material, cdb_mat, touched);
+    fill_database_map(
+        opacity_map,
+        &mut material.textures.opacity,
+        &mut material.texture_sources.opacity,
+        touched,
+        pool,
+        texture_exists,
+    );
     // #5196 — `IsGlass` is the authoritative authored glass signal, the
     // same semantics the FO4 BGEM `glass_enabled` flag carries. Route it
     // to the spawn-time classifier's positive input (`bgem_glass`) so an
@@ -546,8 +569,7 @@ pub(crate) fn merge_external_material(
     // `triangle.frag` routes Starfield content through the Disney BSDF
     // path instead of the legacy Lambert + simple-GGX path (the audit
     // FAIL closure). A CDB hit then overlays the authored fields the
-    // lookup supplies (`apply_cdb_material`); scalar extraction beyond
-    // that stays parked on #3398.
+    // lookup supplies (`apply_cdb_material`).
     //
     // The CDB-presence check prevents accidental PBR routing for modded
     // sidecars against non-Starfield archives. Starfield's shipped NIFs use
@@ -569,8 +591,8 @@ pub(crate) fn merge_external_material(
     //
     // `from_bgsm` is deliberately left unset by that helper — the flag
     // gates BGSM spec-glossiness translation (an FO4 format convention).
-    // Starfield `.mat` authors metalness/roughness directly, and this arm
-    // forwards neither: NIF import (`bs_geometry.rs` / `bs_tri_shape.rs` /
+    // Starfield authors metalness/roughness as slots and replacements, which
+    // a CDB hit decides (`super::pbr`). Before that: NIF import (`bs_geometry.rs` / `bs_tri_shape.rs` /
     // `import::material::classify_legacy_pbr`) already ran the keyword
     // classifier on `metalness_override` / `roughness_override` before
     // this function was called.
@@ -590,14 +612,11 @@ pub(crate) fn merge_external_material(
     // saw. Non-stub Starfield meshes (inline shader data present) still
     // arrive with real `Some(...)` overrides, unchanged.
     //
-    // Phase 2 (#3398, CDB per-field extraction) landed for TEXTURES
-    // (canonical-fit slots through `apply_cdb_material`) and for the
-    // no-signal PBR scalars (#5197's dielectric neutral); it does NOT yet
-    // overwrite the scalars with CDB-AUTHORED data — the metal/rough slot
-    // semantics and `MaterialParamFloat` index mapping stay unverified, so
-    // authored extraction remains parked on #3398. A lookup MISS still
-    // falls through to the sentinel/classifier fallback instead of
-    // silently keeping a fabricated constant.
+    // A CDB hit decides roughness and metalness from the database's slots and
+    // replacements (#7422), with the neutral where it authors nothing (#5197).
+    // `MaterialParamFloat` stays untranslated: its index meanings are not
+    // verified. A lookup MISS still falls through to the sentinel/classifier
+    // fallback instead of keeping a fabricated constant.
     //
     // #2709 (SF-D9-03) established this arm as `PresenceOnly` — one routing
     // flag, no authored field, "`Merged` once a CDB lookup actually supplies

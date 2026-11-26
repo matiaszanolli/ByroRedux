@@ -79,6 +79,7 @@ layout(location = 6) out float outFsrReactive;
 layout(location = 7) out vec4 outTransparencyAndSun; // R: FSR T&C, GBA: far-field sun RGB
 
 #include "include/bindings.glsl"
+#include "include/material_pbr.glsl"
 #include "include/math_common.glsl"
 #include "include/raytrace.glsl"
 #include "include/clusters.glsl"
@@ -230,6 +231,8 @@ void main() {
             && (vizFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES);
     bool viewMaterialRole = debugMode == RENDER_DEBUG_MATERIAL_ROLE;
     bool viewMaterialOpacity = debugMode == RENDER_DEBUG_MATERIAL_OPACITY;
+    bool viewMaterialRoughness = debugMode == RENDER_DEBUG_MATERIAL_ROUGHNESS;
+    bool viewMaterialMetalness = debugMode == RENDER_DEBUG_MATERIAL_METALNESS;
     bool viewFacingRatio = debugMode == RENDER_DEBUG_FACING_RATIO;
     bool viewRestirLight = debugMode == RENDER_DEBUG_RESTIR_LIGHT;
     bool viewRestirHistory = debugMode == RENDER_DEBUG_RESTIR_HISTORY;
@@ -579,6 +582,9 @@ void main() {
     // this one (#3868).
     float roughness = mat.roughness;
     float metalness = mat.metalness;
+    // #7422 — a roughness or metalness map replaces the scalar as the base
+    // value; weather applies after it.
+    applyMaterialPbrMaps(mat, sampleUV, roughness, metalness);
     float emissiveMult = mat.emissiveMult;
     vec3 emissiveColor = vec3(mat.emissiveR, mat.emissiveG, mat.emissiveB);
     // Emission is shaped by the dedicated glow map when present, otherwise
@@ -1654,7 +1660,8 @@ void main() {
         if (normalAlphaSpec) {
             normalAlphaSpecMask = glossTexel.a;
             specStrength *= normalAlphaSpecMask;
-        } else {
+        } else if (mat.roughnessMapIndex == 0u) {
+            // SMM-PBR-001 — a gloss mask does not change a mapped roughness.
             roughness = mix(1.0, roughness, glossTexel.r);
         }
     }
@@ -1843,7 +1850,7 @@ void main() {
     // stay dielectric, as the flag-off original did. Not an `env_map_scale > 0` blanket inference — that was
     // the rejected "chrome cushion" rule — the mask must also say so, texel by texel.
     if (mat.materialKind == 0u && mat.envMapIndex != 0u && mat.envMaskIndex != 0u
-        && mat.multiLayerEnvmapStrength > 0.3) {
+        && mat.multiLayerEnvmapStrength > 0.3 && mat.metalnessMapIndex == 0u) {
         float legacyEnvMask = texture(textures[nonuniformEXT(mat.envMaskIndex)], sampleUV).r;
         // The conductor value the metal-keyword arm uses (`classify_pbr_keyword`): worn, not mirror, metal.
         float legacyEnvMaskMetalness = 0.9;
@@ -2019,6 +2026,32 @@ void main() {
                 ? vec3(coverageSourceValue)
                 : vec3(0.0, 0.0, coverageSourceValue),
             1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+        return;
+    } else if (viewMaterialRoughness || viewMaterialMetalness) {
+        // The base value after maps, weather and the legacy blends, as grey.
+        float shown = viewMaterialRoughness ? roughness : metalness;
+        vec3 shownColor = vec3(shown);
+        // SMM-OBS-007 — a mirror with no maps of its own shows what traced-hit
+        // sampling reads where its reflection ray lands; magenta, nothing.
+        if (mat.roughnessMapIndex == 0u && mat.metalnessMapIndex == 0u
+            && rtEnabled && roughness <= 0.05 && metalness >= 0.95) {
+            vec3 mirrorDir = reflect(-V, N);
+            CoveredHit hit;
+            traceClosestCoveredHit(
+                offsetRayOriginForDirection(fragWorldPos, N_bias, mirrorDir),
+                mirrorDir, 6000.0, fragInstanceIndex, hit);
+            shownColor = vec3(1.0, 0.0, 1.0);
+            if (hit.instanceIdx >= 0) {
+                GpuMaterial hitMaterial =
+                    materials[instances[hit.instanceIdx].materialId];
+                applyRayHitPbrMaps(hitMaterial, hit.uv);
+                shownColor = vec3(viewMaterialRoughness
+                    ? hitMaterial.roughness : hitMaterial.metalness);
+            }
+        }
+        outColor = vec4(shownColor, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
         return;
@@ -4970,6 +5003,9 @@ void main() {
                         hitPos, rawHitN, pathDir);
                     continue;
                 }
+                // SMM-PBR-004 — this hit's shading and next bounce read the
+                // maps at its texture coordinate.
+                applyRayHitPbrMaps(hitMat, hitUV);
 
                 vec3 hitEmission = rayHitEmission(hitMat, hitUV, hitBase.rgb, 0.0);
                 if (hitMat.materialKind == MATERIAL_KIND_EFFECT_SHADER) {

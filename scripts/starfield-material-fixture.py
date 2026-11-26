@@ -10,7 +10,7 @@ the material a texture set; the alpha settings are the root's.
 
     python3 scripts/starfield-material-fixture.py <kind> <material> <out-root>
 
-    <kind>      opacity | opacity-inverse | pbr | ao | ao-open
+    <kind>      opacity | opacity-inverse | pbr | plain | rough | metal | ao | ao-open
     <material>  the material path to override, as `mat.dump` prints it
     <out-root>  an empty or earlier fixture directory
 
@@ -58,6 +58,10 @@ KINDS = {
     "opacity": ["color", "opacity"],
     "opacity-inverse": ["color", "opacity-inverse"],
     "pbr": ["color", "rough", "metal"],
+    # The `pbr` fixture with one or both maps unbound, for the GPU time delta.
+    "plain": ["color"],
+    "rough": ["color", "rough"],
+    "metal": ["color", "metal"],
     "ao": ["color", "ao"],
     "ao-open": ["color", "ao-open"],
 }

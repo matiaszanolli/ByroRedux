@@ -125,6 +125,8 @@ fn unload_walk_collects_all_texture_handle_components() {
             glass_roughness_scratch: 31,
             glass_dirt_overlay: 32,
             opacity: 35,
+            roughness: 36,
+            metalness: 37,
             decals: [27, 28, 29, 30],
         }),
     );
@@ -135,7 +137,7 @@ fn unload_walk_collects_all_texture_handle_components() {
     assert!(mesh_drops.contains(&7), "mesh handle must be collected");
     for tex in [
         10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
-        33, 34, 35, 50,
+        33, 34, 35, 36, 37, 50,
     ] {
         assert!(
             texture_drops.contains(&tex),

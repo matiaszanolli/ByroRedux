@@ -105,14 +105,14 @@ use byroredux_core::ecs::components::water::{
 };
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_nif::import::{ImportedMaterial, MaterialTextureSet};
+use byroredux_nif::import::{ImportedMaterial, MaterialTextureSet, PbrSource};
 
 /// `GpuMaterial.ior` is a discriminated optical scalar. For ordinary
 /// materials it remains the canonical dielectric index of refraction. A
 /// fire-refraction proxy instead stores the authored heat-haze distortion
 /// strength there; the material kind makes the two meanings unambiguous
 /// without adding another field to the hot GPU material record. That
-/// record's size is pinned by `gpu_material_size_is_436_bytes`
+/// record's size is pinned by `gpu_material_size_is_444_bytes`
 /// (`crates/renderer/src/vulkan/material.rs`) — cited rather than restated
 /// here because the literal has already drifted once: this doc said
 /// "348-byte" through the 348 → 364 → 396 → 432 → 428 B size chain, and #3240's
@@ -659,6 +659,9 @@ pub(crate) fn translate_material_with_provenance(
     // an explicit external-file signal, not a keyword classification, and
     // are never re-derived here. The provenance flag distinguishes the NIF
     // keyword classifier from other producers that set deliberate overrides.
+    // SMM-PBR-005 — nor is a database Map or Constant the classifier's.
+    let database_authored =
+        |decided: Option<PbrSource>| decided.is_some_and(PbrSource::is_database_authored);
     let overlay_changed_base_color =
         source_base_color.is_some() && source_base_color != texture_path;
     let recomputed_pbr = if overlay_changed_base_color
@@ -821,11 +824,13 @@ pub(crate) fn translate_material_with_provenance(
         // fix whenever no overlay divergence exists.
         metalness: recomputed_pbr
             .as_ref()
+            .filter(|_| !database_authored(source.metalness_source))
             .map(|p| p.metalness)
             .or(source.metalness_override)
             .unwrap_or(f32::NAN),
         roughness: recomputed_pbr
             .as_ref()
+            .filter(|_| !database_authored(source.roughness_source))
             .map(|p| p.roughness)
             .or(source.roughness_override)
             .unwrap_or(f32::NAN),
@@ -888,6 +893,9 @@ pub(crate) fn translate_material_with_provenance(
             .unwrap_or(byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES),
     };
     material.resolve_pbr();
+    // SMM-PBR-005 — kept across the glass classifier, which forces its own
+    // scalars from names and flags.
+    let (resolved_roughness, resolved_metalness) = (material.roughness, material.metalness);
     let mirror_pane_forced = crate::helpers::classify_glass_into_material_with_provenance(
         &mut material,
         mesh_name,
@@ -926,6 +934,12 @@ pub(crate) fn translate_material_with_provenance(
         // valid coverage for the keyword/BGEM arms above, not this one.
         source.window_env_mapping && source.has_alpha,
     );
+    if database_authored(source.roughness_source) {
+        material.roughness = resolved_roughness;
+    }
+    if database_authored(source.metalness_source) {
+        material.metalness = resolved_metalness;
+    }
     (
         material,
         MaterialTranslateProvenance { mirror_pane_forced },
@@ -1267,7 +1281,7 @@ pub(crate) fn normal_alpha_spec_roughness(
     normal_map_index: u32,
     gloss_map_index: u32,
     normal_has_alpha: bool,
-    bgsm_pbr_scalars_authored: bool,
+    roughness_is_authored: bool,
 ) -> Option<f32> {
     // #2606 (FO4-D7-01) — never overwrite roughness a real material file
     // authored. This is a Skyrim/Gamebryo-era fallback for content that
@@ -1284,12 +1298,15 @@ pub(crate) fn normal_alpha_spec_roughness(
     // unconditional for BGSM content, so the Disney lobe consumes the
     // clobbered roughness directly.
     //
-    // Gated on `bgsm_pbr_scalars_authored`, NOT on `from_bgsm`/`BGSM_AUTHORED`
+    // SMM-PBR-005 extends the same rule to a Starfield database Map or
+    // Constant (`ImportedMaterial::roughness_is_authored`).
+    //
+    // Gated on that signal, NOT on `from_bgsm`/`BGSM_AUTHORED`
     // (which the BGEM arm sets while leaving both overrides `None` — #2609)
     // and NOT on `roughness_override.is_some()` (true for keyword-classified
     // legacy content too, which would disable this fallback for the very
     // population it exists to serve).
-    if bgsm_pbr_scalars_authored {
+    if roughness_is_authored {
         return None;
     }
     if !normal_alpha_spec_applies(material_kind, normal_map_index, gloss_map_index) {
@@ -1327,7 +1344,7 @@ pub(crate) fn normal_alpha_spec_roughness(
 pub(crate) fn resolve_normal_alpha_spec_roughness(
     world: &mut World,
     entity: EntityId,
-    bgsm_pbr_scalars_authored: bool,
+    roughness_is_authored: bool,
 ) {
     let Some((material_kind, metalness, env_map_scale, specular_strength)) =
         world.get::<Material>(entity).map(|m| {
@@ -1359,7 +1376,7 @@ pub(crate) fn resolve_normal_alpha_spec_roughness(
         normal_map_index,
         gloss_map_index,
         normal_has_alpha,
-        bgsm_pbr_scalars_authored,
+        roughness_is_authored,
     )
         && let Some(m) = world.get_mut::<Material>(entity) {
             m.roughness = r;
@@ -4279,6 +4296,110 @@ mod overlay_pbr_divergence_tests {
         let material = translate_material(&source, Some("MetalWall01"), paths, 0);
         assert_eq!(material.metalness, 0.9);
         assert_eq!(material.roughness, 0.55);
+    }
+
+    /// SMM-PBR-005 (#7422) — a database Constant, and the neutral under a
+    /// database Map, come through every pass that otherwise rewrites roughness
+    /// or metalness: the overlay re-classification, both glass-classifier arms
+    /// and both post-texture passes. Each case first shows that the pass would
+    /// have rewritten the same material without the database source.
+    #[test]
+    fn authored_database_pbr_survives_every_resolver() {
+        const AUTHORED: (f32, f32) = (0.62, 0.2);
+        // (name, imported material, mesh name, base path, overlaid-from path)
+        let overlay = (
+            "overlay re-classification",
+            ImportedMaterial { pbr_classified_at_import: true, ..ImportedMaterial::default() },
+            "Plank01",
+            "textures/furniture/wood/plank01.dds",
+            Some("textures/architecture/metal_wall01.dds"),
+        );
+        let glass = (
+            "glass behaviour",
+            ImportedMaterial { has_alpha: true, bgem_glass: true, ..ImportedMaterial::default() },
+            "Bottle",
+            "textures/clutter/glass/bottle01.dds",
+            None,
+        );
+        let mirror = (
+            "mirror pane",
+            ImportedMaterial { has_alpha: true, ..ImportedMaterial::default() },
+            "MirrorPane01",
+            "textures/clutter/glass/mirrorglass01.dds",
+            None,
+        );
+        for (pass, base, mesh_name, path, overlaid_from) in [overlay, glass, mirror] {
+            let translate = |sources: Option<PbrSource>| {
+                let source = ImportedMaterial {
+                    roughness_override: Some(AUTHORED.0),
+                    metalness_override: Some(AUTHORED.1),
+                    roughness_source: sources,
+                    metalness_source: sources,
+                    ..base.clone()
+                };
+                let paths = ResolvedPaths {
+                    textures: MaterialTextureSet {
+                        base_color: Some(path.to_string()),
+                        ..MaterialTextureSet::default()
+                    },
+                    material_path: None,
+                    source_base_color: overlaid_from.map(str::to_string),
+                };
+                let material = translate_material(&source, Some(mesh_name), paths, 0);
+                (material.roughness, material.metalness)
+            };
+            assert_ne!(translate(None), AUTHORED, "{pass}: the case does not reach the pass");
+            for decided in [PbrSource::Constant(AUTHORED.0), PbrSource::Map] {
+                assert_eq!(translate(Some(decided)), AUTHORED, "{pass}: {decided:?}");
+            }
+        }
+
+        // The two post-texture passes, run as the spawn path runs them.
+        let spawned = |source: &ImportedMaterial| {
+            let paths = ResolvedPaths {
+                textures: MaterialTextureSet {
+                    normal: Some("textures/smm/wall_normal.dds".to_string()),
+                    ..MaterialTextureSet::default()
+                },
+                material_path: None,
+                source_base_color: None,
+            };
+            let mut world = World::new();
+            let entity = world.spawn();
+            world.insert(entity, translate_material(source, Some("Wall01"), paths, 0));
+            world.insert(
+                entity,
+                MaterialTextureHandles {
+                    textures: MaterialTextureSet { normal: 42, ..MaterialTextureSet::default() },
+                    normal_has_alpha: false,
+                    tint_has_alpha: false,
+                    parallax_height_scale: 0.04,
+                    parallax_max_passes: 4.0,
+                },
+            );
+            resolve_normal_alpha_spec_roughness(&mut world, entity, source.roughness_is_authored());
+            resolve_unresolved_gloss_neutral_roughness(
+                &mut world,
+                entity,
+                source.bgsm_pbr_scalars_authored,
+                false,
+            );
+            world.get::<Material>(entity).expect("material").roughness
+        };
+        // 0.04 is the floor the BGSM-only near-mirror pass keys on.
+        for authored in [AUTHORED.0, NEAR_MIRROR_ROUGHNESS_FLOOR] {
+            let source = |decided| ImportedMaterial {
+                roughness_override: Some(authored),
+                metalness_override: Some(AUTHORED.1),
+                specular_strength: 2.5,
+                roughness_source: decided,
+                ..ImportedMaterial::default()
+            };
+            assert_ne!(spawned(&source(None)), authored, "the normal-alpha pass is idle");
+            for decided in [PbrSource::Constant(authored), PbrSource::Map] {
+                assert_eq!(spawned(&source(Some(decided))), authored, "{decided:?}");
+            }
+        }
     }
 
     /// A BGSM-authored material (`bgsm_pbr_scalars_authored = true`) is an

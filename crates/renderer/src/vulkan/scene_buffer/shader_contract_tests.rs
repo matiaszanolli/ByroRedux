@@ -1214,7 +1214,7 @@ fn normal_alpha_masks_specular_intensity_not_roughness() {
         .find("if (normalAlphaSpec) {")
         .expect("normal-alpha specular branch");
     let branch_end = triangle[branch_start..]
-        .find("} else {")
+        .find("} else if (mat.roughnessMapIndex == 0u) {")
         .map(|offset| branch_start + offset)
         .expect("dedicated-gloss sibling branch");
     let normal_alpha_branch = &triangle[branch_start..branch_end];
@@ -2853,6 +2853,9 @@ fn every_shader_struct_is_classified() {
         ("ShadowFilterGuide", ShaderLocal),
         ("FarSunProjection", Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep")),
         ("TerrainSample", ShaderLocal),
+        // `traceClosestCoveredHit`'s result bundle (`include/raytrace.glsl`),
+        // never stored or uploaded.
+        ("CoveredHit", ShaderLocal),
         // #7152 — `terrain_patch.comp`'s interpolated base-vertex bundle and
         // the displaced vertex it builds from it; neither is stored as such.
         ("BaseSample", ShaderLocal),
@@ -3617,7 +3620,7 @@ fn hash_gpu_material_fields_covers_every_gpu_material_field() {
     for offset in 0..size {
         let mut probe = base;
         // SAFETY: `GpuMaterial` is `#[repr(C)]` with no padding (every field
-        // is a 4-byte u32/f32; `gpu_material_size_is_436_bytes` pins the
+        // is a 4-byte u32/f32; `gpu_material_size_is_444_bytes` pins the
         // total), so every byte is a valid part of some u32/f32 and any bit
         // pattern written there is a valid value of that field. `offset` is
         // bounded by `size_of::<GpuMaterial>()`.
@@ -8817,6 +8820,89 @@ fn opacity_branches_are_gated_on_a_bound_map() {
         assert!(
             !text.contains("textures[nonuniformEXT(mat.opacityMapIndex)]"),
             "{name} samples the opacity lane outside coverage_alpha.glsl"
+        );
+    }
+}
+
+/// SMM-GPU-002 — each roughness and metalness map is sampled only when bound,
+/// and nothing samples a lane outside `include/material_pbr.glsl`.
+#[test]
+fn pbr_map_branches_are_gated_on_a_bound_map() {
+    let sources = all_shader_code();
+    let include = sources
+        .iter()
+        .find(|(name, _)| name == "include/material_pbr.glsl")
+        .map(|(_, code)| code.as_str())
+        .expect("material_pbr.glsl");
+    for function in ["void applyMaterialPbrMaps(", "void applyRayHitPbrMaps("] {
+        let body = glsl_fn_body(include, function);
+        for lane in ["mat.roughnessMapIndex", "mat.metalnessMapIndex"] {
+            let gate = body
+                .find(&format!("if ({lane} != 0u) {{"))
+                .unwrap_or_else(|| panic!("{function} has no gate on {lane}"));
+            let sample = body
+                .find(&format!("textures[nonuniformEXT({lane})]"))
+                .unwrap_or_else(|| panic!("{function} does not sample {lane}"));
+            assert!(gate < sample, "{function} samples {lane} before its gate");
+        }
+        assert_eq!(body.matches("textures[").count(), 2, "{function}");
+    }
+    for (name, text) in &sources {
+        for lane in ["mat.roughnessMapIndex)]", "mat.metalnessMapIndex)]"] {
+            assert!(
+                name == "include/material_pbr.glsl" || !text.contains(lane),
+                "{name} samples a material PBR lane outside material_pbr.glsl"
+            );
+        }
+    }
+}
+
+/// SMM-PBR-001/002/004 — the visible surface and every traced hit that shades
+/// with roughness or metalness take the maps first, and the legacy per-texel
+/// changes leave a mapped value alone. A new shader that reads either field of
+/// a material fails here until it is listed.
+#[test]
+fn every_pbr_reader_takes_the_maps() {
+    let sources = all_shader_code();
+    let readers: Vec<&str> = sources
+        .iter()
+        .filter(|(name, code)| {
+            // `sky_prefilter.comp`'s is a push-constant of its own.
+            name != "sky_prefilter.comp"
+                && (code.contains(".roughness") || code.contains(".metalness"))
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        readers,
+        ["include/lighting.glsl", "include/material_pbr.glsl", "triangle.frag"]
+    );
+    let code = |name: &str| {
+        let found = sources.iter().find(|(n, _)| n == name);
+        found.map(|(_, c)| c.as_str()).expect("listed shader")
+    };
+    let frag = code("triangle.frag");
+    let at = |needle: &str| frag.find(needle).unwrap_or_else(|| panic!("{needle:?}"));
+    // The visible surface: after the scalars, before the gloss mask and weather.
+    let visible = at("applyMaterialPbrMaps(mat, sampleUV, roughness, metalness);");
+    assert!(at("float roughness = mat.roughness;") < visible);
+    assert!(visible < at("if (mat.glossMapIndex != 0u) {"));
+    assert!(visible < at("if (weatherWetFilm > 0.0 || weatherSnow > 0.0) {"));
+    assert!(frag.contains("} else if (mat.roughnessMapIndex == 0u) {"), "SMM-PBR-001 gloss");
+    assert!(frag.contains("&& mat.multiLayerEnvmapStrength > 0.3 && mat.metalnessMapIndex == 0u"));
+    // The path loop: its copy of the hit's record is patched before either
+    // consumer, the emitter shading (lighting.glsl) and the bounce sample.
+    let traced = at("applyRayHitPbrMaps(hitMat, hitUV);");
+    assert!(at("hitInst, hitMat, hitUV, hitBase)) {") < traced);
+    assert!(traced < at("hitDirect = pathHitRadiance("));
+    assert!(traced < at("hitAlbedo, hitMat.metalness, hitMat.roughness, hitMat.ior,"));
+    assert_eq!(frag.matches("pathHitRadiance(").count(), 1);
+    for (name, text) in &sources {
+        assert!(
+            name == "triangle.frag"
+                || name == "include/lighting.glsl"
+                || !text.contains("pathHitRadiance("),
+            "{name} shades a path hit without taking the maps"
         );
     }
 }

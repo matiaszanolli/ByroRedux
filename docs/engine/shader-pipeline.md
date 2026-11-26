@@ -675,7 +675,7 @@ frame. The replaced pair is retired through the deferred-destroy countdown.
 | 10 | `INSTANCE_FLAG_MOVED_THIS_FRAME` | Instance moved this build: a rigid model matrix that differs from its previous one, or a skinned pose marked dirty. Read on the selected shadow ray's hit to keep that pixel's direct-light history short. Assembled for every draw, rasterized or not, since rays hit off-screen movers (`3934f46d7`) |
 | 16–31 | terrain tile index | `(flags >> 16) & 0xFFFF` (when bit 3 set) |
 
-### `GpuMaterial` — 436 bytes, SSBO (Set 1, Binding 13)
+### `GpuMaterial` — 444 bytes, SSBO (Set 1, Binding 13)
 
 Indexed by `GpuInstance.material_id`. Deduplicated per frame: identical
 material params share one entry. Up to `MAX_MATERIALS` = 16 384 entries.
@@ -724,7 +724,9 @@ Selected fields (full layout in
 | 392–416 | authored lighting response | lighting-effect pair, subsurface rolloff, rim/back powers, Fresnel power, greyscale-to-palette scale |
 | 420–424 | lighting texture roles | soft/rim lighting mask and back-lighting map indices |
 | 428 | `detail_neutral` | #4422 producer-declared detail-combine neutral |
-| 432 | `opacity_map_index` | #7421 opacity texture, red channel (0 = base-colour alpha is coverage); read only through `include/coverage_alpha.glsl`. Opacity map → total **436** |
+| 432 | `opacity_map_index` | #7421 opacity texture, red channel (0 = base-colour alpha is coverage); read only through `include/coverage_alpha.glsl` |
+| 436 | `roughness_map_index` | #7422 base-roughness texture, red channel (0 = the scalar); read only through `include/material_pbr.glsl` |
+| 440 | `metalness_map_index` | #7422 base-metalness texture, read the same way. Metalness map → total **444** |
 
 Three index fields are **not** plain bindless indices: bit 31 is a channel
 selector set per draw in `byroredux::render::static_meshes`, and every reader
@@ -878,7 +880,7 @@ the colour from — both go through `byroTerrainBlendCore`). The displaced
 | `MAX_LIGHTS_PER_CLUSTER` | 512 | Candidate indices retained by each 16×9×24 cluster; overflow/high-water/drop telemetry is fence-lagged |
 | `MAX_INSTANCES` | 262 144 | One indirect draw command per instance worst-case; the instance-SSBO ceiling |
 | `INITIAL_INSTANCE_CAPACITY` | 65 536 | Starting size of each slot's instance + previous-model SSBO pair; grows by doubling toward `MAX_INSTANCES` (#4199) |
-| `MAX_MATERIALS` | 16 384 | 436 B each; deduplicated per frame |
+| `MAX_MATERIALS` | 16 384 | 444 B each; deduplicated per frame |
 | `MAX_TOTAL_BONES` | 196 608 | `floor(196 608 / 144)` = 1 365 palette slots, minus reserved slot 0 → **1 364 allocatable** skinned meshes (M29.6). Not an exact product: 1 365 × 144 = 196 560 leaves a 48-bone unused tail |
 | `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME` | 1 364 | First-sight bind-inverse upload cap; equals `MAX_SKIN_SLOTS` by construction |
 | `MAX_TERRAIN_TILES` | 1 024 | 240 B each (`GpuTerrainTile`) |

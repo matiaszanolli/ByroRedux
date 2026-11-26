@@ -786,6 +786,12 @@ fn parse_txst_group_inner(
                     b"TX05" => set.env = extract(&sub.data),
                     b"TX06" => set.inner = extract(&sub.data),
                     b"TX07" => set.specular = extract(&sub.data),
+                    b"TX08" if game == GameKind::Starfield => {
+                        set.metalness = extract(&sub.data)
+                    }
+                    b"TX09" if game == GameKind::Starfield => {
+                        set.roughness = extract(&sub.data)
+                    }
                     b"TX19" if game == GameKind::Starfield => {
                         set.opacity = extract(&sub.data)
                     }
@@ -829,15 +835,12 @@ fn parse_txst_group_inner(
                             color: [d[32], d[33], d[34], d[35]],
                         });
                     }
-                    // #4438 — Starfield authors PBR maps in slots this
-                    // decode does not model: TX08 `_metal`, TX09 `_rough`,
-                    // TX17 `_ao`, TX19 `_opacity` (census: 39 sub-records
-                    // across 23 vanilla Starfield.esm TXSTs, 20 of the
-                    // records decals whose `_opacity` is exactly the
-                    // coverage map they need). There is no canonical sink
-                    // for them yet (SF-D3-01), so capture nothing but make
-                    // the drop visible: warn once per FourCC rather than
-                    // once per record.
+                    // #4438 — a slot this decode does not model, such as
+                    // Starfield's TX17 `_ao`, which has no canonical sink
+                    // yet (census: 39 PBR sub-records across 23 vanilla
+                    // Starfield.esm TXSTs, before TX08, TX09 and TX19 were
+                    // read). Capture nothing but make the drop visible: warn
+                    // once per FourCC rather than once per record.
                     sub_type
                         if sub_type.starts_with(b"TX")
                             && sub_type.len() == 4
@@ -845,9 +848,8 @@ fn parse_txst_group_inner(
                     {
                         log::warn!(
                             "TXST sub-record {} has no modelled slot; texture path \
-                             dropped (Starfield PBR maps TX08 metal / TX09 rough / \
-                             TX17 AO / TX19 opacity land here until SF-D3-01 gives \
-                             them a canonical sink)",
+                             dropped (Starfield's TX17 AO lands here until it gets a \
+                             canonical sink)",
                             String::from_utf8_lossy(sub_type),
                         );
                     }

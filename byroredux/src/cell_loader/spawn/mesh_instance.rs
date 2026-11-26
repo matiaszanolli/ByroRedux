@@ -487,8 +487,18 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                 material.textures.back_lighting,
                 sources.back_lighting,
             );
-            // SMM-SRC-009 — a Starfield TXST override's TX19. A named
-            // role, so no wire-slot pick.
+            (textures.roughness, sources.roughness) = resolve_effective(
+                ov.and_then(|o| o.roughness),
+                material.textures.roughness,
+                sources.roughness,
+            );
+            (textures.metalness, sources.metalness) = resolve_effective(
+                ov.and_then(|o| o.metalness),
+                material.textures.metalness,
+                sources.metalness,
+            );
+            // SMM-SRC-009 — a Starfield TXST override's TX19, and TX09 and
+            // TX08 above. Named roles, so no wire-slot pick.
             (textures.opacity, sources.opacity) = resolve_effective(
                 ov.and_then(|o| o.opacity),
                 material.textures.opacity,

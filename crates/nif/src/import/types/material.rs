@@ -3,9 +3,6 @@
 
 use super::*;
 
-/// Provenance of a canonical texture path while it is still attached to an
-/// imported NIF material.
-///
 /// The recorded rule holding authored Starfield opacity data unused
 /// (docs/prd/starfield-material-maps.md §5.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -31,6 +28,44 @@ impl OpacityHeld {
     }
 }
 
+/// Where the material merge took a Starfield database material's roughness or
+/// metalness from (docs/prd/starfield-material-maps.md §3.1, SMM-SRC-001).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PbrSource {
+    /// A texture in the property's role. The canonical scalar then holds the
+    /// Absent fallback, which shades if the texture cannot load (SMM-SRC-011).
+    Map,
+    /// An enabled texture replacement's red value, now the canonical scalar
+    /// (SMM-SRC-004, SMM-PBR-003).
+    Constant(f32),
+    /// A value another source authored first, which keeps it (SMM-SRC-006).
+    Override,
+    /// The database authors nothing for it: today's fallback (SMM-SRC-007).
+    Absent,
+}
+
+impl ImportedMaterial {
+    /// Whether a material file authored the roughness: a BGSM's smoothness, or
+    /// a Starfield database Map or Constant. A fallback that exists for
+    /// content with no smoothness signal must not overwrite it (#2606,
+    /// SMM-PBR-005).
+    pub fn roughness_is_authored(&self) -> bool {
+        self.bgsm_pbr_scalars_authored
+            || self.roughness_source.is_some_and(PbrSource::is_database_authored)
+    }
+}
+
+impl PbrSource {
+    /// Whether the database supplies the surface's value, which no later pass
+    /// may overwrite (SMM-PBR-005).
+    pub const fn is_database_authored(self) -> bool {
+        matches!(self, Self::Map | Self::Constant(_))
+    }
+}
+
+/// Provenance of a canonical texture path while it is still attached to an
+/// imported NIF material.
+///
 /// Inline NIF authoring is the default. The application-side material
 /// provider changes only roles it actually fills from an external sidecar;
 /// this lets diagnostics distinguish NIF texture sets from BGSM/BGEM without
@@ -122,6 +157,15 @@ pub struct MaterialTextureSet<T> {
     /// colour space (SMM-SRC-003). Where bound it replaces base-colour alpha
     /// in every coverage test. Filled by Starfield materials only.
     pub opacity: T,
+    /// Per-texel base roughness, red channel, file colour space (SMM-SRC-003).
+    /// Where bound it replaces the material's scalar (SMM-PBR-001). Not
+    /// [`Self::smooth_spec`], which is a gloss mask with the opposite sense.
+    /// Filled by Starfield materials only.
+    pub roughness: T,
+    /// Per-texel base metalness, sampled like [`Self::roughness`]
+    /// (SMM-PBR-002). Not [`Self::specular`], a colour map. Filled by
+    /// Starfield materials only.
+    pub metalness: T,
     /// Ordered legacy material-overlay layers.
     pub decals: [T; 4],
 }
@@ -164,6 +208,8 @@ impl<T> MaterialTextureSet<T> {
             ("glass_roughness_scratch", &self.glass_roughness_scratch),
             ("glass_dirt_overlay", &self.glass_dirt_overlay),
             ("opacity", &self.opacity),
+            ("roughness", &self.roughness),
+            ("metalness", &self.metalness),
             ("decal0", &self.decals[0]),
             ("decal1", &self.decals[1]),
             ("decal2", &self.decals[2]),
@@ -199,6 +245,8 @@ impl<T> MaterialTextureSet<T> {
             glass_roughness_scratch: map(&self.glass_roughness_scratch),
             glass_dirt_overlay: map(&self.glass_dirt_overlay),
             opacity: map(&self.opacity),
+            roughness: map(&self.roughness),
+            metalness: map(&self.metalness),
             decals: std::array::from_fn(|index| map(&self.decals[index])),
         }
     }
@@ -237,6 +285,8 @@ impl<T> MaterialTextureSet<T> {
             ),
             glass_dirt_overlay: map(&self.glass_dirt_overlay, &other.glass_dirt_overlay),
             opacity: map(&self.opacity, &other.opacity),
+            roughness: map(&self.roughness, &other.roughness),
+            metalness: map(&self.metalness, &other.metalness),
             decals: std::array::from_fn(|index| map(&self.decals[index], &other.decals[index])),
         }
     }
@@ -271,6 +321,8 @@ impl<T> MaterialTextureSet<T> {
             &self.glass_roughness_scratch,
             &self.glass_dirt_overlay,
             &self.opacity,
+            &self.roughness,
+            &self.metalness,
         ]
         .into_iter()
         .chain(self.decals.iter())
@@ -344,16 +396,18 @@ mod material_texture_set_tests {
             glass_roughness_scratch: 20,
             glass_dirt_overlay: 21,
             opacity: 22,
-            decals: [23, 24, 25, 26],
+            roughness: 23,
+            metalness: 24,
+            decals: [25, 26, 27, 28],
         };
 
         assert_eq!(
             textures.values().copied().collect::<Vec<_>>(),
-            (0..27).collect::<Vec<_>>()
+            (0..29).collect::<Vec<_>>()
         );
         assert_eq!(
             textures.secondary_values().copied().collect::<Vec<_>>(),
-            (1..27).collect::<Vec<_>>()
+            (1..29).collect::<Vec<_>>()
         );
     }
 
@@ -461,6 +515,11 @@ pub struct ImportedMaterial {
     /// `merge_external_material` alone (SMM-SRC-001); read by `mat.dump` and
     /// the reach test.
     pub opacity_held: Option<OpacityHeld>,
+    /// Where a Starfield database material's roughness came from; `None` on a
+    /// material no database or loose `.mat` resolved.
+    pub roughness_source: Option<PbrSource>,
+    /// As [`Self::roughness_source`], for metalness.
+    pub metalness_source: Option<PbrSource>,
     pub bgem_glass: bool,
     pub thin_glass: bool,
     /// BGEM v21+ artist tint for the dielectric reflection/Fresnel lobe.
@@ -642,6 +701,8 @@ impl Default for ImportedMaterial {
             from_bgsm: false,
             external_material_resolved: false,
             opacity_held: None,
+            roughness_source: None,
+            metalness_source: None,
             bgem_glass: false,
             thin_glass: false,
             glass_fresnel_color: [1.0; 3],

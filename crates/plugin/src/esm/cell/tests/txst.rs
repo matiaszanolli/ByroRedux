@@ -243,18 +243,27 @@ fn parse_txst_diffuse_only_leaves_other_slots_none() {
     assert!(set.env.is_none());
 }
 
-/// SMM-SRC-009 — TX19 is Starfield's opacity map. No other game's TXST
-/// defines the slot.
+/// SMM-SRC-009 — TX08, TX09 and TX19 are Starfield's metalness, roughness
+/// and opacity maps. No other game's TXST defines the slots.
 #[test]
-fn parse_txst_reads_tx19_as_opacity_for_starfield_only() {
+fn parse_txst_reads_the_material_map_slots_for_starfield_only() {
     for (game, expected) in [
-        (GameKind::Starfield, Some("textures/smm/leaf_opacity.dds")),
-        (GameKind::Fallout4, None),
+        (
+            GameKind::Starfield,
+            [
+                Some("textures/smm/leaf_metal.dds"),
+                Some("textures/smm/leaf_rough.dds"),
+                Some("textures/smm/leaf_opacity.dds"),
+            ],
+        ),
+        (GameKind::Fallout4, [None; 3]),
     ] {
         let txst = build_txst_record(
             0xBEEF,
             &[
                 (b"TX00", "textures/smm/leaf_color.dds"),
+                (b"TX08", "textures/smm/leaf_metal.dds"),
+                (b"TX09", "textures/smm/leaf_rough.dds"),
                 (b"TX19", "textures/smm/leaf_opacity.dds"),
             ],
         );
@@ -264,7 +273,12 @@ fn parse_txst_reads_tx19_as_opacity_for_starfield_only() {
         let end = reader.group_content_end(&header);
         let mut sets: HashMap<u32, TextureSet> = HashMap::new();
         parse_txst_group(&mut reader, end, &mut sets, game).expect("parse");
-        assert_eq!(sets[&0xBEEF].opacity.as_deref(), expected, "{game:?}");
+        let set = &sets[&0xBEEF];
+        assert_eq!(
+            [&set.metalness, &set.roughness, &set.opacity].map(|p| p.as_deref()),
+            expected,
+            "{game:?}"
+        );
     }
 }
 
@@ -631,10 +645,9 @@ fn decal_data_doc_does_not_claim_a_nonexistent_m28_decal_milestone() {
 // property-crime gameplay had no input. Cross-game (Oblivion +
 // FO3 + FNV + Skyrim+ all use the same wire format).
 
-/// The decode models TX00–TX07 only; Starfield's PBR maps
-/// (`_metal`/`_rough`/`_ao`/`_opacity`) must still parse — the modelled
-/// slots survive and the record lands — while the unmodelled FourCCs hit
-/// the first-sighting warn gate (first call true, repeat false).
+/// A Starfield slot the decode does not model (TX17 `_ao`) must not drop the
+/// record: the modelled slots survive, and the unmodelled FourCC hits the
+/// first-sighting warn gate (first call true, repeat false).
 #[test]
 fn starfield_pbr_slots_parse_without_dropping_the_record() {
     use super::super::support::{first_txst_slot_sighting, warn_unmodelled_txst_slot};
@@ -643,8 +656,8 @@ fn starfield_pbr_slots_parse_without_dropping_the_record() {
         0x0000_1000,
         &[
             (b"TX00", "textures/foo_diffuse.dds"),
-            (b"TX08", "textures/foo_metal.dds"),
             (b"TX09", "textures/foo_rough.dds"),
+            (b"TX17", "textures/foo_ao.dds"),
         ],
     );
     let group = wrap_in_txst_group(&[record]);
@@ -670,10 +683,12 @@ fn starfield_pbr_slots_parse_without_dropping_the_record() {
         "the modelled TX00 must survive"
     );
 
-    // The parse routed TX08 through the process-global warn gate, so it
-    // now reports false. Order-independent: whichever test saw TX08
+    assert_eq!(set.roughness.as_deref(), Some("textures/foo_rough.dds"));
+
+    // The parse routed TX17 through the process-global warn gate, so it
+    // now reports false. Order-independent: whichever test saw TX17
     // first, this one's parse has seen it by now.
-    assert!(!warn_unmodelled_txst_slot(b"TX08"));
+    assert!(!warn_unmodelled_txst_slot(b"TX17"));
 
     // #4770 — the first-true / then-false contract itself is pinned on a
     // test-owned set; asserting a *first* sighting on the global one
@@ -681,7 +696,7 @@ fn starfield_pbr_slots_parse_without_dropping_the_record() {
     let seen = std::sync::Mutex::new(std::collections::HashSet::new());
     assert!(first_txst_slot_sighting(&seen, b"TX17"));
     assert!(!first_txst_slot_sighting(&seen, b"TX17"));
-    assert!(first_txst_slot_sighting(&seen, b"TX08"));
+    assert!(first_txst_slot_sighting(&seen, b"TX16"));
 }
 
 /// #4642 — `LTEX.GNAM` is an *array* of grass references (xEdit

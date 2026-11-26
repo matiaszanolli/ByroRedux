@@ -377,6 +377,10 @@ pub struct TextureSet {
     /// Starfield TX19, the opacity map (xEdit `wbDefinitionsSF1.pas`;
     /// SMM-SRC-009). No other game's TXST has this slot.
     pub opacity: Option<String>,
+    /// Starfield TX09, the roughness map (same source).
+    pub roughness: Option<String>,
+    /// Starfield TX08, the metalness map (same source).
+    pub metalness: Option<String>,
     /// FO4+ MNAM sub-record — path to a BGSM material file whose
     /// embedded TX00..TX07 override the direct-slot path. When present
     /// it typically replaces TX00 entirely (the 140 MNAM-only vanilla

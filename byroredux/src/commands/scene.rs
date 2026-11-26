@@ -1281,7 +1281,7 @@ impl ConsoleCommand for MatDumpCommand {
             "base_color" | "emissive" | "detail" | "dark" | "tint" | "inner_layer"
             | "greyscale_lut" | "emittance_gradient" | "glass_dirt_overlay" | "decal0"
             | "decal1" | "decal2" | "decal3" => ("sRGB", "2D"),
-            "opacity" => ("file", "2D"),
+            "opacity" | "roughness" | "metalness" => ("file", "2D"),
             _ => ("linear", "2D"),
         };
         lines.push(opacity_source_line(
@@ -1289,6 +1289,24 @@ impl ConsoleCommand for MatDumpCommand {
             debug.sources.opacity,
             debug.opacity_held,
         ));
+        for (property, path, source, decided, scalar) in [
+            (
+                "roughness",
+                &debug.paths.roughness,
+                debug.sources.roughness,
+                debug.pbr_sources[0],
+                material.roughness,
+            ),
+            (
+                "metalness",
+                &debug.paths.metalness,
+                debug.sources.metalness,
+                debug.pbr_sources[1],
+                material.metalness,
+            ),
+        ] {
+            lines.push(pbr_source_line(property, path.as_deref(), source, decided, scalar));
+        }
         lines.push(
             "  textures (role | handle | set binding | color | view | state | source | path):"
                 .into(),
@@ -1664,10 +1682,66 @@ fn opacity_source_line(
     }
 }
 
+/// `mat.dump`'s roughness and metalness lines, as [`opacity_source_line`].
+/// `scalar` is the canonical value the material holds: the fallback under an
+/// Absent property.
+fn pbr_source_line(
+    property: &str,
+    path: Option<&str>,
+    source: MaterialTextureSource,
+    decided: Option<byroredux_nif::import::PbrSource>,
+    scalar: f32,
+) -> String {
+    use byroredux_nif::import::PbrSource;
+    if let Some(path) = path {
+        return if matches!(source, MaterialTextureSource::Mat) {
+            format!("  {property}: Map {path}")
+        } else {
+            format!("  {property}: Override {path} (from {})", source.label())
+        };
+    }
+    match decided {
+        Some(PbrSource::Constant(value)) => format!("  {property}: Constant {value:.4}"),
+        Some(PbrSource::Override) => {
+            format!("  {property}: Override {scalar:.4} (authored on the material)")
+        }
+        Some(PbrSource::Map | PbrSource::Absent) | None => {
+            format!("  {property}: absent (scalar {scalar:.4})")
+        }
+    }
+}
+
 #[cfg(test)]
 mod opacity_source_line_tests {
     use super::*;
     use byroredux_nif::import::OpacityHeld;
+
+    /// SMM-OBS-001 — each of the four sources, for roughness and metalness.
+    #[test]
+    fn mat_dump_names_each_pbr_source() {
+        use byroredux_nif::import::PbrSource;
+        use MaterialTextureSource::{Absent, Mat, NifTextureSet};
+        let line = |path, source, decided| {
+            pbr_source_line("roughness", path, source, decided, 0.85)
+        };
+        assert_eq!(
+            line(Some("textures\\a_rough.dds"), Mat, Some(PbrSource::Map)),
+            "  roughness: Map textures\\a_rough.dds"
+        );
+        assert_eq!(
+            line(None, Absent, Some(PbrSource::Constant(0.25))),
+            "  roughness: Constant 0.2500"
+        );
+        assert!(line(Some("n.dds"), NifTextureSet, Some(PbrSource::Override))
+            .starts_with("  roughness: Override n.dds (from "));
+        assert_eq!(
+            line(None, Absent, Some(PbrSource::Override)),
+            "  roughness: Override 0.8500 (authored on the material)"
+        );
+        for decided in [Some(PbrSource::Absent), None] {
+            assert_eq!(line(None, Absent, decided), "  roughness: absent (scalar 0.8500)");
+        }
+    }
 
     #[test]
     fn mat_dump_names_each_opacity_source() {

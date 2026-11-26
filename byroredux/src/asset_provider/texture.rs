@@ -1019,6 +1019,8 @@ fn map_secondary_texture_handles(
         glass_dirt_overlay: slot(&textures.glass_dirt_overlay, srgb),
         // SMM-SRC-003 — sampled in the file's own colour space.
         opacity: slot(&textures.opacity, TextureColorSpace::AsAuthored),
+        roughness: slot(&textures.roughness, TextureColorSpace::AsAuthored),
+        metalness: slot(&textures.metalness, TextureColorSpace::AsAuthored),
         decals: std::array::from_fn(|i| slot(&textures.decals[i], srgb)),
     }
 }
@@ -1224,6 +1226,7 @@ mod tests {
             sources: Default::default(),
             clamp_mode: 0,
             opacity_held: None,
+            pbr_sources: [None; 2],
         };
         info.paths.base_color = Some("textures/old.dds".to_string());
         info.sources.base_color = MaterialTextureSource::NifTextureSet;
@@ -1452,6 +1455,8 @@ mod tests {
             glass_roughness_scratch: some("glass_roughness_scratch"),
             glass_dirt_overlay: some("glass_dirt_overlay"),
             opacity: some("opacity"),
+            roughness: some("roughness"),
+            metalness: some("metalness"),
             decals: [
                 some("decal_0"),
                 some("decal_1"),
@@ -1513,6 +1518,8 @@ mod tests {
             ("glass_dirt_overlay", false, TextureColorSpace::Srgb),
             // SMM-SRC-003 — the file's own colour space.
             ("opacity", false, TextureColorSpace::AsAuthored),
+            ("roughness", false, TextureColorSpace::AsAuthored),
+            ("metalness", false, TextureColorSpace::AsAuthored),
             ("decal_0", false, TextureColorSpace::Srgb),
             ("decal_1", false, TextureColorSpace::Srgb),
             ("decal_2", false, TextureColorSpace::Srgb),

@@ -275,10 +275,10 @@ pub const MAX_INDIRECT_DRAWS: usize = MAX_INSTANCES;
 pub const MAX_TERRAIN_TILES: usize = 1024;
 
 /// Maximum number of unique materials per frame in the
-/// [`super::super::material::MaterialTable`] SSBO. 16384 × 436 B ≈ 7.1 MB
-/// per frame × MAX_FRAMES_IN_FLIGHT (2) ≈ 14.3 MB total — well inside the
+/// [`super::super::material::MaterialTable`] SSBO. 16384 × 444 B ≈ 7.3 MB
+/// per frame × MAX_FRAMES_IN_FLIGHT (2) ≈ 14.5 MB total — well inside the
 /// 4 GB total VRAM budget (`feedback_vram_baseline.md`). The per-material
-/// size is pinned by `gpu_material_size_is_436_bytes`; see the size-history
+/// size is pinned by `gpu_material_size_is_444_bytes`; see the size-history
 /// comment on `GpuMaterial` in `material.rs` for the full growth chain.
 ///
 /// Observed unique-material counts (post-Disney-PBR; #1248-#1251 added

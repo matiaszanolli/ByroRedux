@@ -543,6 +543,8 @@ impl DrawCommand {
             lighting_mask_map_index: self.supplemental_texture_indices[slot::LIGHTING_MASK],
             back_lighting_map_index: self.supplemental_texture_indices[slot::BACK_LIGHTING],
             opacity_map_index: self.supplemental_texture_indices[slot::OPACITY],
+            roughness_map_index: self.supplemental_texture_indices[slot::ROUGHNESS],
+            metalness_map_index: self.supplemental_texture_indices[slot::METALNESS],
         }
     }
 

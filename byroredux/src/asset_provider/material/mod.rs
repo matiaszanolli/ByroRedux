@@ -20,6 +20,7 @@ mod cdb;
 mod loose_mat;
 mod merge;
 mod opacity;
+mod pbr;
 mod provider;
 
 pub(crate) use cdb::{

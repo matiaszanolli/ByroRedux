@@ -1342,6 +1342,8 @@ impl MaterialInfo {
             // No inline NIF producer: only the Starfield material merge
             // fills opacity.
             opacity: None,
+            roughness: None,
+            metalness: None,
             base_color: self.texture_path,
             normal: self.normal_map,
             emissive: self.glow_map,
@@ -1568,6 +1570,8 @@ impl MaterialInfo {
             from_bgsm: false,
             external_material_resolved: false,
             opacity_held: None,
+            roughness_source: None,
+            metalness_source: None,
             bgem_glass: false,
             thin_glass: false,
             glass_fresnel_color: [1.0; 3],

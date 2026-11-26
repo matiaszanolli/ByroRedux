@@ -340,6 +340,10 @@ fn attach_mesh_components(
             sources: texture_sources,
             clamp_mode: canonical_clamp_mode,
             opacity_held: source_material.opacity_held,
+            pbr_sources: [
+                source_material.roughness_source,
+                source_material.metalness_source,
+            ],
         },
     );
     // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness ONCE
@@ -347,12 +351,12 @@ fn attach_mesh_components(
     // instead of recomputing it per draw in the render path. Reads the same
     // components the renderer reads, so the value is identical — only canonical +
     // tooling-visible.
-    // #2606 — pass the "a real BGSM authored the PBR scalars" signal so the legacy
-    // fallback cannot clobber them.
+    // #2606 / SMM-PBR-005 — pass the "a material file authored the roughness"
+    // signal so the legacy fallback cannot clobber it.
     crate::material_translate::resolve_normal_alpha_spec_roughness(
         world,
         entity,
-        source_material.bgsm_pbr_scalars_authored,
+        source_material.roughness_is_authored(),
     );
     // #2826 (REN-D19-02) — same "resolve once from MaterialTextureHandles"
     // pattern, for whether the model-space normal map's blue channel carries

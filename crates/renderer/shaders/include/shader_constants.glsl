@@ -13,6 +13,7 @@
 // Depth-buffer convention (#3308)
 #define BYRO_REVERSED_Z 1
 #define BYRO_DEPTH_CLEAR 0.0
+#define MATERIAL_MIN_ROUGHNESS 0.04
 
 // Rec. 709 luma weights, linear sRGB (#4347)
 #define LUMA_REC709 vec3(0.2126, 0.7152, 0.0722)
@@ -82,7 +83,7 @@
 #define VERTEX_BONE_INDICES_OFFSET_FLOATS 12u
 #define VERTEX_BONE_WEIGHTS_OFFSET_FLOATS 16u
 // GpuMaterial as a flat word array (volumetrics_inject.comp's alpha-aware sun trace).
-#define GPU_MATERIAL_STRIDE_WORDS 109u
+#define GPU_MATERIAL_STRIDE_WORDS 111u
 #define MATERIAL_ALPHA_THRESHOLD_WORD 11u
 #define MATERIAL_ALPHA_TEST_FUNC_WORD 20u
 #define MATERIAL_OPACITY_MAP_WORD 108u
@@ -656,7 +657,9 @@
 #define RENDER_DEBUG_RADIANCE_CACHE 21u
 #define RENDER_DEBUG_GI_ELIGIBLE 22u
 #define RENDER_DEBUG_MATERIAL_OPACITY 23u
-#define RENDER_DEBUG_MODE_MAX 23u
+#define RENDER_DEBUG_MATERIAL_ROUGHNESS 24u
+#define RENDER_DEBUG_MATERIAL_METALNESS 25u
+#define RENDER_DEBUG_MODE_MAX 25u
 #define RENDER_DEBUG_LEGACY_FLAGS 4294967295u
 
 // Debug-viz bit flags (set via console for renderer bisects).

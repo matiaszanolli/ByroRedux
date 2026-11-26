@@ -727,6 +727,8 @@ fn supplemental_texture_indices(texture_indices: &MaterialTextureSet<u32>) -> [u
     lanes[slot::LIGHTING_MASK] = texture_indices.lighting_mask;
     lanes[slot::BACK_LIGHTING] = texture_indices.back_lighting;
     lanes[slot::OPACITY] = texture_indices.opacity;
+    lanes[slot::ROUGHNESS] = texture_indices.roughness;
+    lanes[slot::METALNESS] = texture_indices.metalness;
     lanes
 }
 
@@ -1546,6 +1548,8 @@ mod tests {
             lighting_mask: 115,
             back_lighting: 116,
             opacity: 117,
+            roughness: 118,
+            metalness: 119,
             // The roles with dedicated `GpuMaterial` fields: a supplemental
             // lane fed from one of them is a wrong-role write.
             base_color: 201,
@@ -1559,7 +1563,7 @@ mod tests {
             environment_mask: 209,
             greyscale_lut: 210,
         };
-        let expected: [(usize, u32); 17] = [
+        let expected: [(usize, u32); 19] = [
             (slot::TINT, 101),
             (slot::INNER_LAYER, 102),
             (slot::SPECULAR, 103),
@@ -1577,6 +1581,8 @@ mod tests {
             (slot::LIGHTING_MASK, 115),
             (slot::BACK_LIGHTING, 116),
             (slot::OPACITY, 117),
+            (slot::ROUGHNESS, 118),
+            (slot::METALNESS, 119),
         ];
         assert_eq!(
             expected.len(),

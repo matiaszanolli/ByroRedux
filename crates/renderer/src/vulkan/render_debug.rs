@@ -48,10 +48,15 @@ pub enum RenderDebugMode {
     /// SMM-OBS-003 — the visible surface's opacity, unlit: grey from an opacity map or constant, blue
     /// where it is the colour texture's alpha.
     MaterialOpacity = crate::shader_constants::RENDER_DEBUG_MATERIAL_OPACITY,
+    /// SMM-OBS-003 / -007 — the visible surface's base roughness, unlit; on a map-less mirror, the
+    /// roughness the traced-hit sampling read at its reflection hit.
+    MaterialRoughness = crate::shader_constants::RENDER_DEBUG_MATERIAL_ROUGHNESS,
+    /// As [`Self::MaterialRoughness`], for metalness.
+    MaterialMetalness = crate::shader_constants::RENDER_DEBUG_MATERIAL_METALNESS,
 }
 
 impl RenderDebugMode {
-    pub const USER_MODES: [Self; 24] = [
+    pub const USER_MODES: [Self; 26] = [
         Self::Final,
         Self::ShadowVisibility,
         Self::SelectedLight,
@@ -76,6 +81,8 @@ impl RenderDebugMode {
         Self::RadianceCache,
         Self::GiEligible,
         Self::MaterialOpacity,
+        Self::MaterialRoughness,
+        Self::MaterialMetalness,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -105,6 +112,8 @@ impl RenderDebugMode {
             Self::RadianceCache => "radiance_cache",
             Self::GiEligible => "gi_eligible",
             Self::MaterialOpacity => "material_opacity",
+            Self::MaterialRoughness => "material_roughness",
+            Self::MaterialMetalness => "material_metalness",
         }
     }
 
@@ -158,6 +167,8 @@ impl FromStr for RenderDebugMode {
             "radiance_cache" | "cache" => Ok(Self::RadianceCache),
             "gi_eligible" | "eligible" => Ok(Self::GiEligible),
             "material_opacity" | "opacity" => Ok(Self::MaterialOpacity),
+            "material_roughness" | "roughness" => Ok(Self::MaterialRoughness),
+            "material_metalness" | "metalness" => Ok(Self::MaterialMetalness),
             _ => Err(format!(
                 "unknown render debug mode '{value}' (expected {})",
                 Self::user_mode_names()
@@ -377,18 +388,39 @@ mod tests {
         assert!(frag.contains("} else if (viewRadianceCache) {"), "the main pass must draw the view");
     }
 
-    /// SMM-OBS-003 — the opacity view is named, selectable, the last mode (so `RENDER_DEBUG_MODE_MAX`
-    /// names it), and draws the value the coverage test reads, before material and vertex alpha scale it
+    /// SMM-OBS-003 / -007 — both PBR views are named and selectable, metalness is the last mode (so
+    /// `RENDER_DEBUG_MODE_MAX` names it), and the main pass draws them unlit. On a map-less mirror they
+    /// show what the traced-hit sampling read at the reflection hit: the same function the path loop calls.
+    #[test]
+    fn the_material_pbr_views_draw_the_surface_and_the_mirror_hit_unlit() {
+        assert_eq!("roughness".parse(), Ok(RenderDebugMode::MaterialRoughness));
+        assert_eq!("material_metalness".parse(), Ok(RenderDebugMode::MaterialMetalness));
+        assert_eq!(RenderDebugMode::USER_MODES.last(), Some(&RenderDebugMode::MaterialMetalness));
+        assert_eq!(
+            RenderDebugMode::MaterialMetalness.shader_value(),
+            crate::shader_constants::RENDER_DEBUG_MODE_MAX
+        );
+        let frag = include_str!("../../shaders/triangle.frag");
+        let view = frag.find("} else if (viewMaterialRoughness || viewMaterialMetalness) {").expect("view branch");
+        let branch = &frag[view..view + frag[view..].find("return;").expect("early return")];
+        assert!(branch.contains("viewMaterialRoughness ? roughness : metalness"));
+        assert!(branch.contains("mat.roughnessMapIndex == 0u && mat.metalnessMapIndex == 0u"));
+        assert!(branch.contains("applyRayHitPbrMaps(hitMaterial, hit.uv);"));
+        assert!(branch.contains("outRawIndirect = vec4(0.0);"));
+        assert_eq!(
+            frag.matches("applyRayHitPbrMaps(").count(),
+            2,
+            "the path loop and the mirror view are the two callers"
+        );
+    }
+
+    /// SMM-OBS-003 — the opacity view is named, selectable, and draws the value the coverage test reads, before material and vertex alpha scale it
     /// and before any lighting.
     #[test]
     fn the_material_opacity_view_draws_the_coverage_source_unlit() {
         assert_eq!("opacity".parse(), Ok(RenderDebugMode::MaterialOpacity));
         assert_eq!("material_opacity".parse(), Ok(RenderDebugMode::MaterialOpacity));
-        assert_eq!(RenderDebugMode::USER_MODES.last(), Some(&RenderDebugMode::MaterialOpacity));
-        assert_eq!(
-            RenderDebugMode::MaterialOpacity.shader_value(),
-            crate::shader_constants::RENDER_DEBUG_MODE_MAX
-        );
+        assert!(RenderDebugMode::USER_MODES.contains(&RenderDebugMode::MaterialOpacity));
         let frag = include_str!("../../shaders/triangle.frag");
         let source = frag.find("texColor.a = coverageAlphaGrad(").expect("coverage source");
         let kept = frag.find("float coverageSourceValue = texColor.a;").expect("kept value");

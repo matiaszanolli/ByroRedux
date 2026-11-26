@@ -868,6 +868,7 @@ fn mat_dump_reports_texture_path_provenance_and_binding_contract() {
             sources,
             clamp_mode: 2,
             opacity_held: None,
+            pbr_sources: [None; 2],
         },
     );
     let handles = MaterialTextureSet {

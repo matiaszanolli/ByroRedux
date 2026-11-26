@@ -38,9 +38,10 @@
 //! with no `ID`) names layers (`LayerID`), a layer its material
 //! (`MaterialID`), a material its texture set (`TextureSetID`). Other objects
 //! hang off the root too (blenders, UV streams, LOD materials with settings
-//! of their own). Opacity and the alpha settings are read along that graph,
-//! as [`byroredux_sfmaterial::MaterialIndex::lookup`] reads them
-//! (SMM-SRC-002, #7421); the other properties still merge every object.
+//! of their own). Opacity, roughness, metalness and the alpha settings are
+//! read along that graph, as
+//! [`byroredux_sfmaterial::MaterialIndex::lookup`] reads them (SMM-SRC-002,
+//! #7421, #7422); the other properties still merge every object.
 //! A `Parent` naming another object in the file is inherited. Where the
 //! root's parent is a `.mat` path the database holds, the alpha settings the
 //! file leaves unauthored come from it ([`database_parent`]); no other
@@ -186,7 +187,7 @@ pub(crate) fn parse_loose_mat(
 
 type JsonMap = serde_json::Map<String, serde_json::Value>;
 
-/// The alpha settings and the opacity layer, read as the database lookup
+/// The alpha settings, the opacity layer and the one-layer slots, read as the database lookup
 /// reads them: settings from the root and then each layer's material, nearest
 /// authored value first; opacity from the one layer `OpacitySourceLayer`
 /// names. A setting the file leaves unauthored is its parent's: a loose file
@@ -255,6 +256,15 @@ fn apply_layer_graph(
             (number, set)
         })
         .collect();
+    // SMM-SRC-010 — the root-named set, then the numbered layers.
+    let root_sets: Vec<CdbSlotSet> = roots
+        .iter()
+        .filter_map(|&root| graph.first_reference(root, "TextureSetID"))
+        .map(|set| graph.slot_set(set))
+        .collect();
+    out.one_layer = byroredux_sfmaterial::one_layer_slots(
+        root_sets.iter().chain(layers.iter().map(|(_, set)| set)),
+    );
     out.opacity_layer =
         byroredux_sfmaterial::opacity_layer_of(out.opacity_source_layer.as_deref(), layers);
     found_alpha

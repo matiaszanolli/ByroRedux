@@ -657,9 +657,9 @@ performance finding. The measured knob table is in
   single allocation**, above `MAX_SINGLE_ALLOC_BYTES` (256 MB); raising the
   cap weakens the hostile-`u32` defence. One file in the corpus.
 - [ ] **Starfield material maps** ([#7419](https://github.com/matiaszanolli/ByroRedux/issues/7419),
-  [PRD](docs/prd/starfield-material-maps.md)): opacity reaches 1,953 of 2,875 database records authoring it (rest held: 920 no flag, 2 by layer);
-  roughness, metalness, occlusion to come. Added texture, all levels / floors, at most ([record](docs/audits/SF_MATERIAL_CENSUS_2026-11-26.md)):
-  opacity 1.19 GiB / 58 MiB, roughness 5.32 / 159, metalness 2.44 / 74, occlusion 4.56 / 119, all four 13.48 / 408; by path: layer unresolved 2, no flag 926; resident on the sagebrush mesh: opacity +2.7 MiB.
+  [PRD](docs/prd/starfield-material-maps.md)). Reach over database records: opacity 1,953/2,875 (held: 920 no flag, 2 by layer), roughness 9,447/9,447, metalness 4,291/4,291; occlusion to come. Roughness/metalness GPU main-render delta on one table: none resolved (medians within 0.10 ms, samples 0.6 to 9.1).
+  Added texture, all levels / floors, at most ([record](docs/audits/SF_MATERIAL_CENSUS_2026-11-26.md)): opacity 1.19 GiB / 58 MiB, roughness 5.32 / 159, metalness 2.44 / 74,
+  occlusion 4.56 / 119, all four 13.48 / 408; by path: layer unresolved 2, no flag 926. Resident: sagebrush opacity +2.7 MiB, Gagarin statue roughness and metalness +1.3 MiB.
 - [ ] **Starfield material leftovers from #3398** (*tracked here only*, except
   #5509): a live Cydonia render (waits on the load fitting in memory,
   [PRD](docs/prd/starfield-memory.md), proposed); decal settings, UV transform,

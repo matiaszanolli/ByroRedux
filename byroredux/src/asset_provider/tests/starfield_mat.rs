@@ -376,11 +376,11 @@ fn bgsm_named_starfield_path_merges_from_cdb_on_sidecar_miss() {
 /// `MaterialTextureSet` roles OR rows in nifal.md's parked table — never
 /// both (a landed role still listed as parked rots the spec) and never
 /// neither (a kind dropped from the parked table without a struct field is
-/// the silent-drop NIFAL forbids). Today all five are parked: the struct
-/// has no roughness/metalness/AO/opacity/transmission destination, and
-/// routing `_rough` into the gloss-consuming `smooth_spec` slot would be a
-/// silent sign flip. When Phase 2 (#3398) lands the first role, the XOR
-/// below fails until the parked table is updated in the same change.
+/// the silent-drop NIFAL forbids). Opacity (#7421), roughness and metalness
+/// (#7422) are roles; occlusion and transmission are parked. Routing `_rough`
+/// into the gloss-consuming `smooth_spec` slot would still be a silent sign
+/// flip. A role that lands fails the XOR below until the parked list is
+/// updated in the same change.
 #[test]
 fn starfield_single_channel_kinds_are_parked_by_name_or_canonical() {
     // (canonical role name, Starfield's on-disk suffix)
@@ -441,9 +441,10 @@ fn starfield_single_channel_kinds_are_parked_by_name_or_canonical() {
     // span alone (no struct field to catch it) and the XOR must go false —
     // pre-#5003 the unanchored scan stayed green through exactly this
     // edit because the TXST slot map still mentioned the suffix.
-    let mutilated = span.replace("`_rough`", "");
+    assert!(span.contains("`_ao`"), "the kind this proof drops must be listed");
+    let mutilated = span.replace("`_ao`", "");
     assert!(
-        !(false ^ mutilated.contains("`_rough`")),
+        !(false ^ mutilated.contains("`_ao`")),
         "a kind removed from the anchored span must trip the guard"
     );
 }

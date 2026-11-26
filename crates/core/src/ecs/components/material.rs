@@ -848,6 +848,10 @@ pub struct PbrMaterial {
 }
 
 impl PbrMaterial {
+    /// The smoothest surface the resolve boundary admits. A roughness map is
+    /// held to the same floor in the shader (SMM, #7422).
+    pub const MIN_ROUGHNESS: f32 = 0.04;
+
     /// The classifier's no-signal terminal answer: dielectric, matte.
     /// Named so producers that resolve an external material but carry no
     /// authored scalars can stamp the SAME neutral the classifier would
@@ -1536,7 +1540,7 @@ impl Material {
             }
         }
         self.metalness = self.metalness.clamp(0.0, 1.0);
-        self.roughness = self.roughness.clamp(0.04, 1.0);
+        self.roughness = self.roughness.clamp(PbrMaterial::MIN_ROUGHNESS, 1.0);
     }
 
     /// Reset every non-finite (NaN / ±inf) scalar to its
