@@ -194,16 +194,16 @@ last checked cost against it); re-run `scripts/m-light-baselines.sh` before citi
 
 ### Texture streaming (M39)
 
-Streaming off → on, release build, RTX 4070 Ti, measured 2026-11-04 (Starfield 2026-11-05); settle is the on arm; the A8 ratio is resident ÷ budget at the reading, not the session peak. A8 predates the eviction change TXS-BUD-003 / -004 still need, so it has to be re-run. A10 (FNV, 2026-11-04) read 16.6 MiB above floors and whole textures on a 96 MiB budget; its total was not recorded. Open: that change, A8 (Oblivion and FO3 never run), A10 under the new limit, A11, A9 (#6632) and the default flip. [PRD](docs/prd/texture-streaming.md) · [run record](docs/engine/texture-streaming.md#12-measured-results-2026-11-04).
+Streaming off → on, release build, RTX 4070 Ti, measured 2026-11-04 (Starfield 2026-11-05); settle is the on arm. The A8 column was re-measured on 2026-11-25 (`612bb68a8`, after #7417) as session-peak resident ÷ budget; Starfield's has not been re-run and is a reading, not a peak, under the earlier eviction code. A10 is not met: its 30-minute soak fails the script's memory-growth gate, as the streaming-off control does; a 10-minute run peaked at 38.0 MiB resident on a 96 MiB budget. Open: Starfield A7 and A8, A10, A11, A9 (#6632) and the default flip. [PRD](docs/prd/texture-streaming.md) · [run record](docs/engine/texture-streaming.md#126-reads-in-flight-and-eviction-order-7417-2026-11-25-and--26).
 
-| Scene | Resident MiB | Floor-ready ms | Settle ms | A8 budget → resident MiB (ratio) |
+| Scene | Resident MiB | Floor-ready ms | Settle ms | A8 budget → peak MiB (ratio) |
 |---|---:|---:|---:|---|
 | FO4 MedTekResearch01 | 766.2 → 135.9 | 3 825 → 1 433 | 1 053 | 120 → 121.7 (1.014); 100 → 101.7 (1.017) |
 | FNV GSProspectorSaloonInterior | 76.7 → 38.5 | 595 → 440 | 315 | 30 → 30.4 (1.013); 24 → 24.4 (1.017) |
 | Skyrim SE WhiterunBanneredMare | 399.0 → 54.8 | 1 787 → 1 309 | 268 | 40 → 40.5 (1.013); 30 → 30.5 (1.017) |
-| Oblivion AnvilHeinrichOakenHallsHouse | 15.9 → 10.5 | 467 → 403 | 57 | not run |
-| FO3 MegatonMoriartysSaloon | 36.8 → 17.3 | 414 → 341 | 225 | not run |
-| Starfield citycydoniamainlevel | 1 370.8 → 116.4 | 10 754 → 9 580 | 3 512 | 100 → 101.8 (1.018); 85 → 86.8 (1.021) |
+| Oblivion AnvilHeinrichOakenHallsHouse | 15.9 → 10.5 | 467 → 403 | 57 | 9 → 9.1 (1.011); 8 → 8.1 (1.013) |
+| FO3 MegatonMoriartysSaloon | 36.8 → 17.3 | 414 → 341 | 225 | 15 → 15.1 (1.007); 13 → 13.1 (1.008) |
+| Starfield citycydoniamainlevel | 1 370.8 → 116.4 | 10 754 → 9 580 | 3 512 | 100 → 101.8 (1.018); 85 → 86.8 (1.021), 11-05 |
 
 ### Compatibility matrix
 

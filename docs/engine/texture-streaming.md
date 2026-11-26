@@ -451,7 +451,8 @@ arriving after its architecture) can promote a texture and then evict it
 when the next floors land; the recent-promotion ordering above narrows this
 but does not remove it (Skyrim `WhiterunBanneredMare` at 30 MiB: 12
 promotions and 5 evictions before the ordering was added, 5 promotions and 0
-evictions after, three runs).
+evictions after, three runs, 2026-11-04, under the earlier eviction code;
+§12.6 has the current figures).
 
 ## 8. Settings (Q5, TXS-BUD-005, TXS-RES-008)
 
@@ -657,3 +658,92 @@ first read 12 promotions, 5 evictions and churn 5; see §7.2 for what changed.
   pose above, so A11 stays open.
 - **Streaming on by default** (the Phase 4 switch flip) is withheld until the
   gates above close.
+
+### 12.6 Reads in flight and eviction order (#7417, 2026-11-25 and -26)
+
+Release builds on the same RTX 4070 Ti. Three changes: reads in flight count
+against the budget (`78c95f40c`), eviction follows TXS-BUD-003 and -004
+(`3f2bed575`), and the budget is set before the first wanted pass
+(`612bb68a8`, §7.1).
+
+**Moving route.** FO4 `--wrld Commonwealth --grid 0,0 --radius 1
+--bench-frames 1800 --bench-mode renderer-stepped --bench-camera grid-soak
+--fly --upscaler taa` with `BYROREDUX_PRESENT_MODE=immediate`, three runs at
+each pinned budget, alternating. Medians from the `tex-stream:` line; the
+peak ratio is the worst of the three.
+
+| At 340 MiB | Reservation only (`78c95f40c`) | With eviction order (`3f2bed575`) | Final (`612bb68a8`) |
+|---|---:|---:|---:|
+| Peak resident ÷ budget | 1.0136 | 1.0137 | 1.0137 |
+| Churn | 5 832 | 237 | 247 |
+| Evictions | 4 518 | 460 | 447 |
+| Declines | 4 029 | 6 583 | 6 594 |
+| Promotions | 4 166 | 1 059 | 1 048 |
+| Textures short of detail, last frame | 53 | 34 | 35 |
+
+| At 260 MiB | Reservation only (`78c95f40c`) | With eviction order (`3f2bed575`) | Final (`612bb68a8`) |
+|---|---:|---:|---:|
+| Peak resident ÷ budget | 1.0179 | 1.0179 | 1.0179 |
+| Churn | 1 658 | 28 | 29 |
+| Evictions | 1 497 | 425 | 434 |
+| Declines | 8 011 | 8 229 | 8 205 |
+| Promotions | 1 359 | 311 | 329 |
+| Textures short of detail, last frame | 116 | 151 | 146 |
+
+Before the reservation the same route peaked at 1.045 and 1.035 times the two
+budgets (#7417: `22fbbad43`, an instrumented binary, separate runs). The
+eviction order removes most of the churn and the evictions. It also applies
+about three quarters fewer promotions, because surplus on textures in view no
+longer pays for them (§7.2). "Short of detail" here is the last frame only,
+which is all the line carries; it is not the per-frame mean in #7417's table,
+and image quality was not compared. At 260 MiB it ends higher than with the
+reservation alone.
+
+**Cost of the pass.** A temporary registry test (3 000 streamed textures,
+release, median of 301 passes) timed `apply_wanted` before and after the
+eviction change: 2.39 → 0.18 ms with the budget tight and nothing over,
+1.60 → 0.26 ms with a quarter over budget. The old pass added up the
+evictable bytes again for every promotion it considered. This is synthetic:
+§12.4's scene figure was not re-measured.
+
+**A7** (`612bb68a8`, `--cell … --bench-frames 300 --bench-hold`, streaming
+off → on at the derived budget): zero deficits, zero churn, and `textures=`
+equal to the control on FO4 MedTek (775.0 → 136.6 MiB, 930 textures), FNV
+Prospector (76.7 → 39.1, 345) and Skyrim SE Bannered Mare (401.6 → 56.3, 354).
+
+**A8** (`612bb68a8`, same command, budget pinned). Each budget is above the
+scene's floors plus **whole** textures and below its streaming-on resident
+bytes. No run had a missing texture, as in each control.
+
+| Scene | Floors + whole, MiB | Budget MiB → session-peak MiB (peak ÷ budget) | Declines |
+|---|---:|---|---|
+| FO4 MedTekResearch01 | 75.7 | 120 → 121.7 (1.014); 100 → 101.7 (1.017) | 49; 66 |
+| FNV GSProspectorSaloonInterior | 18.3 | 30 → 30.4 (1.013); 24 → 24.4 (1.017) | 45; 57 |
+| Skyrim SE WhiterunBanneredMare | 22.0 | 40 → 40.5 (1.013); 30 → 30.5 (1.017) | 41; 46 |
+| Oblivion AnvilHeinrichOakenHallsHouse | 6.5 | 9 → 9.1 (1.011); 8 → 8.1 (1.013) | 23; 29 |
+| FO3 MegatonMoriartysSaloon | 10.6 | 15 → 15.1 (1.007); 13 → 13.1 (1.008) | 19; 23 |
+
+None of these still scenes evicted anything (FO3 at 15 MiB made one hysteresis
+demotion), so A8 checks the limit and the declines here; the moving route is
+what exercises the eviction order. At `3f2bed575`, Skyrim at 30 MiB failed
+with a peak of 31.8 MiB (1.06) in all six runs, three of them with the
+reservation alone (`78c95f40c`): the unbudgeted first pass of §7.1.
+
+**A10** is not met. `p5-soak.sh fnv`, streaming on at a pinned 96 MiB, with
+the probe now on peak resident bytes:
+
+- First 30-minute run: stopped at cycle 2, "door prompt missing", with the
+  restored view pitched down at another body.
+- Second: failed the script's memory gate at cycle 54 (RSS 3 084 MiB, 1.51
+  times the 2 037 MiB read at the cycle-3 warm-up).
+- Control, streaming off, same binary: failed the same gate at cycle 80
+  (3 532 MiB against a 2 347 MiB warm-up). At cycle 54 it read 3 095 MiB, so
+  the two arms stood together there. From cycle 30 to 47 RSS grew faster with
+  streaming on (286 and 200 MiB in two runs, 131 in the control); why was not
+  investigated, and the pre-change build was not soaked beside them.
+- A 10-minute run with streaming on passed (47 cycles, 2 941 promotions):
+  session-peak resident 38.0 MiB against the 96 MiB budget, no eviction and
+  no decline. The pin does not bind on this route, so the probe checks the
+  limit without pressure. A short run is not the gate of record.
+
+**Not run:** Starfield A7 and A8.

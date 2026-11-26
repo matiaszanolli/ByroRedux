@@ -1,12 +1,14 @@
 # Texture Streaming — Product Requirements
 
-**Status**: ACTIVE (2026-11-25). Revision 11 records the owner's approval of
+**Status**: ACTIVE (2026-11-26). Revision 12 updates the claims about HEAD
+after #7417, with no requirement changed: the engine now meets TXS-BUD-003,
+TXS-BUD-004 and TXS-BUD-008. It does not yet meet TXS-TEL-005, so TXS-PERF
+cannot be judged. Revision 11 records the owner's approval of
 revision 10's text (§12). Revision 10 adds the owner's choices on reads in
 flight, streaming CPU time and moving-camera frame time (TXS-BUD-008,
-TXS-PERF, TXS-TEL-005, A12, A13). The engine does not yet meet TXS-BUD-008
-or TXS-TEL-005, so TXS-PERF cannot be judged. Revision 9 records the owner's approval of
+TXS-PERF, TXS-TEL-005, A12, A13). Revision 9 records the owner's approval of
 revision 8's reworded requirements and of the Q4 amendment; the eviction
-code does not yet meet TXS-BUD-003 or TXS-BUD-004. Revision 8 folds in
+code did not then meet TXS-BUD-003 or TXS-BUD-004. Revision 8 folds in
 review round 3: the claims about HEAD re-measured after the Phase 2–4 build,
 and the owner's answers on the budget limit, eviction order, soak rules, A8,
 A11, the Q4 reserve and where the metrics live.
@@ -212,7 +214,7 @@ constants. "Streaming" means `render.texture_streaming` is on.
 | 5 | Holders and release | `TextureEntry::ref_count`; the last `drop_texture` / `drop_textures` moves the image to the entry's `pending_destroy` ring, redirects the slot to the fallback, purges the path cache and cancels the handle's queued upload and residency changes (`texture_registry/release.rs`); cell unload calls `drop_textures` (`byroredux/src/cell_loader/unload.rs`) |
 | 6 | Slot space | grow-only: a dropped slot's index is never reused (`release.rs` module doc, #372). #2030 closed with the slot telemetry only (`live_slot_count` / `dead_slot_count`); the free-list is tracked as tech debt ([Memory Budget § Texture Registry](../engine/memory-budget.md#texture-registry)) |
 | 7 | Texture budget | with streaming, `derive_budget` (`texture_registry/budget.rs:92`) takes a fraction of the live `VK_EXT_memory_budget` DEVICE_LOCAL budget, or of the smallest DEVICE_LOCAL heap, less a measured non-texture reserve, or takes the `render.texture_budget_mib` override; `refresh_texture_budget` (`vulkan/context/telemetry.rs:57`) re-derives it. With streaming off no budget is derived. The allocator also warns once at 80% of the smallest DEVICE_LOCAL heap (`allocator::approaching_oom_line`); static BLAS has `MAX_BLAS_BUDGET_BYTES` (`acceleration/constants.rs`) |
-| 8 | Eviction | with streaming, `apply_wanted` (`texture_registry/upload.rs:539`) queues demotions after the hysteresis window and, through `spend_budget`, budget evictions and declines. Its order and its choice of victims do not yet meet TXS-BUD-003 and TXS-BUD-004. Static BLAS has `AccelerationManager::evict_unused_blas` (`acceleration/blas_static.rs`) |
+| 8 | Eviction | with streaming, `apply_wanted` (`texture_registry/upload.rs:675`) queues demotions after the hysteresis window and, through `spend_budget`, budget evictions and declines. At HEAD on 2026-11-26 (`612bb68a8`, #7417; the rest of this table is not re-measured) its order and its choice of victims follow TXS-BUD-003 and TXS-BUD-004. Static BLAS has `AccelerationManager::evict_unused_blas` (`acceleration/blas_static.rs`) |
 | 9 | Sampling clamp | the material samplers are shared per clamp mode with `min_lod(0.0)` / `max_lod(16.0)` (`material_sampler_info`, `texture_registry/mod.rs`), so there is no per-texture sampler clamp; each image view spans only its image's levels. Explicit full-chain levels pass through `residentLod` (`shaders/include/bindings.glsl`) with a per-slot first-level table (TXS-RES-009) |
 | 10 | BA2 DX10 chunks | `Ba2Archive::extract` assembles every chunk; `extract_dx10_mips` (`crates/bsa/src/ba2.rs:431`) reads only the chunks that reach a first level, and `dx10_layout` exposes each chunk's range |
 | 11 | BSA and loose | `Archive::extract` (`byroredux/src/asset_provider/archive.rs`) returns the whole file. `extract_texture_floor_or_warn` reads only the last chunk of a multi-chunk 2D BA2 record and everything else whole; `extract_texture_from_or_warn` reads a BA2 DX10 record from a level down and everything else whole |
@@ -429,18 +431,18 @@ constants. "Streaming" means `render.texture_streaming` is on.
   budget pass as "dropping one mip at a time, until the planned solution
   gets under budget", with the rule "Drop mips that are not visible,
   dropping the last recently seen first" (Epic Games, *Texture Streaming
-  Overview*). Not met at HEAD on 2026-11-25: `spend_budget`
-  (`texture_registry/upload.rs`) takes levels finer than wanted from
-  textures of every age and window before any wanted level, and takes all it
-  can from one texture before the next.
+  Overview*). Met at HEAD on 2026-11-26 (#7417): `EvictionCursor`
+  (`texture_registry/upload.rs`) takes one level at a time in this order. A
+  texture with a change queued or a read in flight is not moved until the
+  change lands, so the order holds among the others (design §7.2).
 - **TXS-BUD-004.** A promotion that would exceed the budget MUST first
   evict, in TXS-BUD-003's order, only from textures whose last-wanted frame
   is strictly older than the promoted texture's and that are outside
   TXS-WANT-005's window. It MUST be declined when that cannot make room: a
   declined promotion evicts nothing, leaves the texture in its state and is
-  counted. Not met at HEAD on 2026-11-25: `spend_budget` evicts for a
-  promotion any texture resident finer than it is wanted, whatever its age,
-  including one inside its window.
+  counted. Met at HEAD on 2026-11-26 (#7417): a promotion takes only from
+  `FundingPool` (`texture_registry/upload.rs`), the textures outside the
+  window that were last wanted strictly before it.
 - **TXS-BUD-005.** The budget MUST be overridable through one registered
   setting in `SettingsRegistry` (`crates/core/src/settings/`), so the
   minimum card can be emulated on the dev card and presets in
@@ -463,11 +465,12 @@ constants. "Streaming" means `render.texture_streaming` is on.
 - **TXS-BUD-008.** A promotion MUST count against the budget at its target
   level from the hand-off of its read to the host until the change lands,
   the read fails or the texture is released, so that a landing read adds no
-  bytes the budget pass has not counted. Not met at HEAD on 2026-11-25
-  (#7417): the pass counts a change only once it is queued, and
-  `queue_promotion_bytes` (`texture_registry/upload.rs`) queues a finished
-  read without checking the budget. A Vulkan-free registry test (new,
-  `promotion_read_in_flight_counts_against_budget`) checks it, including the
+  bytes the budget pass has not counted. Met at HEAD on 2026-11-26 (#7417):
+  the registry holds each handed-off read in `reads_in_flight`
+  (`texture_registry/upload.rs`), and the host sets the budget before the
+  first wanted pass (`prepare_texture_streaming`, `byroredux/src/app_frame.rs`).
+  A Vulkan-free registry test
+  (`promotion_read_in_flight_counts_against_budget`) checks it, including the
   release of the count when the read fails and when the texture is released.
 
 ### 5.6 Telemetry (`TXS-TEL`)
@@ -575,7 +578,7 @@ the TXS-RES-008 switch as its control. Release builds need
 | A7 | Settle | A6's FO4 and Starfield scenes, pinned camera, `tex.residency` after settle; Wave 2 adds its FNV and Skyrim scenes | FO4, Starfield, FNV, Skyrim SE | zero deficits; zero churn; `textures=` equals control |
 | A8 | Budget clamp | A6's scenes with the TXS-BUD-005 setting below the scene's streaming-on resident bytes and above its floors plus **whole** textures (`BYROREDUX_SETTINGS_PATH` isolated); where a scene leaves no such value, a denser cell replaces it and the design records the cell | the six games of A6 | resident within TXS-BUD-002's limit; `tex.missing` unique count equals control |
 | A9 | Streaming soak | `docs/smoke-tests/m-exteriors.sh fo4 soak` (existing script) | FO4 Commonwealth | the whole script passes, #6632's `physics_bodies` failure not excepted; resident texture bytes pass TXS-TEL-003's growth check; zero validation errors under `BYRO_VALIDATION=1` |
-| A10 | Long session | `docs/smoke-tests/p5-soak.sh fnv` (existing; FNV is the only game that declares the route) with its `tex.residency` probe before shutdown | FNV | passes as today, with the session-peak resident bytes within TXS-BUD-002's limit. At HEAD on 2026-11-25 the probe compares the bytes above floors and **whole** with the budget and has to change |
+| A10 | Long session | `docs/smoke-tests/p5-soak.sh fnv` (existing; FNV is the only game that declares the route) with its `tex.residency` probe before shutdown | FNV | passes as today, with the session-peak resident bytes within TXS-BUD-002's limit. At HEAD on 2026-11-26 the probe compares the session-peak resident bytes with 1.03 times the budget; A10 has not passed ([design §12.6](../engine/texture-streaming.md#126-reads-in-flight-and-eviction-order-7417-2026-11-25-and--26)) |
 | A11 | Reflection A/B | `--bench-mode renderer-static` captures at the most reflective FO4 pose found, streaming on and off, at least three runs of each; the design records the cell, camera pose and frame count before the judged runs | FO4 | the measure below |
 | A12 | Moving frame time | the moving route with streaming off and on (derived budget), three runs each, alternating; TXS-TEL-005's figures | FO4, FNV | TXS-PERF-002 holds |
 | A13 | Streaming CPU time | FO4's moving route with streaming on at the derived budget and at 340 MiB and 260 MiB (`BYROREDUX_SETTINGS_PATH` isolated), three runs each; TXS-TEL-005's figures | FO4 | TXS-PERF-001 holds |
@@ -831,3 +834,4 @@ published, and streaming is on by default for every in-scope game.
 | 9 | 2026-11-25 | Revision 8's text approved: the reworded requirements, TXS-RES-009, the Q4 amendment, and the wording for the A11 measure and its 1% mask minimum, the hysteresis window against promotion victims, the order among eviction ties and the budget limit | owner: approved |
 | 10 | 2026-11-25 | Owner choices after moving-camera measurements with temporary timers: reads in flight count against the budget (TXS-BUD-008, #7417); a streaming CPU ceiling of 2.0 ms mean and 4.0 ms p99 and a frame-period limit of 1.05 times streaming-off (TXS-PERF-001, -002, A12, A13), both due in Phase 4; the telemetry that makes them measurable (TXS-TEL-005); the moving-route terms; §1's verify item recorded as filed (#7418) | — |
 | 11 | 2026-11-25 | Revision 10's text approved: TXS-BUD-008 and its place in Phase 3, TXS-TEL-005, TXS-PERF-001 and -002 with the reference machine and median-of-three rule, A12, A13, and the read-in-flight, moving-route, steady-frame, frame-period and streaming-CPU-time terms | owner: approved |
+| 12 | 2026-11-26 | Claims about HEAD updated after #7417 (`612bb68a8`): TXS-BUD-003, -004 and -008 met; §3.3 row 8; A10's probe changed, A10 not passed. No requirement changed | — |
