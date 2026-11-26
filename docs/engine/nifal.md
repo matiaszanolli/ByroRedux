@@ -872,11 +872,59 @@ fires and they render opaque; which signal carries Starfield glass coverage
 is undecided and needs a capture from the game. The contract for the
 parked kinds: each lands as a **named** `MaterialTextureSet`
 role with documented channel semantics, a `GpuMaterial` lane (lockstep
-`bindings.glsl` change against the 428 B pin) and a `triangle.frag` consumer —
+`bindings.glsl` change against the 432 B pin,
+`gpu_material_size_is_432_bytes`) and a `triangle.frag` consumer —
 never a CDB slot index, never a reuse of `smooth_spec`/`specular`. When the
 first role lands, `starfield_single_channel_kinds_are_parked_by_name_or_canonical`
 (the XOR guard beside the lookup-miss pin in `asset_provider/tests/starfield_mat.rs`)
 forces this table and the struct to move together.
+
+**Starfield material-map role contract (SMM, Phase 0, #7420, recorded
+2026-11-26).** The contract the opacity, roughness, metalness and occlusion
+roles land under ([PRD](../prd/starfield-material-maps.md); sources and the
+census are in the
+[Phase 0 record](../audits/SF_MATERIAL_CENSUS_2026-11-26.md)). Nothing here
+is implemented yet. The format rules rest on one third-party source, the
+`fo76utils` viewer at `3797c893`.
+
+| Role (new) | CDB slot / `TXST` | Layer | Map is sampled | Constant travels as | Absent shades as |
+|---|---|---|---|---|---|
+| `opacity` | 2 / TX19 | `OpacitySourceLayer` (unauthored: 0) | red | a 1×1 texture in the role's lane | base-colour alpha |
+| `roughness` | 3 / TX09 | the first layer supplying it | red | the canonical `roughness_override` scalar | the neutral scalar |
+| `metalness` | 4 / TX08 | the first layer supplying it | red | the canonical `metalness_override` scalar | the neutral scalar |
+| `occlusion` | 5 / TX17 | the first layer supplying it | red | a 1×1 texture in the role's lane | no material occlusion |
+
+- **Colour space.** A Map is sampled in its file's own colour space. Nearly
+  all are `BC4_UNORM`; a few dozen are `BC1_UNORM_SRGB` and decode as sRGB.
+  The data-role profile in `map_secondary_texture_handles` forces the linear
+  view, which would skip that decode, so these four roles need an
+  as-authored view.
+- **One layer.** A slot's texture and replacement come from one layer.
+  `CdbLayeredMaterial::first_supplying` states the rule; `MaterialIndex::lookup`
+  does not apply it yet.
+- **Texture and replacement.** The texture wins. The replacement is the
+  source only when the layer authors no texture path. A texture that fails to
+  load shades as Absent, not as the replacement (SMM-SRC-011; the viewer
+  differs).
+- **Constant.** The value is the red channel of `BSMaterial::Color.Value`,
+  linear. Roughness and metalness use the scalars traced hits already read,
+  under `resolve_pbr`'s clamps, which a roughness Map must also obey. An
+  opacity or occlusion Constant is a generated 1×1 texture holding the value,
+  one per distinct 8-bit value, bound where a Map would be. No role adds a
+  `DrawCommand` or `GpuInstance` field.
+- **Lanes.** Each role is a `supplemental_texture_slot` entry copied into
+  `GpuMaterial` by `to_gpu_material`; `compute_wanted` must then walk the
+  supplemental array.
+- **Opacity.** Only with `HasOpacity` true. The cutout threshold is the
+  authored `AlphaTestThreshold`, or one third when nothing on the chain
+  authors one; the test is on when it is above zero. The viewer passes
+  `alpha > threshold`, which is `alphaComparePass` func 4, not the engine's
+  default 6 (`>=`).
+- **Layer number.** `MATERIAL_LAYER_n` is the layer whose `LayerID` component
+  index is `n`; an unresolved name leaves opacity Absent.
+- **Loose files.** `parse_loose_mat` merges every object's components with no
+  layer structure and does not read `OpacitySourceLayer`, so it cannot yet
+  apply the two layer rules (SMM-SRC-002).
 
 **Starfield additive-family blend modes — partly forwarded (SF-2026-10-09-D6-01,
 #5509, recorded 2026-10-11; `Additive` / `Multiply` landed 2026-11-07).**

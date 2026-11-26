@@ -127,6 +127,78 @@ pub struct CdbMaterial {
     pub flat_color_slots: Vec<(u8, [f32; 4])>,
 }
 
+/// What one layer's texture sets author, slot by slot: each set's own
+/// entries plus what its `Parent` chain adds, the rule `lookup` reads them by.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CdbSlotSet {
+    /// Slot (`SLOT_*`) → texture path.
+    pub textures: Vec<(u8, String)>,
+    /// Slot → enabled `TextureReplacement` colour.
+    pub flat_color_slots: Vec<(u8, [f32; 4])>,
+}
+
+impl CdbSlotSet {
+    pub fn texture(&self, slot: u8) -> Option<&str> {
+        let found = self.textures.iter().find(|(s, _)| *s == slot);
+        found.map(|(_, path)| path.as_str())
+    }
+
+    pub fn replacement(&self, slot: u8) -> Option<[f32; 4]> {
+        let found = self.flat_color_slots.iter().find(|(s, _)| *s == slot);
+        found.map(|(_, color)| *color)
+    }
+
+    pub fn supplies(&self, slot: u8) -> bool {
+        self.texture(slot).is_some() || self.replacement(slot).is_some()
+    }
+}
+
+/// One material's texture data kept apart by layer, for the Starfield
+/// material census (SMM-OBS-004, #7420). Read-only: [`MaterialIndex::lookup`]
+/// still merges the layers its own way and does not use this.
+#[derive(Debug, Clone, Default)]
+pub struct CdbLayeredMaterial {
+    /// Texture sets the root object names directly.
+    pub root_sets: CdbSlotSet,
+    /// (`LayerID` component index, that layer's sets), in authored order.
+    pub layers: Vec<(u8, CdbSlotSet)>,
+    /// `AlphaSettingsComponent.OpacitySourceLayer` as authored on the root's
+    /// `Parent` chain, nearest wins. `None` when no object there authors it.
+    pub opacity_source_layer: Option<String>,
+    /// `ShaderRouteComponent.Route`, same inheritance.
+    pub shader_route: Option<String>,
+    /// Whether the root's chain carries an `EffectSettingsComponent`.
+    pub has_effect_settings: bool,
+}
+
+impl CdbLayeredMaterial {
+    /// The root-named set (when it has anything) followed by the numbered
+    /// layers. The label is `None` for the root-named set.
+    pub fn sets_in_order(&self) -> impl Iterator<Item = (Option<u8>, &CdbSlotSet)> {
+        let root = (self.root_sets != CdbSlotSet::default()).then_some((None, &self.root_sets));
+        root.into_iter()
+            .chain(self.layers.iter().map(|(n, set)| (Some(*n), set)))
+    }
+
+    /// SMM-SRC-010: the one layer a roughness, metalness or occlusion slot
+    /// comes from — the first in [`Self::sets_in_order`] that has a texture
+    /// or an enabled replacement for it.
+    pub fn first_supplying(&self, slot: u8) -> Option<(Option<u8>, &CdbSlotSet)> {
+        self.sets_in_order().find(|(_, set)| set.supplies(slot))
+    }
+
+    /// The numbered layer with `LayerID` component index `n`.
+    pub fn layer(&self, n: u8) -> Option<&CdbSlotSet> {
+        self.layers.iter().find(|(i, _)| *i == n).map(|(_, set)| set)
+    }
+}
+
+/// `MATERIAL_LAYER_<n>` → `n`, the string form `OpacitySourceLayer` takes
+/// (`libfo76utils` `matcomps.cpp` `readLayerNumber`, PRD SMM-OPA-005).
+pub fn material_layer_number(name: &str) -> Option<u8> {
+    name.strip_prefix("MATERIAL_LAYER_")?.parse().ok()
+}
+
 /// #5190 — one texture-set object's enabled `TextureReplacement`
 /// entries, keyed by the texture slot each replaces (first capture per
 /// slot wins).
@@ -159,6 +231,10 @@ pub struct MaterialIndex {
     /// Object → `MaterialParamFloat` (Index, Value).
     param_floats: std::collections::HashMap<u32, Vec<(u8, f32)>>,
     alpha: std::collections::HashMap<u32, (Option<f32>, Option<bool>)>,
+    /// Per object, `AlphaSettingsComponent.OpacitySourceLayer` (#7420).
+    opacity_source_layers: std::collections::HashMap<u32, String>,
+    /// Per object, `ShaderRouteComponent.Route` (#7420).
+    shader_routes: std::collections::HashMap<u32, String>,
     effect: std::collections::HashMap<u32, Option<bool>>,
     /// #5277 — per object, `EffectSettingsComponent.BlendingMode`.
     effect_blend: std::collections::HashMap<u32, Option<String>>,
@@ -422,8 +498,72 @@ impl MaterialIndex {
         let mut out = CdbMaterial::default();
         self.collect_settings(root, &mut out);
 
-        // Layers in authored order; a single-layer material may instead
-        // name its texture set directly off the root.
+        // A single-layer material may instead name its texture set directly
+        // off the root; that set is treated as layer order 0.
+        for tex_set in self.texture_sets_of(root) {
+            self.collect_slots(tex_set, &mut out);
+        }
+
+        for (_, mat_obj) in self.layer_materials(root) {
+            self.collect_settings(mat_obj, &mut out);
+            for tex_set in self.texture_sets_of(mat_obj) {
+                self.collect_slots(tex_set, &mut out);
+            }
+        }
+        Some(out)
+    }
+
+    /// `path`'s texture data layer by layer, walking the same graph as
+    /// [`Self::lookup`] without merging across layers.
+    pub fn layered(&self, path: &str) -> Option<CdbLayeredMaterial> {
+        let root = *self.objects_by_key.get(&material_key(path))?;
+        let slot_set = |tex_sets: &mut dyn Iterator<Item = u32>, out: &mut CdbMaterial| {
+            for tex_set in tex_sets {
+                self.collect_slots(tex_set, out);
+            }
+        };
+        let mut root_slots = CdbMaterial::default();
+        slot_set(&mut self.texture_sets_of(root), &mut root_slots);
+
+        let mut layers: Vec<(u8, CdbMaterial)> = Vec::new();
+        for (number, mat_obj) in self.layer_materials(root) {
+            if layers.last().is_none_or(|(n, _)| *n != number) {
+                layers.push((number, CdbMaterial::default()));
+            }
+            if let Some((_, slots)) = layers.last_mut() {
+                slot_set(&mut self.texture_sets_of(mat_obj), slots);
+            }
+        }
+        let into_set = |m: CdbMaterial| CdbSlotSet {
+            textures: m.textures,
+            flat_color_slots: m.flat_color_slots,
+        };
+        Some(CdbLayeredMaterial {
+            root_sets: into_set(root_slots),
+            layers: layers.into_iter().map(|(n, m)| (n, into_set(m))).collect(),
+            opacity_source_layer: self
+                .ancestry(root)
+                .find_map(|node| self.opacity_source_layers.get(&node).cloned()),
+            shader_route: self
+                .ancestry(root)
+                .find_map(|node| self.shader_routes.get(&node).cloned()),
+            has_effect_settings: self.ancestry(root).any(|node| self.effect.contains_key(&node)),
+        })
+    }
+
+    /// The texture-set objects `obj` names directly, in authored order.
+    fn texture_sets_of(&self, obj: u32) -> impl Iterator<Item = u32> + '_ {
+        self.child_refs
+            .get(&obj)
+            .into_iter()
+            .flatten()
+            .filter(|(kind, _, _)| *kind == RefKind::TextureSet)
+            .map(|(_, child, _)| *child)
+    }
+
+    /// Each layer material `root` reaches, as (`LayerID` component index,
+    /// material object), layers in authored order.
+    fn layer_materials(&self, root: u32) -> Vec<(u8, u32)> {
         let mut layer_objects: Vec<(u8, u32)> = self
             .child_refs
             .get(&root)
@@ -436,36 +576,17 @@ impl MaterialIndex {
             .unwrap_or_default();
         layer_objects.sort_unstable();
 
-        let mut layer_materials: Vec<u32> = Vec::new();
-        for (_, layer) in &layer_objects {
-            if let Some(refs) = self.child_refs.get(layer) {
+        let mut materials = Vec::new();
+        for (number, layer) in layer_objects {
+            if let Some(refs) = self.child_refs.get(&layer) {
                 for (kind, child, _) in refs {
                     if *kind == RefKind::Material {
-                        layer_materials.push(*child);
+                        materials.push((number, *child));
                     }
                 }
             }
         }
-        if let Some(refs) = self.child_refs.get(&root) {
-            for (kind, child, _) in refs {
-                if *kind == RefKind::TextureSet {
-                    // Root-named texture set: treated as layer order 0.
-                    self.collect_slots(*child, &mut out);
-                }
-            }
-        }
-
-        for mat_obj in layer_materials {
-            self.collect_settings(mat_obj, &mut out);
-            if let Some(refs) = self.child_refs.get(&mat_obj) {
-                for (kind, child, _) in refs {
-                    if *kind == RefKind::TextureSet {
-                        self.collect_slots(*child, &mut out);
-                    }
-                }
-            }
-        }
-        Some(out)
+        materials
     }
 
     /// `obj` followed by its `Parent` chain, nearest ancestor first (#5502).
@@ -656,6 +777,11 @@ impl MaterialIndex {
             // read by `capture_settings`, shared with the loose `.mat`
             // decoder; this only files the result per object.
             "BSMaterial::AlphaSettingsComponent" => {
+                if let Some(Value::String(layer)) = o.fields.get("OpacitySourceLayer") {
+                    self.opacity_source_layers
+                        .entry(row.object)
+                        .or_insert_with(|| layer.clone());
+                }
                 let Some(c) = crate::capture_settings(class_name, o) else {
                     return;
                 };
@@ -670,6 +796,13 @@ impl MaterialIndex {
                         }
                     })
                     .or_insert((c.alpha_test_threshold, c.has_opacity));
+            }
+            "BSMaterial::ShaderRouteComponent" => {
+                if let Some(Value::String(route)) = o.fields.get("Route") {
+                    self.shader_routes
+                        .entry(row.object)
+                        .or_insert_with(|| route.clone());
+                }
             }
             "BSMaterial::EffectSettingsComponent" => {
                 let Some(c) = crate::capture_settings(class_name, o) else {
@@ -2083,6 +2216,76 @@ mod tests {
             clean.parents.insert(i, i + 1);
         }
         assert_eq!(clean.parent_graph_defects(), ParentGraphDefects::default());
+    }
+
+    /// Root 1 → layer 0 (replacement only for roughness) and layer 1
+    /// (texture only for roughness), the split SMM-SRC-010 forbids merging.
+    fn split_layer_index() -> MaterialIndex {
+        let mut idx = MaterialIndex::default();
+        idx.objects_by_key.insert(material_key("materials\\split.mat"), 1);
+        idx.child_refs.insert(1, vec![(RefKind::Layer, 21, 1), (RefKind::Layer, 20, 0)]);
+        idx.child_refs.insert(20, vec![(RefKind::Material, 30, 0)]);
+        idx.child_refs.insert(21, vec![(RefKind::Material, 31, 0)]);
+        idx.child_refs.insert(30, vec![(RefKind::TextureSet, 40, 0)]);
+        idx.child_refs.insert(31, vec![(RefKind::TextureSet, 41, 0)]);
+        idx.flat_colors.insert(40, vec![(SLOT_ROUGHNESS, [0.25, 0.0, 0.0, 1.0], Some(true))]);
+        idx.textures.insert(41, vec![(SLOT_ROUGHNESS, "one_rough.dds".to_string())]);
+        idx
+    }
+
+    #[test]
+    fn layered_keeps_each_layer_apart_while_lookup_mixes_them() {
+        let idx = split_layer_index();
+        let merged = idx.lookup("materials\\split.mat").expect("resolves");
+        assert_eq!(merged.textures, vec![(SLOT_ROUGHNESS, "one_rough.dds".to_string())]);
+        assert_eq!(merged.flat_color_slots.len(), 1, "from the other layer");
+
+        let layered = idx.layered("materials\\split.mat").expect("resolves");
+        let numbers: Vec<u8> = layered.layers.iter().map(|(n, _)| *n).collect();
+        assert_eq!(numbers, vec![0, 1]);
+        let (number, set) = layered.first_supplying(SLOT_ROUGHNESS).expect("supplied");
+        assert_eq!(number, Some(0));
+        assert_eq!(set.texture(SLOT_ROUGHNESS), None);
+        assert_eq!(set.replacement(SLOT_ROUGHNESS), Some([0.25, 0.0, 0.0, 1.0]));
+        assert!(layered.first_supplying(SLOT_METALNESS).is_none());
+    }
+
+    #[test]
+    fn a_root_named_set_comes_before_the_numbered_layers() {
+        let mut idx = split_layer_index();
+        idx.child_refs.get_mut(&1).expect("root").push((RefKind::TextureSet, 42, 0));
+        idx.textures.insert(42, vec![(SLOT_ROUGHNESS, "root_rough.dds".to_string())]);
+        let layered = idx.layered("materials\\split.mat").expect("resolves");
+        let (number, set) = layered.first_supplying(SLOT_ROUGHNESS).expect("supplied");
+        assert_eq!((number, set.texture(SLOT_ROUGHNESS)), (None, Some("root_rough.dds")));
+    }
+
+    #[test]
+    fn layered_reads_opacity_layer_and_route_down_the_parent_chain() {
+        let mut idx = split_layer_index();
+        idx.parents.insert(1, 2);
+        idx.rows = vec![Row { object: 2, index: 0 }, Row { object: 2, index: 0 }];
+        let object = |name: &str, value: &str| {
+            Value::Object(crate::value::ObjectInstance {
+                class_name: String::new(),
+                type_id: 0,
+                fields: [(name.to_string(), Value::String(value.to_string()))]
+                    .into_iter()
+                    .collect(),
+            })
+        };
+        idx.capture_instance(
+            0,
+            "BSMaterial::AlphaSettingsComponent",
+            &object("OpacitySourceLayer", "MATERIAL_LAYER_1"),
+        );
+        idx.capture_instance(1, "BSMaterial::ShaderRouteComponent", &object("Route", "Effect"));
+        let layered = idx.layered("materials\\split.mat").expect("resolves");
+        assert_eq!(layered.opacity_source_layer.as_deref(), Some("MATERIAL_LAYER_1"));
+        assert_eq!(layered.shader_route.as_deref(), Some("Effect"));
+        assert!(!layered.has_effect_settings);
+        assert_eq!(material_layer_number("MATERIAL_LAYER_1"), Some(1));
+        assert_eq!(material_layer_number("Layer 1"), None);
     }
 
     #[test]

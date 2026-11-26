@@ -1608,7 +1608,10 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).
         ("scripting", 13, 4875),
-        ("sfmaterial", 2, 1094),
+        // #7420 (Starfield material maps Phase 0) re-measure: +1 — `sf_material_census.rs`, the census the
+        // PRD's SMM-OBS-004 / -005 require: per-layer opacity / roughness / metalness / occlusion counts,
+        // texture formats and added bytes. The two #3398 probes are one-off research tools it cannot join.
+        ("sfmaterial", 3, 1617),
         ("spt", 6, 1561),
         // #6195 — `layer_census.rs`, the real-data check that measured each
         // game's normal-map green convention for terrain height generation.

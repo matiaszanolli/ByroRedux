@@ -76,9 +76,9 @@ pub use error::{Error, Result};
 #[cfg(any(test, feature = "test-support"))]
 pub use index::test_support;
 pub use index::{
-    material_key, CdbMaterial, MaterialIndex, RefKind, SLOT_AMBIENT_OCCLUSION, SLOT_COLOR,
-    SLOT_EMISSIVE, SLOT_HEIGHT, SLOT_METALNESS, SLOT_NORMAL, SLOT_OPACITY, SLOT_ROUGHNESS,
-    SLOT_TRANSMISSIVE,
+    material_key, material_layer_number, CdbLayeredMaterial, CdbMaterial, CdbSlotSet,
+    MaterialIndex, RefKind, SLOT_AMBIENT_OCCLUSION, SLOT_COLOR, SLOT_EMISSIVE, SLOT_HEIGHT,
+    SLOT_METALNESS, SLOT_NORMAL, SLOT_OPACITY, SLOT_ROUGHNESS, SLOT_TRANSMISSIVE,
 };
 pub use reader::{CdbHeaderInfo, CdbVisitInfo, ComponentDatabaseFile, ParseLimits};
 pub use settings::{capture_settings, FieldSource, SettingsCapture};
