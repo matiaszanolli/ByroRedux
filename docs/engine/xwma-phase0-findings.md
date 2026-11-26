@@ -133,8 +133,8 @@ check. [FFmpeg FATE wma.mak, lines 38–49][fate].
 Follow the `binkaudio-clean` comparator's whole-file measurement and report
 the number of differing samples and the peak absolute difference. Require
 equal lengths before considering a file a pass and report the first mismatch
-with separate length diagnostics. The precedent is
-`/mnt/data/src/binkaudio-clean/src/bin/bacmp.rs:5–9,57–76`.
+with separate length diagnostics. The precedent is the module notes and the
+`compare` function in `/mnt/data/src/binkaudio-clean/src/bin/bacmp.rs`.
 
 ## V4 — Palette layout, loop data and Fallout 4 behavior
 

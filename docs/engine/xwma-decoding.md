@@ -119,13 +119,15 @@ adapter capacity before decoding. An archive may require materializing
 its compressed xWMA entry through the asset provider. The entire track
 must never be staged as PCM.
 
-The ring depth comes from kira 0.12.5
-`src/sound/streaming/sound/decode_scheduler.rs:18,42–58,112–139`.
-Lines 147–179 retain a previous decode chunk while the next one is being
-produced. The mixer takes a four-frame interpolation window
-(`src/sound/streaming/sound.rs:140–155`). Recheck these capacities on a
-kira upgrade. A crossfade or palette counts each live voice independently
-and sums its usage against the number of live voices.
+The ring depth is kira 0.12.5's `BUFFER_SIZE`, which `DecodeScheduler::new`
+creates the ring with and `DecodeScheduler::run` fills
+(`src/sound/streaming/sound/decode_scheduler.rs`).
+`DecodeScheduler::frame_at_index`, in the same file, retains a previous decode
+chunk while the next one is being produced. The mixer takes a four-frame
+interpolation window (`StreamingSound::next_frames`,
+`src/sound/streaming/sound.rs`). Recheck these capacities on a kira upgrade.
+A crossfade or palette counts each live voice independently and sums its usage
+against the number of live voices.
 
 The largest `dpds` advance observed in a single music packet was 31,616
 decoded frames in Skyrim and 30,720 in Fallout 4. The adapter must be able
