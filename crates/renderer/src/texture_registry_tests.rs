@@ -157,6 +157,7 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         promotable_generation: 0,
         stream_widths: Vec::new(),
         promotion_requests: Vec::new(),
+        reads_in_flight: Default::default(),
         streaming: false,
         peak_resident_bytes: 0,
         peak_above_floor_bytes: 0,
@@ -1939,6 +1940,126 @@ fn budget_eviction_spares_a_texture_promoted_inside_the_hysteresis_window() {
     assert_eq!(queued_targets(&reg), vec![(0, 1)]);
 }
 
+/// The bytes the budget pass has to account for once everything queued has
+/// landed: each streamed texture at its queued level, else its resident one.
+fn planned_bytes(reg: &TextureRegistry) -> u64 {
+    let queued: HashMap<TextureHandle, u32> = queued_targets(reg).into_iter().collect();
+    reg.stream_sources
+        .iter()
+        .map(|(handle, source)| {
+            let first = queued.get(handle).copied().unwrap_or_else(|| {
+                reg.textures[*handle as usize].residency.unwrap().first_resident
+            });
+            source.bytes_from(first)
+        })
+        .sum()
+}
+
+/// Room for one promotion to level 0 beside one floor, and not for two.
+const ROOM_FOR_ONE: u64 = BC1_FROM_0 + BC1_FROM_3 + 100;
+
+/// A registry whose handle 0 has a promotion to level 0 being read by the host.
+fn registry_reading_handle_0() -> TextureRegistry {
+    let mut reg = budgeted_registry(&[3, 3], ROOM_FOR_ONE);
+    reg.apply_wanted(&HashMap::from([(0, drawn(0))]));
+    assert_eq!(reg.take_promotion_requests(8).len(), 1, "handle 0 is handed to the host");
+    reg
+}
+
+/// TXS-BUD-008 — a promotion counts against the budget from the hand-off of
+/// its read until it lands, the read fails or the texture is released: another
+/// texture cannot take the same room meanwhile, and the landing keeps the plan
+/// within the budget.
+#[test]
+fn promotion_read_in_flight_counts_against_budget() {
+    let mut reg = registry_reading_handle_0();
+    // Handle 0 leaves view and handle 1 competes for the room before the read
+    // lands.
+    let wanted = HashMap::from([(1, drawn(0))]);
+    for pass in 0..3 {
+        let stats = reg.apply_wanted(&wanted);
+        assert!(reg.take_promotion_requests(8).is_empty(), "pass {pass}: no room");
+        assert_eq!(stats.evictions, 0, "pass {pass}: a texture being read is not evicted");
+    }
+    assert_eq!(reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(0)), PromotionLanding::Queued);
+    assert!(planned_bytes(&reg) <= ROOM_FOR_ONE, "planned {}", planned_bytes(&reg));
+    reg.apply_wanted(&wanted);
+    assert!(reg.take_promotion_requests(8).is_empty(), "the queued change still counts");
+    assert!(planned_bytes(&reg) <= ROOM_FOR_ONE);
+
+    // A read that fails, either way, gives the room back.
+    for fail in ["no bytes", "short bytes"] {
+        let mut reg = registry_reading_handle_0();
+        match fail {
+            "no bytes" => reg.note_promotion_read_failed(0),
+            _ => assert_eq!(
+                reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(2)),
+                PromotionLanding::Unusable
+            ),
+        }
+        reg.apply_wanted(&wanted);
+        assert_eq!(reg.promotion_requests, vec![(1, 0)], "{fail}: handle 1 gets the room");
+    }
+
+    // So does a release, through either path.
+    for batch in [false, true] {
+        let mut reg = registry_reading_handle_0();
+        if batch {
+            assert_eq!(reg.release_refs_batch(&[0]), vec![0]);
+        } else {
+            assert!(reg.release_ref(0));
+        }
+        reg.apply_wanted(&wanted);
+        assert_eq!(reg.promotion_requests, vec![(1, 0)], "batch {batch}: handle 1 gets the room");
+        assert_eq!(
+            reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(0)),
+            PromotionLanding::NothingToDo,
+            "batch {batch}: the late read has nothing to land on"
+        );
+    }
+}
+
+/// TXS-BUD-008 — a texture whose promotion is being read is not asked for
+/// again, though it is still wanted finer than it is resident.
+#[test]
+fn a_texture_being_read_is_not_requested_again() {
+    let mut reg = registry_reading_handle_0();
+    let stats = reg.apply_wanted(&HashMap::from([(0, drawn(0))]));
+    assert_eq!(stats.deficits, 1, "still short of detail");
+    assert!(reg.promotion_requests.is_empty());
+}
+
+/// TXS-BUD-002 — when the budget shrinks while a read is in flight, the pass
+/// takes the room from other textures. When only the read and floors are left,
+/// the plan stays over until the read lands; the landing adds nothing to it,
+/// and the next pass takes the landed texture down.
+#[test]
+fn a_budget_that_shrinks_under_a_read_takes_from_others_then_the_landed_texture() {
+    // Handle 1 is resident in full and unwanted: it pays for the shrink.
+    let mut reg = budgeted_registry(&[3, 0], 2 * BC1_FROM_0);
+    reg.apply_wanted(&HashMap::from([(0, drawn(0))]));
+    assert_eq!(reg.take_promotion_requests(8).len(), 1);
+    assert!(queued_targets(&reg).is_empty(), "both fit");
+    reg.set_texture_budget(budget_of(ROOM_FOR_ONE));
+    // Handle 0 has left view, so only the read in flight can ask for the room.
+    reg.apply_wanted(&HashMap::new());
+    assert_eq!(queued_targets(&reg), vec![(1, 3)]);
+
+    // Below even the read and the other floor: nothing is left to take.
+    let mut reg = registry_reading_handle_0();
+    reg.set_texture_budget(budget_of(100));
+    reg.apply_wanted(&HashMap::from([(0, drawn(0))]));
+    assert!(queued_targets(&reg).is_empty(), "the read cannot be evicted");
+    assert_eq!(reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(0)), PromotionLanding::Queued);
+    assert_eq!(planned_bytes(&reg), BC1_FROM_0 + BC1_FROM_3, "as counted while reading");
+    // The flush lands the change; the next pass takes it back down.
+    let change = reg.pending_promotions.remove(0).change.unwrap();
+    assert!(reg.textures[0].residency.as_mut().unwrap().apply(change));
+    reg.note_change_landed(0, change);
+    reg.apply_wanted(&HashMap::from([(0, drawn(0))]));
+    assert_eq!(queued_targets(&reg), vec![(0, 3)]);
+}
+
 /// A queued descriptor write names the view that was current when it was
 /// queued; by the time its slot replays, a promotion or a release may have
 /// replaced and destroyed that view (the soak crash: `vkUpdateDescriptorSets`
@@ -2101,9 +2222,11 @@ fn a_floor_promotes_only_under_the_generation_it_was_read_from() {
     let requested = |reg: &mut TextureRegistry, frame| {
         reg.current_frame_id = frame;
         reg.apply_wanted(&wanted);
-        let mut handles: Vec<TextureHandle> = reg.take_promotion_requests(8).into_iter().map(|r| r.handle).collect();
+        // Read the list without taking it: a taken read stays in flight until
+        // it is reported back, and would not be asked for again (TXS-BUD-008).
+        let mut handles: Vec<TextureHandle> =
+            reg.promotion_requests.iter().map(|&(handle, _)| handle).collect();
         handles.sort_unstable();
-        reg.promotion_requests.clear();
         handles
     };
     let old = [floor(&reg, 0)];

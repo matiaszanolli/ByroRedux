@@ -448,7 +448,10 @@ impl TextureRegistry {
     }
 
     /// M39 — up to `max` promotions waiting for the host to read their
-    /// levels, oldest first.
+    /// levels, oldest first. Each one returned counts against the budget from
+    /// here (TXS-BUD-008) until the host reports it back, through
+    /// [`Self::queue_promotion_bytes`] or
+    /// [`Self::note_promotion_read_failed`], or the texture is released.
     pub fn take_promotion_requests(&mut self, max: usize) -> Vec<PromotionRequest> {
         let take = max.min(self.promotion_requests.len());
         let taken: Vec<(TextureHandle, u32)> = self.promotion_requests.drain(..take).collect();
@@ -456,9 +459,11 @@ impl TextureRegistry {
             .into_iter()
             .filter_map(|(handle, target)| {
                 let source = self.stream_sources.get(&handle)?;
+                let path = source.path.to_string();
+                self.reads_in_flight.insert(handle, target);
                 Some(PromotionRequest {
                     handle,
-                    path: source.path.to_string(),
+                    path,
                     target,
                 })
             })
@@ -515,9 +520,11 @@ impl TextureRegistry {
         }
     }
 
-    /// Drop a streamed texture's source on its last release.
+    /// Drop a streamed texture's source on its last release, and with it the
+    /// budget a read in flight holds. Both release paths come through here.
     pub(super) fn forget_stream_source(&mut self, handle: TextureHandle) {
         self.stream_sources.remove(&handle);
+        self.reads_in_flight.remove(&handle);
         if let Some(width) = self.stream_widths.get_mut(handle as usize) {
             *width = 0;
         }
@@ -530,7 +537,8 @@ impl TextureRegistry {
     /// neither, then larger deficit, then nearer (TXS-WANT-004); the list
     /// replaces last frame's. One wanted coarser for `DEMOTE_AFTER_FRAMES`
     /// frames, and as long after its last promotion, is demoted
-    /// (TXS-WANT-005). A texture with a change already queued waits.
+    /// (TXS-WANT-005). A texture with a change already queued, or a promotion
+    /// the host is still reading, waits.
     ///
     /// With a texture budget set ([`Self::set_texture_budget`]) the same pass
     /// spends it: over budget it demotes the textures wanted longest ago
@@ -542,10 +550,13 @@ impl TextureRegistry {
     ) -> WantedStats {
         use residency::{WantedCase, DEMOTE_AFTER_FRAMES};
         let frame = self.current_frame_id;
-        let queued: rustc_hash::FxHashMap<TextureHandle, u32> = self
+        // The level each texture with a change on the way will be left at:
+        // queued for upload, or still being read by the host (TXS-BUD-008).
+        let changing: rustc_hash::FxHashMap<TextureHandle, u32> = self
             .pending_promotions
             .iter()
             .filter_map(|upload| Some((upload.handle, upload.change?.new_first)))
+            .chain(self.reads_in_flight.iter().map(|(&handle, &target)| (handle, target)))
             .collect();
         let mut stats = WantedStats::default();
         let mut candidates: Vec<(WantedCase, u32, f32, TextureHandle, u32)> = Vec::new();
@@ -576,7 +587,7 @@ impl TextureRegistry {
                 source.coarser_since = None;
                 // #7167, #7169 — a source floored from other files than the
                 // promotion reads keeps its levels.
-                if !queued.contains_key(&handle)
+                if !changing.contains_key(&handle)
                     && frame >= source.retry_after_frame
                     && source.generation == self.promotable_generation
                 {
@@ -595,7 +606,7 @@ impl TextureRegistry {
                     && source
                         .last_promoted_frame
                         .is_none_or(|promoted| frame.wrapping_sub(promoted) >= DEMOTE_AFTER_FRAMES);
-                if settled && !queued.contains_key(&handle) {
+                if settled && !changing.contains_key(&handle) {
                     demotions.push((handle, target));
                     source.coarser_since = None;
                 }
@@ -609,7 +620,7 @@ impl TextureRegistry {
         if let Some(budget) = self.texture_budget {
             self.spend_budget(
                 budget.bytes,
-                &queued,
+                &changing,
                 &mut candidates,
                 &mut budget_demotions,
                 &mut stats,
@@ -693,14 +704,14 @@ impl TextureRegistry {
     }
 
     /// M39 TXS-BUD-002…004 — spend the texture budget on this frame's
-    /// plan. `queued` maps a handle with a change already queued to the
-    /// first level that change leaves resident; those rows count their
-    /// bytes but cannot be reordered.
+    /// plan. `changing` maps a handle with a change queued, or a promotion
+    /// being read, to the first level that change leaves resident; those rows
+    /// count their bytes but cannot be reordered.
     ///
     /// Accounting is payload bytes from the DDS headers for streamed
     /// textures plus the allocated bytes of **whole** ones. Floors are never
-    /// evicted; when floors, whole textures and queued changes alone exceed
-    /// the budget one warning names the totals.
+    /// evicted; when floors, whole textures and changes on the way alone
+    /// exceed the budget one warning names the totals.
     ///
     /// 1. Over budget: demote one level at a time, first the textures wanted
     ///    coarser than they are resident (no visible loss), oldest
@@ -715,7 +726,7 @@ impl TextureRegistry {
     fn spend_budget(
         &mut self,
         budget: u64,
-        queued: &rustc_hash::FxHashMap<TextureHandle, u32>,
+        changing: &rustc_hash::FxHashMap<TextureHandle, u32>,
         candidates: &mut Vec<(residency::WantedCase, u32, f32, TextureHandle, u32)>,
         demotions: &mut Vec<(TextureHandle, u32)>,
         stats: &mut WantedStats,
@@ -740,13 +751,13 @@ impl TextureRegistry {
             };
             rows.push(BudgetRow {
                 handle,
-                cur: queued.get(&handle).copied().unwrap_or(r.first_resident),
+                cur: changing.get(&handle).copied().unwrap_or(r.first_resident),
                 floor_first: r.floor_first,
                 wanted: source
                     .wanted
                     .map_or(r.floor_first, |(level, _)| level.min(r.floor_first)),
                 last_wanted: source.last_wanted_frame,
-                locked: queued.contains_key(&handle),
+                locked: changing.contains_key(&handle),
                 recent: source.last_promoted_frame.is_some_and(|promoted| {
                     frame.wrapping_sub(promoted) < residency::DEMOTE_AFTER_FRAMES
                 }),
@@ -814,7 +825,8 @@ impl TextureRegistry {
                         .sum();
                     log::warn!(
                         "texture budget {} MiB cannot be met: floors {} MiB + whole textures \
-                         {} MiB leave {} MiB of other residents (queued promotions) above it",
+                         {} MiB leave {} MiB of other residents (queued changes and reads in \
+                         flight) above it",
                         budget >> 20,
                         floors >> 20,
                         whole_bytes >> 20,
@@ -929,13 +941,16 @@ impl TextureRegistry {
     /// request's target). [`PromotionLanding::NothingToDo`] when the handle
     /// was released or already holds the target; [`PromotionLanding::Unusable`]
     /// when the bytes do not cover it, which backs the texture off like a
-    /// failed read ([`Self::note_promotion_read_failed`]).
+    /// failed read ([`Self::note_promotion_read_failed`]). Whatever the
+    /// outcome, the read is no longer in flight; a queued change carries its
+    /// bytes on in the budget.
     pub fn queue_promotion_bytes(
         &mut self,
         handle: TextureHandle,
         target: u32,
         dds_bytes: Vec<u8>,
     ) -> PromotionLanding {
+        self.reads_in_flight.remove(&handle);
         let Some(source) = self.stream_sources.get(&handle).cloned() else {
             return PromotionLanding::NothingToDo;
         };
@@ -966,6 +981,7 @@ impl TextureRegistry {
     /// requested again for [`residency::READ_FAILURE_RETRY_FRAMES`] frames,
     /// instead of being re-read every frame it stays wanted.
     pub fn note_promotion_read_failed(&mut self, handle: TextureHandle) {
+        self.reads_in_flight.remove(&handle);
         if let Some(source) = self.stream_sources.get_mut(&handle) {
             source.retry_after_frame = self
                 .current_frame_id

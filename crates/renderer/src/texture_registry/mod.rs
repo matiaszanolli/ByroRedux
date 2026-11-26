@@ -475,6 +475,11 @@ pub struct TextureRegistry {
     /// M39 — promotions waiting for the host to read their levels
     /// (`take_promotion_requests` → `queue_promotion_bytes`).
     promotion_requests: Vec<(TextureHandle, u32)>,
+    /// M39 TXS-BUD-008 — the target level of each promotion the host is
+    /// reading. Until the read lands, fails or the texture is released, the
+    /// wanted pass treats it like a queued change: counted at the target and
+    /// left alone.
+    reads_in_flight: rustc_hash::FxHashMap<TextureHandle, u32>,
     /// M39 Phase 1 — the `render.texture_streaming` switch (TXS-RES-008).
     /// On: a streamable 2D texture's first upload installs only its floor,
     /// and a promotion to the full chain is queued behind it (the forced
@@ -765,6 +770,7 @@ impl TextureRegistry {
             promotable_generation: 0,
             stream_widths: Vec::new(),
             promotion_requests: Vec::new(),
+            reads_in_flight: Default::default(),
             streaming: false,
             peak_resident_bytes: 0,
             peak_above_floor_bytes: 0,

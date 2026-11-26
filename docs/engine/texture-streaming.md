@@ -378,7 +378,21 @@ terms (TXS-BUD-001), and `tex.residency` prints the current one.
 sizes for streamed textures, the allocation size for **whole** ones; the
 allocation of a streamed image runs ~2 % above its payload, so the
 resident figure `tex.residency` prints can sit that far over the budget).
-Queued changes count at the level they will leave resident.
+Queued changes count at the level they will leave resident. So does a
+promotion the host is still reading, from the moment
+`take_promotion_requests` hands it over (TXS-BUD-008): the registry holds
+its target in `reads_in_flight` until `queue_promotion_bytes` or
+`note_promotion_read_failed` reports it back, or the texture's last release
+drops it. Either kind of texture is locked: it is not requested again,
+demoted or evicted while the change is on its way. Without this a read
+landed unchecked bytes: it arrives frames after the pass that asked for it,
+and after that frame's budget step.
+
+If the derived budget shrinks while reads are in flight, the pass takes the
+room from other textures. When only the reads, queued changes, floors and
+**whole** textures are left, the plan stays over until the reads land; a
+landing adds nothing the plan did not already count, and the next pass can
+demote the landed texture.
 
 1. **Over budget**, demote one level at a time. First the textures wanted
    coarser than they are resident, down to the level they are wanted at
@@ -394,8 +408,9 @@ Queued changes count at the level they will leave resident.
    episode (until the texture's wanted level changes). A texture wanted at
    its resident level is never evicted to fund another's promotion, so two
    wanted textures cannot swap levels every frame.
-3. Floors, **whole** textures and queued changes are never evicted; if they
-   alone exceed the budget one warning names the totals (TXS-BUD-002).
+3. Floors, **whole** textures, queued changes and reads in flight are never
+   evicted; if they alone exceed the budget one warning names the totals
+   (TXS-BUD-002).
 4. A promotion whose image allocation fails (TXS-BUD-007) is counted as a
    decline, leaves the entry exactly as it was (the old image retires only
    after the new one is installed), and is not requested again for
