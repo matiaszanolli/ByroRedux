@@ -21,8 +21,9 @@
 # retained in the artifacts.
 #
 # M39 A10 — before shutdown a `tex.residency` probe reads the session-peak
-# texture bytes above the floors and the whole textures; with streaming on
-# they must be within the texture budget (TXS-BUD-002). The probe is
+# resident texture bytes (`resident … (peak N)`); with streaming on they must
+# be at most 1.03 × the texture budget (TXS-BUD-002). The budget read is the
+# one in force at the probe, so pin it to compare like with like. The probe is
 # informational with streaming off. BYROREDUX_SOAK_TEXTURE_STREAMING=0|1
 # seeds the run's isolated settings.toml (unset: the engine default), and
 # BYROREDUX_SOAK_TEXTURE_BUDGET_MIB pins the budget (unset: derived).
@@ -303,13 +304,13 @@ debug_command tex.residency "$LOG_DIR/tex-residency.log" \
     || fail "tex.residency probe rejected"
 tex_summary="tex.residency: streaming off, nothing to gate"
 if ! grep -Fq 'streaming: off' "$LOG_DIR/tex-residency.log"; then
-    peak_mib="$(grep -oE 'session peak [0-9.]+' "$LOG_DIR/tex-residency.log" | head -1 | awk '{print $3}')"
+    peak_mib="$(grep -oE 'resident [0-9.]+ MiB \(peak [0-9.]+' "$LOG_DIR/tex-residency.log" | head -1 | awk '{print $NF}')"
     budget_mib="$(grep -oE 'budget [0-9.]+ MiB' "$LOG_DIR/tex-residency.log" | head -1 | awk '{print $2}')"
     [[ -n "$peak_mib" && -n "$budget_mib" ]] \
-        || fail "tex.residency printed no session peak / budget (see tex-residency.log)"
-    awk -v p="$peak_mib" -v b="$budget_mib" 'BEGIN { exit !(p <= b) }' \
-        || fail "texture bytes above floors+whole peaked at ${peak_mib} MiB, over the ${budget_mib} MiB budget (TXS-BUD-002; see tex-residency.log)"
-    tex_summary="tex.residency: session-peak ${peak_mib} MiB above floors+whole within the ${budget_mib} MiB budget"
+        || fail "tex.residency printed no resident peak / budget (see tex-residency.log)"
+    awk -v p="$peak_mib" -v b="$budget_mib" 'BEGIN { exit !(p <= 1.03 * b) }' \
+        || fail "resident texture bytes peaked at ${peak_mib} MiB, over 1.03 x the ${budget_mib} MiB budget (TXS-BUD-002; see tex-residency.log)"
+    tex_summary="tex.residency: session-peak resident ${peak_mib} MiB within 1.03 x the ${budget_mib} MiB budget"
 fi
 echo "smoke[p5-soak]: $tex_summary"
 echo "smoke[p5-soak]: soak curve (cycle,time_s,rss_kb,quicksaves):"

@@ -29,6 +29,133 @@ pub(super) struct BudgetRow {
     demoted: bool,
 }
 
+impl BudgetRow {
+    /// Rows equal on this give up levels together, one each in turn; a
+    /// smaller key gives up all it can first (TXS-BUD-003).
+    fn eviction_key(&self) -> (bool, u64) {
+        (self.recent, self.last_wanted)
+    }
+}
+
+/// The rows `eligible` admits, in TXS-BUD-003's order: outside the hysteresis
+/// window first, then oldest last-wanted frame, then handle (rows are in
+/// handle order), which keeps the choice among equals deterministic.
+fn eviction_order(rows: &[BudgetRow], eligible: impl Fn(&BudgetRow) -> bool) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..rows.len()).filter(|&i| eligible(&rows[i])).collect();
+    order.sort_unstable_by_key(|&i| (rows[i].eviction_key(), i));
+    order
+}
+
+/// Hands out evictions over an [`eviction_order`] one level at a time. It
+/// drains one tie set (equal [`BudgetRow::eviction_key`]) before the next: its
+/// levels finer than wanted first, then wanted ones, and in each of those two
+/// stages every member gives up a level before any gives up a second. It keeps
+/// its place between calls, so a second promotion funded in one pass continues
+/// the round the first one stopped in.
+struct EvictionCursor {
+    order: Vec<usize>,
+    /// The tie set being drained is `order[start..end]`.
+    start: usize,
+    end: usize,
+    /// `false` while the set gives up surplus, `true` for wanted levels.
+    wanted_stage: bool,
+    /// The next member of the current round.
+    at: usize,
+    /// The current round has taken a level, so another round follows it.
+    took: bool,
+}
+
+impl EvictionCursor {
+    fn new(order: Vec<usize>) -> Self {
+        Self {
+            order,
+            start: 0,
+            end: 0,
+            wanted_stage: false,
+            at: 0,
+            took: false,
+        }
+    }
+
+    /// The row that gives up its finest level next, `None` once every row in
+    /// the order is at its floor. The caller must lower that row's `cur`.
+    fn next(&mut self, rows: &[BudgetRow]) -> Option<usize> {
+        loop {
+            while self.at < self.end {
+                let i = self.order[self.at];
+                self.at += 1;
+                let limit = if self.wanted_stage {
+                    rows[i].floor_first
+                } else {
+                    rows[i].wanted
+                };
+                if rows[i].cur < limit {
+                    self.took = true;
+                    return Some(i);
+                }
+            }
+            if self.took {
+                self.took = false;
+            } else if !self.wanted_stage && self.start < self.end {
+                self.wanted_stage = true;
+            } else {
+                let key = rows[*self.order.get(self.end)?].eviction_key();
+                self.start = self.end;
+                self.end += self.order[self.start..]
+                    .iter()
+                    .take_while(|&&i| rows[i].eviction_key() == key)
+                    .count();
+                self.wanted_stage = false;
+            }
+            self.at = self.start;
+        }
+    }
+}
+
+/// The rows a promotion may take from: [`eviction_order`] over the unlocked
+/// textures outside the window, from which each promotion may use the prefix
+/// last wanted strictly before it (TXS-BUD-004).
+struct FundingPool {
+    /// `above_floor[n]`: the bytes the first `n` rows held above their floors
+    /// when the pool was built.
+    above_floor: Vec<u64>,
+    cursor: EvictionCursor,
+    /// Bytes funding has taken so far, all from the front of the order.
+    taken: u64,
+}
+
+impl FundingPool {
+    fn new(rows: &[BudgetRow], bytes_from: impl Fn(&BudgetRow, u32) -> u64) -> Self {
+        let order = eviction_order(rows, |row| {
+            !row.locked && !row.recent && row.cur < row.floor_first
+        });
+        let mut total = 0;
+        let above_floor = std::iter::once(0)
+            .chain(order.iter().map(|&i| {
+                total += bytes_from(&rows[i], rows[i].cur)
+                    - bytes_from(&rows[i], rows[i].floor_first);
+                total
+            }))
+            .collect();
+        Self {
+            above_floor,
+            cursor: EvictionCursor::new(order),
+            taken: 0,
+        }
+    }
+
+    /// Bytes still to be had from textures last wanted before `last_wanted`.
+    /// Taking from the front keeps this exact: bytes taken beyond that prefix
+    /// mean the prefix is empty.
+    fn available_before(&self, rows: &[BudgetRow], last_wanted: u64) -> u64 {
+        let older = self
+            .cursor
+            .order
+            .partition_point(|&i| rows[i].last_wanted < last_wanted);
+        self.above_floor[older].saturating_sub(self.taken)
+    }
+}
+
 /// How a queued DDS is viewed and what its header says about alpha: the three facts
 /// `enqueue_dds_for_view` forwards to the reservation together.
 struct DdsView {
@@ -541,9 +668,10 @@ impl TextureRegistry {
     /// the host is still reading, waits.
     ///
     /// With a texture budget set ([`Self::set_texture_budget`]) the same pass
-    /// spends it: over budget it demotes the textures wanted longest ago
-    /// first (TXS-BUD-003), and a promotion that does not fit evicts first
-    /// and is declined when that cannot make room (TXS-BUD-004).
+    /// spends it: over budget it demotes one level at a time in
+    /// TXS-BUD-003's order, and a promotion that does not fit takes only from
+    /// textures wanted strictly before it and is declined, evicting nothing,
+    /// when they cannot make room (TXS-BUD-004).
     pub fn apply_wanted<S: std::hash::BuildHasher>(
         &mut self,
         wanted: &HashMap<TextureHandle, residency::WantedMip, S>,
@@ -713,16 +841,20 @@ impl TextureRegistry {
     /// evicted; when floors, whole textures and changes on the way alone
     /// exceed the budget one warning names the totals.
     ///
-    /// 1. Over budget: demote one level at a time, first the textures wanted
-    ///    coarser than they are resident (no visible loss), oldest
-    ///    last-wanted frame first, then any texture above its floor in the
-    ///    same order.
+    /// Both passes take one level at a time in TXS-BUD-003's order
+    /// ([`EvictionCursor`]): textures outside the hysteresis window before
+    /// those inside it, oldest last-wanted frame first, and among equals the
+    /// levels finer than wanted before wanted ones, one level each.
+    ///
+    /// 1. Over budget: take levels until the plan fits or every unlocked
+    ///    texture is at its floor.
     /// 2. Each promotion candidate, in queue order: kept if it fits; else
-    ///    made to fit by demoting textures wanted coarser than resident,
-    ///    oldest first; else dropped from the queue and counted as declined
-    ///    once per episode. A texture wanted at its resident level is never
-    ///    evicted to fund another's promotion, so two wanted textures cannot
-    ///    swap levels frame after frame.
+    ///    made to fit by taking from textures outside the window that were
+    ///    last wanted strictly before it; else dropped from the queue,
+    ///    evicting nothing, and counted as declined once per episode
+    ///    (TXS-BUD-004). A texture wanted this frame is never taken from to
+    ///    fund another's promotion, so two wanted textures cannot swap levels
+    ///    frame after frame.
     fn spend_budget(
         &mut self,
         budget: u64,
@@ -779,38 +911,25 @@ impl TextureRegistry {
                 .map(|row| sources.get(&row.handle).map_or(0, |s| s.bytes_from(row.cur)))
                 .sum::<u64>();
 
-        // Drop levels of `row` until `projected` fits or `limit` is reached.
-        let drop_levels = |row: &mut BudgetRow, projected: &mut u64, limit: u32, target: u64| {
-            while *projected > target && row.cur < limit {
-                *projected = projected.saturating_sub(level_bytes(row));
-                row.cur += 1;
-                row.demoted = true;
-            }
+        let bytes_from = |row: &BudgetRow, first: u32| -> u64 {
+            sources.get(&row.handle).map_or(0, |s| s.bytes_from(first))
+        };
+        // Take `row`'s finest planned level out of `projected`.
+        let drop_level = |row: &mut BudgetRow, projected: &mut u64| {
+            *projected = projected.saturating_sub(level_bytes(row));
+            row.cur += 1;
+            row.demoted = true;
         };
 
         if projected > budget {
-            let mut order: Vec<usize> = (0..rows.len())
-                .filter(|&i| !rows[i].locked && rows[i].cur < rows[i].floor_first)
-                .collect();
-            order.sort_by_key(|&i| {
-                (
-                    rows[i].wanted <= rows[i].cur,
-                    rows[i].recent,
-                    rows[i].last_wanted,
-                    i,
-                )
-            });
-            // Sweep 1: textures wanted coarser than they are resident, down
-            // to the level they are wanted at.
-            for &i in &order {
-                let limit = rows[i].wanted;
-                drop_levels(&mut rows[i], &mut projected, limit, budget);
-            }
-            // Sweep 2: whatever is left above a floor, oldest first.
-            order.sort_by_key(|&i| (rows[i].recent, rows[i].last_wanted, i));
-            for &i in &order {
-                let limit = rows[i].floor_first;
-                drop_levels(&mut rows[i], &mut projected, limit, budget);
+            let mut cursor = EvictionCursor::new(eviction_order(&rows, |row| {
+                !row.locked && row.cur < row.floor_first
+            }));
+            while projected > budget {
+                let Some(i) = cursor.next(&rows) else {
+                    break;
+                };
+                drop_level(&mut rows[i], &mut projected);
             }
             if projected > budget {
                 if !self.budget_floor_warned {
@@ -842,7 +961,7 @@ impl TextureRegistry {
 
         // Promotions, in queue order.
         let mut declined: Vec<(TextureHandle, u32)> = Vec::new();
-        let mut pool: Option<(Vec<usize>, usize)> = None;
+        let mut pool: Option<FundingPool> = None;
         let mut kept = Vec::with_capacity(candidates.len());
         for candidate in candidates.drain(..) {
             let (_, _, _, handle, target) = candidate;
@@ -852,40 +971,22 @@ impl TextureRegistry {
             if rows[i].demoted || rows[i].locked || target >= rows[i].cur {
                 continue;
             }
-            let delta = sources
-                .get(&handle)
-                .map_or(0, |s| s.bytes_from(target) - s.bytes_from(rows[i].cur));
+            let delta = bytes_from(&rows[i], target) - bytes_from(&rows[i], rows[i].cur);
             if projected + delta > budget {
-                // Make room from textures wanted coarser than they are
-                // resident, oldest last-wanted first.
-                let (order, pos) = pool.get_or_insert_with(|| {
-                    let mut order: Vec<usize> = (0..rows.len())
-                        .filter(|&j| !rows[j].locked && rows[j].cur < rows[j].wanted)
-                        .collect();
-                    order.sort_by_key(|&j| (rows[j].recent, rows[j].last_wanted, j));
-                    (order, 0)
-                });
+                let pool = pool.get_or_insert_with(|| FundingPool::new(&rows, bytes_from));
                 let need = projected + delta - budget;
-                let available: u64 = order[*pos..]
-                    .iter()
-                    .map(|&j| {
-                        sources.get(&rows[j].handle).map_or(0, |s| {
-                            s.bytes_from(rows[j].cur) - s.bytes_from(rows[j].wanted)
-                        })
-                    })
-                    .sum();
-                if available < need {
+                if pool.available_before(&rows, rows[i].last_wanted) < need {
                     declined.push((handle, target));
                     continue;
                 }
                 let goal = budget.saturating_sub(delta);
-                while projected > goal && *pos < order.len() {
-                    let j = order[*pos];
-                    let limit = rows[j].wanted;
-                    drop_levels(&mut rows[j], &mut projected, limit, goal);
-                    if rows[j].cur >= rows[j].wanted {
-                        *pos += 1;
-                    }
+                while projected > goal {
+                    let Some(j) = pool.cursor.next(&rows) else {
+                        break;
+                    };
+                    let before = projected;
+                    drop_level(&mut rows[j], &mut projected);
+                    pool.taken += before - projected;
                 }
             }
             projected += delta;

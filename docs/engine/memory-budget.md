@@ -871,14 +871,18 @@ record's last chunk) resident while it has a holder; the levels above are
 promoted on demand and demoted under pressure. The pool is every streamed
 texture's resident levels plus the **whole** textures (cubemaps, single-level
 and within-floor chains, RGBA uploads). `apply_wanted` spends the budget in
-payload bytes: over it, textures wanted coarser than they are resident drop
-to the level they are wanted at, oldest last-wanted frame first, and then any
-texture above its floor drops one level at a time in the same order, never
-below the floor (TXS-BUD-003). A promotion that does not fit first evicts the
-same way from textures nothing wants at that level; if that cannot make room
-it is declined and counted, and the texture keeps the image it has
-(TXS-BUD-004/007). A wanted texture is never evicted to fund another's
-promotion. Floors and **whole** textures are never evicted: when they alone
+payload bytes, counting a queued change, and a promotion the host is still
+reading, at the level it will leave resident (TXS-BUD-008). Over budget it
+takes one level at a time, never below a floor: from textures outside the
+120-frame hysteresis window before those promoted inside it, oldest
+last-wanted frame first, and among equals the levels finer than wanted before
+wanted ones, one level each (TXS-BUD-003). A promotion that does not fit first
+evicts in that order, only from textures outside the window that were last
+wanted strictly before it; if that cannot make room it is declined and
+counted, evicts nothing, and the texture keeps the image it has
+(TXS-BUD-004/007). So a texture wanted this frame is never evicted to fund
+another's promotion. A texture with a change on its way is not moved until it
+lands. Floors and **whole** textures are never evicted: when they alone
 exceed the budget one warning names both totals (TXS-BUD-002). Retiring
 images (replaced by a promotion or demotion, waiting `MAX_FRAMES_IN_FLIGHT`
 frames in `pending_destroy`) are counted apart and do not count against the

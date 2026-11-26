@@ -232,8 +232,8 @@ binding edges the window-event path resolves, joining the canonical deferred
   growing past 1.5× the 3-cycle warmup baseline. The curve lands in
   `soak.csv` under the artifacts directory. Before shutdown a `tex.residency`
   probe (M39 A10) fails the run when, with texture streaming on, the
-  session-peak texture bytes above floors and whole textures exceed the
-  texture budget; `BYROREDUX_SOAK_TEXTURE_STREAMING=0|1` and
+  session-peak resident texture bytes exceed 1.03 times the texture budget;
+  `BYROREDUX_SOAK_TEXTURE_STREAMING=0|1` and
   `BYROREDUX_SOAK_TEXTURE_BUDGET_MIB` seed the run's isolated settings.
 
 A fixture may also decline a gate. For fixtures without an explicit gate

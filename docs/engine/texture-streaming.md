@@ -127,7 +127,7 @@ streamable texture:
 | `floor_first` | the first level of the floor (§3.3) |
 | `first_resident` | the first resident level; `floor_first` in **floor**, 0 in **full** |
 | `wanted` | the wanted mip this frame (§5) and the case that set it (drawn / TLAS only / neither) |
-| `last_wanted_frame` | the last frame `wanted` was finer than `floor_first` (eviction order, §7.2) |
+| `last_wanted_frame` | the last frame an instance referencing the texture was in the raster draw list or the TLAS, whatever level it wanted (eviction order, §7.2). A new stream source starts at the frame its floor was installed; PRD §2 defines the value by references only, and the start value never reaches eviction, because a texture nothing has referenced is at its floor. Only `tex.residency` shows it |
 | `last_promoted_frame` | for the hysteresis rule (§6.3) |
 | `source` | how to re-read the high mips: an opaque locator the host owns (archive + path, §4) |
 | `class` | the §3.2 class of the PRD, for `tex.residency` |
@@ -394,23 +394,43 @@ room from other textures. When only the reads, queued changes, floors and
 landing adds nothing the plan did not already count, and the next pass can
 demote the landed texture.
 
-1. **Over budget**, demote one level at a time. First the textures wanted
-   coarser than they are resident, down to the level they are wanted at
-   (no visible loss), then any texture above its floor, never below it.
-   Within a sweep the order is: textures promoted outside the hysteresis
-   window before those inside it (TXS-WANT-005 holds under pressure unless
-   nothing else is left), then oldest `last_wanted_frame` first
-   (TXS-BUD-003).
+Both passes below take **one level at a time** in one order
+(`EvictionCursor`, TXS-BUD-003), never below a floor:
+
+- textures outside the hysteresis window (§6.3) before those promoted
+  inside it, so TXS-WANT-005 holds under pressure unless nothing else is
+  left;
+- within each group, the oldest `last_wanted_frame` first;
+- textures equal on both give up their levels finer than wanted first, then
+  wanted ones, and in each of those two stages each gives up one level
+  before any gives up a second;
+- the PRD leaves the order among otherwise equal textures open; it is the
+  handle order.
+
+The levels planned for one texture are applied as one image replacement.
+"Inside the window" is judged from the last promotion that **landed**.
+
+1. **Over budget**, take levels until the plan fits.
 2. **Each promotion**, in queue order (§6.1): kept if it fits; otherwise made
-   to fit by demoting textures wanted coarser than resident, oldest
-   last-wanted first; otherwise **declined** (TXS-BUD-004): it leaves the
-   queue, the texture keeps its image, and the decline is counted once per
-   episode (until the texture's wanted level changes). A texture wanted at
-   its resident level is never evicted to fund another's promotion, so two
-   wanted textures cannot swap levels every frame.
+   to fit by taking, in the same order, from textures outside the window
+   that were last wanted **strictly before** the promoted one; otherwise
+   **declined** (TXS-BUD-004): it leaves the queue, evicts nothing, the
+   texture keeps its image, and the decline is counted once per episode
+   (until the texture's wanted level changes). A second promotion funded in
+   the same pass continues where the first stopped. Every promotion
+   candidate is wanted in the current frame, so only textures nothing
+   references this frame can pay for one: a texture in view never gives up
+   levels for another's promotion, even surplus ones, and two wanted
+   textures cannot swap levels frame after frame. Surplus in view is freed
+   by the hysteresis demotion (§6.3) or by the over-budget pass, and the
+   candidates are rebuilt every frame, so a declined promotion can succeed
+   later.
 3. Floors, **whole** textures, queued changes and reads in flight are never
    evicted; if they alone exceed the budget one warning names the totals
-   (TXS-BUD-002).
+   (TXS-BUD-002). So the order above holds only among the textures that can
+   move: one with a change on its way cannot be reordered, and a texture
+   inside the window can give up a level while a locked one outside it is
+   still above its floor.
 4. A promotion whose image allocation fails (TXS-BUD-007) is counted as a
    decline, leaves the entry exactly as it was (the old image retires only
    after the new one is installed), and is not requested again for

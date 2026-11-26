@@ -1853,11 +1853,119 @@ fn eviction_stops_as_soon_as_the_budget_is_met() {
     assert_eq!(queued_targets(&reg), vec![(0, 1)], "one level of one texture");
 }
 
+/// TXS-BUD-003 — textures with the same last-wanted frame each give up one
+/// level before any gives up a second.
+#[test]
+fn tied_textures_each_give_up_one_level() {
+    // One byte more than level 0 must go: one level of each, not two of one.
+    let mut reg = budgeted_registry(&[0, 0], 2 * BC1_FROM_0 - 2049);
+    reg.apply_wanted(&HashMap::from([(0, drawn(0)), (1, drawn(0))]));
+    assert_eq!(queued_targets(&reg), vec![(0, 1), (1, 1)]);
+}
+
+/// TXS-BUD-003 — among textures with the same last-wanted frame, levels finer
+/// than wanted go before wanted ones.
+#[test]
+fn tied_textures_give_up_surplus_before_wanted_levels() {
+    // Handle 1 is wanted at level 1: its level 0 is surplus and goes first.
+    // One more byte is then needed, and the wanted levels start in handle order.
+    let mut reg = budgeted_registry(&[0, 0], 2 * BC1_FROM_0 - 2048);
+    reg.apply_wanted(&HashMap::from([(0, drawn(0)), (1, drawn(1))]));
+    assert_eq!(queued_targets(&reg), vec![(1, 1)]);
+
+    let mut reg = budgeted_registry(&[0, 0], 2 * BC1_FROM_0 - 2049);
+    reg.apply_wanted(&HashMap::from([(0, drawn(0)), (1, drawn(1))]));
+    assert_eq!(queued_targets(&reg), vec![(0, 1), (1, 1)]);
+}
+
+/// TXS-BUD-003 / TXS-WANT-005 — the window comes before surplus: a recently
+/// promoted texture keeps even its surplus while a texture outside the window
+/// can still give up a wanted level.
+#[test]
+fn a_recent_texture_keeps_its_surplus_while_an_outside_one_loses_a_wanted_level() {
+    let mut reg = budgeted_registry(&[0, 0], 2 * BC1_FROM_0 - 2048);
+    reg.current_frame_id = 1000;
+    reg.stream_sources.get_mut(&0).unwrap().last_promoted_frame = Some(990);
+    reg.apply_wanted(&HashMap::from([(0, drawn(1)), (1, drawn(0))]));
+    assert_eq!(queued_targets(&reg), vec![(1, 1)]);
+}
+
+/// TXS-BUD-004 — a promotion evicts only textures last wanted strictly before
+/// it: one wanted this frame keeps even its surplus.
+#[test]
+fn a_promotion_cannot_take_surplus_from_a_texture_wanted_this_frame() {
+    let mut reg = budgeted_registry(&[3, 0], BC1_FROM_0 + BC1_FROM_3 + 100);
+    reg.current_frame_id = 10;
+    // Handle 1 is drawn but only needs its floor.
+    let stats = reg.apply_wanted(&HashMap::from([(0, drawn(0)), (1, drawn(3))]));
+    assert!(reg.promotion_requests.is_empty(), "declined");
+    assert!(queued_targets(&reg).is_empty(), "a declined promotion evicts nothing");
+    assert_eq!((stats.declines, stats.evictions), (1, 0));
+}
+
+/// TXS-BUD-004 — nor from an older texture inside the hysteresis window.
+#[test]
+fn a_promotion_cannot_take_from_a_texture_inside_the_hysteresis_window() {
+    let mut reg = budgeted_registry(&[3, 0], BC1_FROM_0 + BC1_FROM_3 + 100);
+    reg.current_frame_id = 1000;
+    let older = reg.stream_sources.get_mut(&1).unwrap();
+    older.last_wanted_frame = 900;
+    older.last_promoted_frame = Some(950);
+    let stats = reg.apply_wanted(&HashMap::from([(0, drawn(0))]));
+    assert!(reg.promotion_requests.is_empty(), "declined");
+    assert!(queued_targets(&reg).is_empty(), "a declined promotion evicts nothing");
+    assert_eq!((stats.declines, stats.evictions), (1, 0));
+}
+
+/// TXS-BUD-004 — funding follows TXS-BUD-003's order: the oldest first, then
+/// tied textures one level each.
+#[test]
+fn funding_takes_the_oldest_first_and_ties_one_level_each() {
+    // Handles 1..=3 are unwanted; 3 was wanted longest ago and holds only
+    // level 2 (128 B) above its floor.
+    let held = BC1_FROM_3 + 2 * BC1_FROM_0 + (BC1_FROM_3 + 128);
+    let promotion = BC1_FROM_0 - BC1_FROM_3;
+    // `short` bytes have to be found for handle 0's promotion.
+    let short_by = |short: u64| {
+        let mut reg = budgeted_registry(&[3, 0, 0, 2], held + promotion - short);
+        reg.current_frame_id = 1000;
+        for (handle, wanted_at) in [(1, 500), (2, 500), (3, 400)] {
+            reg.stream_sources.get_mut(&handle).unwrap().last_wanted_frame = wanted_at;
+        }
+        reg.apply_wanted(&HashMap::from([(0, drawn(0))]));
+        assert_eq!(reg.promotion_requests, vec![(0, 0)], "short by {short}: funded");
+        queued_targets(&reg)
+    };
+    assert_eq!(short_by(100), vec![(3, 3)], "only the oldest pays");
+    // One byte more than the oldest and one level 0: both of the tied pay.
+    assert_eq!(short_by(128 + 2049), vec![(1, 1), (2, 1), (3, 3)]);
+}
+
+/// TXS-BUD-004 — two promotions funded in one pass continue the same round: a
+/// tied texture does not give up a second level before the others gave one.
+#[test]
+fn a_second_funded_promotion_continues_the_round() {
+    // Handles 2 and 3 are unwanted and tied. The first promotion is 1 byte
+    // short and takes handle 2's level 0, leaving 2047 B over; the second
+    // is then 641 B short.
+    let held = 2 * BC1_FROM_3 + 2 * BC1_FROM_0;
+    let promotion = BC1_FROM_0 - BC1_FROM_3;
+    let mut reg = budgeted_registry(&[3, 3, 0, 0], held + promotion - 1);
+    reg.current_frame_id = 1000;
+    let near = residency::WantedMip { distance: 5.0, ..drawn(0) };
+    let far = residency::WantedMip { distance: 50.0, ..drawn(0) };
+    reg.apply_wanted(&HashMap::from([(0, near), (1, far)]));
+    assert_eq!(reg.promotion_requests, vec![(0, 0), (1, 0)]);
+    assert_eq!(queued_targets(&reg), vec![(2, 1), (3, 1)]);
+}
+
 /// TXS-BUD-004 — a promotion that does not fit evicts first: a texture
 /// nothing wants gives up its levels so the drawn one can have its own.
 #[test]
 fn a_promotion_that_does_not_fit_evicts_the_unwanted_first() {
     let mut reg = budgeted_registry(&[3, 0], BC1_FROM_0 + BC1_FROM_3 + 100);
+    // Past frame 0, so the unwanted texture was last wanted strictly earlier.
+    reg.current_frame_id = 10;
     let wanted = HashMap::from([(0, drawn(0))]);
     let stats = reg.apply_wanted(&wanted);
     assert_eq!(reg.promotion_requests, vec![(0, 0)], "the drawn texture is promoted");
