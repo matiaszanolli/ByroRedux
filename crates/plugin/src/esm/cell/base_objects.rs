@@ -374,6 +374,9 @@ pub struct TextureSet {
     /// so a shared parser cannot silently bind a wrinkle texture as an
     /// environment mask.
     pub wrinkle: Option<String>,
+    /// Starfield TX19, the opacity map (xEdit `wbDefinitionsSF1.pas`;
+    /// SMM-SRC-009). No other game's TXST has this slot.
+    pub opacity: Option<String>,
     /// FO4+ MNAM sub-record — path to a BGSM material file whose
     /// embedded TX00..TX07 override the direct-slot path. When present
     /// it typically replaces TX00 entirely (the 140 MNAM-only vanilla

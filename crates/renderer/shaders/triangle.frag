@@ -229,6 +229,7 @@ void main() {
         || (legacyDebugMode
             && (vizFlags & DBG_VIZ_MATERIAL_LOBES) == DBG_VIZ_MATERIAL_LOBES);
     bool viewMaterialRole = debugMode == RENDER_DEBUG_MATERIAL_ROLE;
+    bool viewMaterialOpacity = debugMode == RENDER_DEBUG_MATERIAL_OPACITY;
     bool viewFacingRatio = debugMode == RENDER_DEBUG_FACING_RATIO;
     bool viewRestirLight = debugMode == RENDER_DEBUG_RESTIR_LIGHT;
     bool viewRestirHistory = debugMode == RENDER_DEBUG_RESTIR_HISTORY;
@@ -448,6 +449,13 @@ void main() {
     // coordinate is authored from the source atlas; vertex opacity must fade
     // the resulting effect, not select a different palette entry.
     float sourceTextureAlpha = texColor.a;
+    // SMM-OPA-001 — an opacity map, where bound, is this surface's coverage:
+    // the alpha test, blending and every later reader of `texColor.a` take it.
+    // The effect-palette coordinate above stays the colour texture's alpha.
+    texColor.a = coverageAlphaGrad(
+        mat.opacityMapIndex, texColor.a, sampleUV, albedoUVdx, albedoUVdy);
+    // SMM-OBS-003 — what `render.debug material_opacity` draws.
+    float coverageSourceValue = texColor.a;
     // #494 — BGSM `materialAlpha` multiplier. Applied **before** the
     // alpha-test discard so the authored `alphaThreshold` still
     // operates on the final blended alpha (matching FO4's in-engine
@@ -1999,6 +2007,18 @@ void main() {
         return;
     } else if (viewWaterDebug) {
         outColor = vec4(vec3(0.08), 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+        return;
+    } else if (viewMaterialOpacity) {
+        // The value the alpha test read, on surfaces that survived it: grey
+        // from an opacity map or constant, blue where it is the colour
+        // texture's alpha.
+        outColor = vec4(
+            mat.opacityMapIndex != 0u
+                ? vec3(coverageSourceValue)
+                : vec3(0.0, 0.0, coverageSourceValue),
+            1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
         return;
@@ -5177,8 +5197,11 @@ void main() {
     // Preserve materialAlpha for animated whole-object fades, but do not let
     // noisy diffuse alpha make solid furniture see-through. Glass, decals and
     // HairTint retain their dedicated blend semantics.
+    // SMM-OPA-003 — a bound opacity map is authored opacity, not the noisy
+    // colour-texture alpha this rule guards against: the material blends by it.
     bool coverageOnlyBlend = isAlphaBlend && !isGlass
-        && renderLayer != RENDER_LAYER_DECAL && mat.materialKind != 6u;
+        && renderLayer != RENDER_LAYER_DECAL && mat.materialKind != 6u
+        && mat.opacityMapIndex == 0u;
     if (coverageOnlyBlend) {
         finalAlpha = clamp(mat.materialAlpha, 0.0, 1.0);
     }

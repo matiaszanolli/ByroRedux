@@ -657,9 +657,9 @@ performance finding. The measured knob table is in
   single allocation**, above `MAX_SINGLE_ALLOC_BYTES` (256 MB); raising the
   cap weakens the hostile-`u32` defence. One file in the corpus.
 - [ ] **Starfield material maps** ([#7419](https://github.com/matiaszanolli/ByroRedux/issues/7419),
-  [PRD](docs/prd/starfield-material-maps.md)): opacity, roughness, metalness and
-  occlusion from the material database. Phase 0 ([record](docs/audits/SF_MATERIAL_CENSUS_2026-11-26.md)), added texture over all levels / floors (at most):
-  opacity 1.19 GiB / 58 MiB, roughness 5.32 / 159, metalness 2.44 / 74, occlusion 4.56 / 119, all four 13.48 / 408; opacity layer unresolved 2, slot 2 without the flag 980.
+  [PRD](docs/prd/starfield-material-maps.md)): opacity reaches 1,953 of 2,875 database records authoring it (rest held: 920 no flag, 2 by layer);
+  roughness, metalness, occlusion to come. Added texture, all levels / floors, at most ([record](docs/audits/SF_MATERIAL_CENSUS_2026-11-26.md)):
+  opacity 1.19 GiB / 58 MiB, roughness 5.32 / 159, metalness 2.44 / 74, occlusion 4.56 / 119, all four 13.48 / 408; by path: layer unresolved 2, no flag 926; resident on the sagebrush mesh: opacity +2.7 MiB.
 - [ ] **Starfield material leftovers from #3398** (*tracked here only*, except
   #5509): a live Cydonia render (waits on the load fitting in memory,
   [PRD](docs/prd/starfield-memory.md), proposed); decal settings, UV transform,

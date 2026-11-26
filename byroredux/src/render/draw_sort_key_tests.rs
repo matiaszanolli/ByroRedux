@@ -62,7 +62,7 @@ fn animated_cutout_threshold_reselects_the_late_test_path() {
 
 /// Minimal DrawCommand builder — only the fields that affect the
 /// sort key are interesting. Everything else is zeroed.
-fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
+pub(crate) fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
     use byroredux_core::ecs::components::RenderLayer;
     DrawCommand {
         mesh_handle: 0,
@@ -140,7 +140,7 @@ fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
         vertex_color_emissive: false,
         effect_shader_flags: 0,
         greyscale_lut_index: 0,
-        supplemental_texture_indices: [0; 16],
+        supplemental_texture_indices: [0; 17],
         translucency_subsurface_color: [0.0; 3],
         translucency_transmissive_scale: 0.0,
         translucency_turbulence: 0.0,

@@ -275,7 +275,7 @@ verification" (`/audit-concurrency` guardrail); report emitted validation errors
 Paths: `crates/renderer/src/vulkan/{material.rs,material_tests.rs}`, `crates/renderer/src/vulkan/scene_buffer/`, `crates/renderer/shaders/include/bindings.glsl`
 First step: `cargo test -p byroredux-renderer gpu_material gpu_instance gpu_camera`
 
-- **Sizes are pinned by tests named for the size** (`gpu_material_size_is_432_bytes` — `GpuMaterial` is 432 B;
+- **Sizes are pinned by tests named for the size** (`gpu_material_size_is_436_bytes` — `GpuMaterial` is 436 B;
   `gpu_instance_is_160_bytes_std430_compatible`, `gpu_camera_is_384_bytes`, `gpu_light_is_64_bytes`,
   `gpu_terrain_tile_is_240_bytes`, spread across `scene_buffer/`). A test-name-vs-asserted-size
   mismatch or a stale number in prose means the GPU reads wrong bytes. Guards that police the prose:

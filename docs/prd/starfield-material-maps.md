@@ -1,8 +1,9 @@
 # Starfield Material Maps — Product Requirements
 
 **Status**: ACTIVE (2026-11-26). Revision 6 records Phase 0's results and
-the owner's two decisions on them. The owner approved revision 3, recorded
-as revision 4; §12 has the history.
+the owner's two decisions on them; revision 7 corrects its census counts and
+records A4's confirmed samples. The owner approved revision 3, recorded as
+revision 4; §12 has the history.
 Statements about how an original engine, format or tool behaves cite
 external sources; a claim that could not be verified is marked
 **Phase 0: verify** instead of being stated as fact.
@@ -129,8 +130,11 @@ linear; the viewer does (SMM-SRC-003).
 
 The counts below are the census of SMM-OBS-004 on 2026-11-26
 (`crates/sfmaterial/examples/sf_material_census.rs`; full output in the
-Phase 0 record). They replace the earlier estimates. "Today" is the engine at
-`9fd45cc65`; the census tool changes no engine behaviour.
+Phase 0 record). They replace the earlier estimates. An authored empty
+texture path is no texture: the `fo76utils` viewer falls back to the
+replacement for one (View-tex `getSFTexture`). Revision 6 counted it as a
+texture; the counts are corrected here. "Today" is the engine at HEAD on 2026-11-26 before Phase 1
+(`9fd45cc65`); the census tool changes no engine behaviour.
 
 Population: the distinct material paths named by the lighting and effect
 shader blocks of the models in `Starfield - Meshes01.ba2`,
@@ -149,8 +153,8 @@ named by its root object.
 | …with no threshold on the chain | 23 |
 | …naming a layer other than 0 | 7 |
 | …naming a layer it does not have | 2 |
-| Slot-2 data without `HasOpacity` true, effect materials | 434 |
-| Slot-2 data without `HasOpacity` true, other materials | 546 |
+| Slot-2 data without `HasOpacity` true, effect materials | 432 |
+| Slot-2 data without `HasOpacity` true, other materials | 494 |
 
 Each row below is on the one layer the rules choose (SMM-SRC-010,
 SMM-OPA-005); opacity counts the materials with `HasOpacity` true and a
@@ -158,19 +162,19 @@ resolved layer.
 
 | # | Property | Texture only | Replacement only | Both | Neither | Today |
 |---|---|---:|---:|---:|---:|---|
-| 1 | Opacity | 1,921 | 17 | 39 | 294 | Dropped by `apply_cdb_material` (`asset_provider/material/merge.rs`). Cutouts test base-colour alpha (`triangle.frag`, `include/ray_hit.glsl`, `volumetrics_inject.comp`) |
-| 2 | Roughness | 7,201 | 804 | 1,547 | 606 | Dropped. A database hit with no override takes `PbrMaterial::NO_SIGNAL_NEUTRAL` |
-| 3 | Metalness | 2,220 | 1,993 | 182 | 5,763 | As roughness |
-| 4 | Ambient occlusion | 3,282 | 89 | 5 | 6,782 | Dropped; no shader reads a material occlusion value |
+| 1 | Opacity | 1,912 | 19 | 37 | 303 | Dropped by `apply_cdb_material` (`asset_provider/material/merge.rs`). Cutouts test base-colour alpha (`triangle.frag`, `include/ray_hit.glsl`, `volumetrics_inject.comp`) |
+| 2 | Roughness | 7,169 | 960 | 1,391 | 638 | Dropped. A database hit with no override takes `PbrMaterial::NO_SIGNAL_NEUTRAL` |
+| 3 | Metalness | 2,148 | 2,021 | 158 | 5,831 | As roughness |
+| 4 | Ambient occlusion | 3,220 | 89 | 5 | 6,844 | Dropped; no shader reads a material occlusion value |
 
 | Property | More than one layer supplies it | The chosen layer is not the first | `lookup` takes texture and replacement from two layers |
 |---|---:|---:|---:|
-| Opacity | 111 | 105 | 57 |
-| Roughness | 1,979 | 44 | 816 |
-| Metalness | 307 | 116 | 182 |
-| Ambient occlusion | 1,245 | 93 | 162 |
+| Opacity | 109 | 108 | 54 |
+| Roughness | 1,898 | 45 | 848 |
+| Metalness | 297 | 120 | 179 |
+| Ambient occlusion | 908 | 97 | 162 |
 
-Four facts at HEAD shape the requirements:
+Five facts at `9fd45cc65` shape the requirements:
 
 | Fact | Where |
 |---|---|
@@ -233,7 +237,7 @@ Four facts at HEAD shape the requirements:
   property has, and there is no render-time fallback to another source; a
   Map that fails to load follows SMM-SRC-011. A test (new,
   `cdb_property_sources_are_decided_at_the_merge`) covers all four sources on
-  a synthetic database. At HEAD on 2026-11-26 only the colour, normal and
+  a synthetic database. At `9fd45cc65` only the colour, normal and
   emissive slots and the colour replacement are forwarded.
 - **SMM-SRC-002.** A loose material MUST resolve the same source and value
   as a database material authoring the same data. A test (new,
@@ -281,7 +285,7 @@ Four facts at HEAD shape the requirements:
   (decision Q2). A later layer's entry MUST NOT be combined with it. One
   layer includes its texture set's `Parent` chain, which is inheritance and
   not blending. The colour, normal and emissive slots keep today's
-  selection. The index does not do this at HEAD on 2026-11-26 (§3.3). A test
+  selection. The index does not do this at `9fd45cc65` (§3.3). A test
   (new, `a_slots_texture_and_replacement_come_from_one_layer`, in
   `crates/sfmaterial`) covers two layers that each supply half. Opacity
   follows SMM-OPA-005.
@@ -296,7 +300,7 @@ Four facts at HEAD shape the requirements:
 
 - **SMM-OPA-001.** Where opacity is Map or Constant, the directly visible
   surface's coverage test MUST take its value from that source, not from
-  base-colour alpha. At HEAD on 2026-11-26 it reads the base texture's alpha.
+  base-colour alpha. At `9fd45cc65` it reads the base texture's alpha.
 - **SMM-OPA-002.** Every traced coverage test MUST obtain its alpha from the
   same source through the same shared function as the visible surface. A
   source-shape test (new, `every_coverage_reader_uses_the_opacity_source`)
@@ -383,7 +387,7 @@ Four facts at HEAD shape the requirements:
   [Starfield Memory Efficiency PRD](starfield-memory.md).
 - **SMM-GPU-004.** With texture streaming on, each new role MUST receive a
   wanted level from `compute_wanted`, which therefore has to visit the
-  supplemental array; it does not at HEAD on 2026-11-26. A test (new,
+  supplemental array; it does not at `9fd45cc65`. A test (new,
   `material_map_roles_receive_a_wanted_level`) fails for a role the pass
   does not visit.
 
@@ -426,7 +430,7 @@ Four facts at HEAD shape the requirements:
 | 2 | **Phase 0: verify** how the original renderer applies authored occlusion. Not settled, and filed as #7424: no Creation Kit documentation was found. The viewer, with no shadows, multiplies it into direct and ambient diffuse and all specular (View-frag:665-672) | Occlusion is limited to the terms of SMM-AO-001 | — | Taking the lower of SSAO and material occlusion avoids stacking them, and may soften contact shading where both are partial → SMM-AO-001 |
 | 3 | The database authors a value another source may also author | The other source wins (SMM-SRC-006) | — | A NIF placeholder could mask authored data → SMM-OBS-001 shows the winner |
 | 4 | The viewer fills an empty slot with roughness 0, metalness 0, occlusion 1, opacity 1 (SMM-SRC-007) | Today's engine fallbacks | — | Absent surfaces may differ from the original → reported as `absent` by SMM-OBS-001 |
-| 5 | The viewer uses slot 2 on effect materials without `HasOpacity` (SMM-OPA-006) | Opacity stays Absent | — | 434 materials draw without their authored opacity. Effect opacity combines layers through a component the index does not read, with blending this PRD leaves out (SMM-NG-001, -004) → counted by SMM-OBS-004 |
+| 5 | The viewer uses slot 2 on effect materials without `HasOpacity` (SMM-OPA-006) | Opacity stays Absent | — | 432 materials draw without their authored opacity. Effect opacity combines layers through a component the index does not read, with blending this PRD leaves out (SMM-NG-001, -004) → counted by SMM-OBS-004 |
 | 6 | The viewer falls back to the replacement when a texture does not load (SMM-SRC-005) | Absent (SMM-SRC-011) | — | A missing texture hides an authored replacement → named by SMM-OBS-002 |
 
 Adding up to four textures per material raises texture memory on the title
@@ -476,10 +480,13 @@ material of the fixture mesh. The capture script lists the sample points. A
 pixel "reads" a value when it is within 2/255 of that value encoded with the
 sRGB curve, which is what the debug view's output applies (measured in
 Phase 0). "Unchanged" means within the difference measured between two
-identical runs. Phase 0 has not shown that any floor point under the A4
-fixture mesh gives a readable shadow through an open block, or fixed a pose
-that shows a chosen A5 sample in the mirror. The phase that runs each
-scenario confirms those samples first, or revises the scenario. A
+identical runs. Phase 1 confirmed A4's samples
+(`scripts/starfield-material-acceptance.py`, which holds the poses, the
+sample points and the pass margins). The floor shadow they read is cast by
+the flat tabletop behind the upright lid, so each floor point is matched to
+a tabletop block seen from a second pose. Phase 0 did not fix a pose that
+shows a chosen A5 sample in the mirror; the phase that runs a scenario
+confirms its samples first, or revises the scenario. A
 `citycydoniamainlevel` capture is taken when the machine can hold the cell,
 and blocks no phase. Game data is never checked in.
 
@@ -639,3 +646,4 @@ that its definition of done is met and the four properties moved here
 | 4 | 2026-11-26 | Approved by the owner: PROPOSED → APPROVED; every decision (Q1 to Q5) decided; no requirement changed from revision 3 | owner: approved |
 | 5 | 2026-11-26 | APPROVED → ACTIVE: tracking issues #7419 to #7423 filed, with Phase 0's verify items listed in #7420; the §9 Phase 0 wording now allows read-only access for the census in `crates/sfmaterial`; no requirement changed | — |
 | 6 | 2026-11-26 | Phase 0 results: census counts replace the §3.3 estimates; SMM-SRC-003 to -005, -009, SMM-OPA-004 and -005 carry their sourced rules; the owner kept SMM-OPA-006 for effect materials and SMM-SRC-011 over the viewer's fallback (§6 rows 5, 6) and agreed Q3 covers four terms and excludes three special paths (SMM-AO-001); §6 row 2 stays open; §7.2 names the meshes, the fixture generator, the launch flags and the output transfer, and lets a fixture use a different mesh from the captures, which the owner approved; §6 row 2 filed as #7424 | — |
+| 7 | 2026-11-26 | Census correction found by Phase 1's reach test: an authored empty texture path is no texture, as the viewer reads it; §3.3 and §6 row 5 counts replaced (opacity 1,912 / 19 / 37 / 303; slot 2 without the flag 926). Added texture bytes are unchanged to the published precision. "At HEAD" statements pinned to `9fd45cc65`; §7.2 records A4's confirmed samples. No requirement changed | — |

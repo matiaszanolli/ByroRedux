@@ -45,10 +45,13 @@ pub enum RenderDebugMode {
     /// RCG-VAL-002 — the eligible-pixel mask coverage is measured over: white where the primary surface
     /// meets the material conditions of GI eligibility, black elsewhere.
     GiEligible = crate::shader_constants::RENDER_DEBUG_GI_ELIGIBLE,
+    /// SMM-OBS-003 — the visible surface's opacity, unlit: grey from an opacity map or constant, blue
+    /// where it is the colour texture's alpha.
+    MaterialOpacity = crate::shader_constants::RENDER_DEBUG_MATERIAL_OPACITY,
 }
 
 impl RenderDebugMode {
-    pub const USER_MODES: [Self; 23] = [
+    pub const USER_MODES: [Self; 24] = [
         Self::Final,
         Self::ShadowVisibility,
         Self::SelectedLight,
@@ -72,6 +75,7 @@ impl RenderDebugMode {
         Self::ShadowFilterRadius,
         Self::RadianceCache,
         Self::GiEligible,
+        Self::MaterialOpacity,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -100,6 +104,7 @@ impl RenderDebugMode {
             Self::ShadowFilterRadius => "shadow_filter_radius",
             Self::RadianceCache => "radiance_cache",
             Self::GiEligible => "gi_eligible",
+            Self::MaterialOpacity => "material_opacity",
         }
     }
 
@@ -152,6 +157,7 @@ impl FromStr for RenderDebugMode {
             "shadow_filter_radius" => Ok(Self::ShadowFilterRadius),
             "radiance_cache" | "cache" => Ok(Self::RadianceCache),
             "gi_eligible" | "eligible" => Ok(Self::GiEligible),
+            "material_opacity" | "opacity" => Ok(Self::MaterialOpacity),
             _ => Err(format!(
                 "unknown render debug mode '{value}' (expected {})",
                 Self::user_mode_names()
@@ -371,19 +377,36 @@ mod tests {
         assert!(frag.contains("} else if (viewRadianceCache) {"), "the main pass must draw the view");
     }
 
-    /// RCG-VAL-002 — the eligible-pixel mask view is named, parseable, user-selectable, the last mode (so
-    /// `RENDER_DEBUG_MODE_MAX` names it) and drawn by the main pass from the same predicate that gates GI
-    /// transport, so the mask and the gate cannot drift.
+    /// SMM-OBS-003 — the opacity view is named, selectable, the last mode (so `RENDER_DEBUG_MODE_MAX`
+    /// names it), and draws the value the coverage test reads, before material and vertex alpha scale it
+    /// and before any lighting.
     #[test]
-    fn the_gi_eligible_view_is_the_last_mode_and_shares_the_gate_predicate() {
-        assert_eq!("gi_eligible".parse(), Ok(RenderDebugMode::GiEligible));
-        assert_eq!("eligible".parse(), Ok(RenderDebugMode::GiEligible));
-        assert_eq!(RenderDebugMode::USER_MODES.last(), Some(&RenderDebugMode::GiEligible));
+    fn the_material_opacity_view_draws_the_coverage_source_unlit() {
+        assert_eq!("opacity".parse(), Ok(RenderDebugMode::MaterialOpacity));
+        assert_eq!("material_opacity".parse(), Ok(RenderDebugMode::MaterialOpacity));
+        assert_eq!(RenderDebugMode::USER_MODES.last(), Some(&RenderDebugMode::MaterialOpacity));
         assert_eq!(
-            RenderDebugMode::GiEligible.shader_value(),
+            RenderDebugMode::MaterialOpacity.shader_value(),
             crate::shader_constants::RENDER_DEBUG_MODE_MAX
         );
-        assert!(RenderDebugMode::user_mode_names().ends_with("|gi_eligible"));
+        let frag = include_str!("../../shaders/triangle.frag");
+        let source = frag.find("texColor.a = coverageAlphaGrad(").expect("coverage source");
+        let kept = frag.find("float coverageSourceValue = texColor.a;").expect("kept value");
+        let scaled = frag.find("texColor.a *= mat.materialAlpha").expect("material alpha");
+        assert!(source < kept && kept < scaled);
+        let view = frag.find("} else if (viewMaterialOpacity) {").expect("view branch");
+        let branch = &frag[view..view + frag[view..].find("return;").expect("early return")];
+        assert!(branch.contains("mat.opacityMapIndex != 0u"));
+        assert!(branch.contains("vec3(coverageSourceValue)"));
+    }
+
+    /// RCG-VAL-002 — the eligible-pixel mask view is named, parseable, user-selectable and drawn by the
+    /// main pass from the same predicate that gates GI transport, so the mask and the gate cannot drift.
+    #[test]
+    fn the_gi_eligible_view_shares_the_gate_predicate() {
+        assert_eq!("gi_eligible".parse(), Ok(RenderDebugMode::GiEligible));
+        assert_eq!("eligible".parse(), Ok(RenderDebugMode::GiEligible));
+        assert!(RenderDebugMode::USER_MODES.contains(&RenderDebugMode::GiEligible));
         let frag = include_str!("../../shaders/triangle.frag");
         assert!(frag.contains("bool viewGiEligible = debugMode == RENDER_DEBUG_GI_ELIGIBLE;"));
         assert!(frag.contains("} else if (viewGiEligible) {"), "the main pass must draw the view");

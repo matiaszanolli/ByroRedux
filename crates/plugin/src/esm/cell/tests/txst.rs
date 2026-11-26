@@ -243,6 +243,31 @@ fn parse_txst_diffuse_only_leaves_other_slots_none() {
     assert!(set.env.is_none());
 }
 
+/// SMM-SRC-009 — TX19 is Starfield's opacity map. No other game's TXST
+/// defines the slot.
+#[test]
+fn parse_txst_reads_tx19_as_opacity_for_starfield_only() {
+    for (game, expected) in [
+        (GameKind::Starfield, Some("textures/smm/leaf_opacity.dds")),
+        (GameKind::Fallout4, None),
+    ] {
+        let txst = build_txst_record(
+            0xBEEF,
+            &[
+                (b"TX00", "textures/smm/leaf_color.dds"),
+                (b"TX19", "textures/smm/leaf_opacity.dds"),
+            ],
+        );
+        let group = wrap_in_txst_group(&[txst]);
+        let mut reader = EsmReader::new(&group);
+        let header = reader.read_group_header().expect("group header");
+        let end = reader.group_content_end(&header);
+        let mut sets: HashMap<u32, TextureSet> = HashMap::new();
+        parse_txst_group(&mut reader, end, &mut sets, game).expect("parse");
+        assert_eq!(sets[&0xBEEF].opacity.as_deref(), expected, "{game:?}");
+    }
+}
+
 /// Regression for #406 — FO4 TXST records often use `MNAM`
 /// (BGSM material path) instead of populating TX00..TX07 directly.
 /// Parser must extract MNAM into `material_path`. Pre-fix 140 of

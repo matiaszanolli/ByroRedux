@@ -437,6 +437,8 @@ pub(crate) struct MaterialTextureDebugInfo {
     pub(crate) paths: byroredux_nif::import::MaterialTextureSet<Option<String>>,
     pub(crate) sources: byroredux_nif::import::MaterialTextureSet<MaterialTextureSource>,
     pub(crate) clamp_mode: u8,
+    /// The rule holding authored Starfield opacity unused, if any (SMM-OBS-001).
+    pub(crate) opacity_held: Option<byroredux_nif::import::OpacityHeld>,
 }
 
 impl Component for MaterialTextureDebugInfo {

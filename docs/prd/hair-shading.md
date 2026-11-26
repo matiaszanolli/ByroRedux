@@ -34,7 +34,7 @@ shadowing.
 |---|---|
 | Canonical `Material`, translate-once rule, no per-game renderer branch | [NIFAL](../engine/nifal.md#1-the-three-tier-model), [NIFAL § Materials](../engine/nifal.md#3-materials--the-reference-realisation) |
 | Convergence history of the material classifier (glass precedent) | [Canonical Material Abstraction](../engine/material-abstraction.md) |
-| `GpuMaterial` layout, `material_kind`, `material_flags` | [Shader Pipeline § GpuMaterial](../engine/shader-pipeline.md#gpumaterial--432-bytes-ssbo-set-1-binding-13) |
+| `GpuMaterial` layout, `material_kind`, `material_flags` | [Shader Pipeline § GpuMaterial](../engine/shader-pipeline.md#gpumaterial--436-bytes-ssbo-set-1-binding-13) |
 | Existing Disney diffuse, sheen and anisotropic GGX lobes | [Vulkan Renderer § Disney BSDF](../engine/renderer.md#disney-bsdf) |
 | Shadow visibility buckets, alpha-aware blockers, ray allocation | [Physical Lighting Backbone](../engine/physical-lighting-backbone.md#runtime-contract) |
 | RT noise seed, TAA variance clamp | [Shadow Pipeline Trade-offs](../engine/shadow-pipeline-tradeoffs.md) |
@@ -638,7 +638,7 @@ every in-scope game, and A5/A6 retained for each.
 |---|---|
 | Translate-once rule and canonical `Material` | [NIFAL](../engine/nifal.md#1-the-three-tier-model) |
 | How a material class converged before (glass) | [Canonical Material Abstraction](../engine/material-abstraction.md) |
-| `GpuMaterial` fields and flags the class lands in | [Shader Pipeline](../engine/shader-pipeline.md#gpumaterial--432-bytes-ssbo-set-1-binding-13) |
+| `GpuMaterial` fields and flags the class lands in | [Shader Pipeline](../engine/shader-pipeline.md#gpumaterial--436-bytes-ssbo-set-1-binding-13) |
 | Existing BSDF lobes | [Vulkan Renderer § Disney BSDF](../engine/renderer.md#disney-bsdf) |
 | Shadow transport and visibility buckets | [Physical Lighting Backbone](../engine/physical-lighting-backbone.md#runtime-contract) |
 | RT noise seed for stochastic coverage | [Shadow Pipeline Trade-offs](../engine/shadow-pipeline-tradeoffs.md#4-24-bit-masked-frame-counter-as-rt-noise-seed) |

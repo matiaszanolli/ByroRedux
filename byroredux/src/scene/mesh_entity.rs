@@ -339,6 +339,7 @@ fn attach_mesh_components(
             paths: textures,
             sources: texture_sources,
             clamp_mode: canonical_clamp_mode,
+            opacity_held: source_material.opacity_held,
         },
     );
     // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness ONCE

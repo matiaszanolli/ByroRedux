@@ -1501,6 +1501,7 @@ mod tex_missing_tests {
                 paths,
                 sources,
                 clamp_mode: 0,
+                opacity_held: None,
             },
         );
 
@@ -1536,6 +1537,7 @@ mod tex_missing_tests {
                 paths: MaterialTextureSet::<Option<String>>::default(),
                 sources,
                 clamp_mode: 0,
+                opacity_held: None,
             },
         );
 
@@ -1543,6 +1545,44 @@ mod tex_missing_tests {
         assert!(
             out.contains("No missing textures"),
             "roles absent by design must not be reported as missing; got:\n{out}"
+        );
+    }
+
+    /// SMM-OBS-002 — an opacity texture that did not load is named by its
+    /// role (it shades as Absent, SMM-SRC-011).
+    #[test]
+    fn a_missing_opacity_texture_is_reported_under_its_role() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, TextureHandle(5));
+        world.insert(e, Material::default());
+        world.insert(
+            e,
+            handles(MaterialTextureSet::<u32> {
+                base_color: 5,
+                ..Default::default()
+            }),
+        );
+        world.insert(
+            e,
+            MaterialTextureDebugInfo {
+                paths: MaterialTextureSet::<Option<String>> {
+                    opacity: Some("textures/leaf_opacity.dds".to_string()),
+                    ..Default::default()
+                },
+                sources: MaterialTextureSet::<MaterialTextureSource> {
+                    opacity: MaterialTextureSource::Mat,
+                    ..Default::default()
+                },
+                clamp_mode: 0,
+                opacity_held: None,
+            },
+        );
+
+        let out = TexMissingCommand.execute(&world, "").lines.join("\n");
+        assert!(
+            out.contains("textures/leaf_opacity.dds  [slot=opacity, src=mat]"),
+            "{out}"
         );
     }
 

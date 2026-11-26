@@ -1575,7 +1575,7 @@ mod bone_palette_overflow_tests;
 #[cfg(test)]
 mod directional_upload_tests;
 #[cfg(test)]
-mod draw_sort_key_tests;
+pub(crate) mod draw_sort_key_tests;
 #[cfg(test)]
 mod env_var_cache_tests;
 #[cfg(test)]

@@ -2,6 +2,7 @@ use super::*;
 
 use byroredux_audio::SoundFailures;
 use byroredux_nif::import::{MaterialTextureSet, MeshResolver};
+use super::constant_texture::{constant_texture_dds, constant_texture_value};
 use byroredux_renderer::{TextureColorSpace, VulkanContext};
 
 /// Provides file data by searching BSA/BA2 archives.
@@ -164,6 +165,10 @@ impl TextureProvider {
     /// path-building sites) go through unchanged.
     pub(crate) fn extract(&self, path: &str) -> Option<Vec<u8>> {
         let normalized = normalize_texture_path(path);
+        // A material Constant's reserved path has no archive entry.
+        if let Some(value) = constant_texture_value(&normalized) {
+            return Some(constant_texture_dds(value));
+        }
         // #3637 — last-listed archive wins, matching Bethesda's own load-
         // order precedence (a later `--textures-bsa` overrides an earlier
         // one). Checking from the end and returning on first hit means the
@@ -224,7 +229,8 @@ impl TextureProvider {
     /// Whether a texture exists, without extracting or decompressing it.
     pub(crate) fn has_texture(&self, path: &str) -> bool {
         let normalized = normalize_texture_path(path);
-        self.texture_archives.contains(normalized.as_ref())
+        constant_texture_value(&normalized).is_some()
+            || self.texture_archives.contains(normalized.as_ref())
             || (is_facegen_tool_path(&normalized)
                 && self
                     .texture_archives
@@ -1011,6 +1017,8 @@ fn map_secondary_texture_handles(
         emittance_gradient: slot(&textures.emittance_gradient, srgb),
         glass_roughness_scratch: slot(&textures.glass_roughness_scratch, linear),
         glass_dirt_overlay: slot(&textures.glass_dirt_overlay, srgb),
+        // SMM-SRC-003 — sampled in the file's own colour space.
+        opacity: slot(&textures.opacity, TextureColorSpace::AsAuthored),
         decals: std::array::from_fn(|i| slot(&textures.decals[i], srgb)),
     }
 }
@@ -1215,6 +1223,7 @@ mod tests {
             paths: Default::default(),
             sources: Default::default(),
             clamp_mode: 0,
+            opacity_held: None,
         };
         info.paths.base_color = Some("textures/old.dds".to_string());
         info.sources.base_color = MaterialTextureSource::NifTextureSet;
@@ -1442,6 +1451,7 @@ mod tests {
             emittance_gradient: some("emittance_gradient"),
             glass_roughness_scratch: some("glass_roughness_scratch"),
             glass_dirt_overlay: some("glass_dirt_overlay"),
+            opacity: some("opacity"),
             decals: [
                 some("decal_0"),
                 some("decal_1"),
@@ -1501,6 +1511,8 @@ mod tests {
             ("emittance_gradient", false, TextureColorSpace::Srgb),
             ("glass_roughness_scratch", false, TextureColorSpace::Linear),
             ("glass_dirt_overlay", false, TextureColorSpace::Srgb),
+            // SMM-SRC-003 — the file's own colour space.
+            ("opacity", false, TextureColorSpace::AsAuthored),
             ("decal_0", false, TextureColorSpace::Srgb),
             ("decal_1", false, TextureColorSpace::Srgb),
             ("decal_2", false, TextureColorSpace::Srgb),

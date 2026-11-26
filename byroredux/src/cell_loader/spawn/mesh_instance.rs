@@ -487,6 +487,13 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                 material.textures.back_lighting,
                 sources.back_lighting,
             );
+            // SMM-SRC-009 — a Starfield TXST override's TX19. A named
+            // role, so no wire-slot pick.
+            (textures.opacity, sources.opacity) = resolve_effective(
+                ov.and_then(|o| o.opacity),
+                material.textures.opacity,
+                sources.opacity,
+            );
             // `wrinkle` is an FO4/FO76 TX02 role, not a BSShaderTextureSet slot
             // index, so `merge_from_texture_set`'s direct `o.wrinkle` fill
             // does not go through the slot table — support.rs already made

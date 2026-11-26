@@ -759,7 +759,7 @@ FO4 precombined CSG geometry also carries this full payload; the former
 *PrecombineMaterial* subset and field-by-field patch operation were removed.
 
 Texture paths cross the NIF boundary in one generic semantic contract:
-`MaterialTextureSet<T>`. Its 22 named roles plus four ordered decal layers cover
+`MaterialTextureSet<T>`. Its 23 named roles plus four ordered decal layers cover
 legacy `NiTexturingProperty`, `BSShaderTextureSet`, inline effect shaders, and
 BGSM/BGEM material files. The source-specific slot vocabulary is gone before
 runtime spawning; the same shape is reused as `MaterialTextureSet<Option<String>>`
@@ -776,15 +776,16 @@ cell unload uses it directly rather than maintaining a separate role list.
 
 **Starfield single-channel PBR kinds — parked by name (SF-2026-09-16-D3-01,
 #4429, recorded 2026-09-22).** Starfield authors separate single-channel maps
-with five first-class suffix kinds — <!-- parked-starfield-kinds: the anchored
+with five first-class suffix kinds. Four are still parked (`_opacity` landed
+as the `opacity` role, #7421): <!-- parked-starfield-kinds: the anchored
 span the #4429 XOR guard in asset_provider/tests/starfield_mat.rs scans; a
 kind lands by gaining a MaterialTextureSet role AND leaving this list in the
-same change. Keep this comment free of backticks (#5003) -->`_rough`, `_metal`, `_ao`, `_opacity`,
-`_transmissive`<!-- /parked-starfield-kinds --> — and its own TXST records carry them in dedicated slots
+same change. Keep this comment free of backticks (#5003) -->`_rough`, `_metal`, `_ao`,
+`_transmissive`<!-- /parked-starfield-kinds -->. Starfield's own TXST records carry all five in dedicated slots
 (TX09 → `_rough`, TX08 → `_metal`, TX17 → `_ao`, TX19 → `_opacity`; measured
 over `Starfield.esm`'s 23 TXST records). A 45,756-file texture-archive census
-put 17,998 files (39%) on these five kinds. **`MaterialTextureSet`'s 22 roles
-have no destination for any of them**, and the near-miss roles are wrong, not
+put 17,998 files (39%) on these five kinds. **`MaterialTextureSet` has no
+destination for the four parked ones**, and the near-miss roles are wrong, not
 merely imperfect: `smooth_spec` is consumed as *gloss* (`roughness = mix(1.0,
 roughness, glossTexel.r)` in `triangle.frag`), so routing `_rough` there is a
 silent sign flip, and `specular` is a colour map, not metalness. CDB Phase 2
@@ -793,16 +794,18 @@ colour / normal / emissive forward through `apply_cdb_material`
 (`asset_provider/material/merge.rs`; the loose `.mat` JSON resolver #4277
 rides the same lookup), pinned by `mat_path_merges_cdb_authored_textures_when_indexed`
 and `mat_path_lookup_miss_keeps_presence_only_and_no_textures`
-(`asset_provider/tests/starfield_mat.rs`) — but the five parked kinds still
-have no `MaterialTextureSet` destination (the opacity / roughness / metal /
+(`asset_provider/tests/starfield_mat.rs`) — but the four parked kinds still
+have no `MaterialTextureSet` destination (the roughness / metal /
 ao / transmissive CDB slots stay parked; #5381 moved `_height` out of the
 canonical `height` role because Starfield authors it as an alpha-layer blend,
 not parallax), so the recorded vocabulary below remains the contract the next
 phase must honour. The Phase-2 **scalar** translations that did land, all in
 `apply_cdb_material`: the `SLOT_COLOR` flat-colour replacement →
 `diffuse_color` (#5190 — replacement-only, never a tint beside a bound
-colour texture), `AlphaTestThreshold` → `alpha_test`/`alpha_threshold` only when
-`HasOpacity = true` is authored on the `Parent` chain (#5196, #5661: an
+colour texture), the cutout rule only when
+`HasOpacity = true` is authored on the `Parent` chain — `AlphaTestThreshold`,
+or one third when none is authored, tested when above zero with
+`alpha > threshold` (#7421, `asset_provider/material/opacity.rs`) — (#5196, #5661: an
 absent field is the class default, `false` by the CDB diff census — `true`
 authored 1,449 times always over an inherited `None`, `false` 28 times, 27
 overriding an inherited `true`; measured, not sourced), `IsGlass` → the `bgem_glass`
@@ -872,8 +875,8 @@ fires and they render opaque; which signal carries Starfield glass coverage
 is undecided and needs a capture from the game. The contract for the
 parked kinds: each lands as a **named** `MaterialTextureSet`
 role with documented channel semantics, a `GpuMaterial` lane (lockstep
-`bindings.glsl` change against the 432 B pin,
-`gpu_material_size_is_432_bytes`) and a `triangle.frag` consumer —
+`bindings.glsl` change against the record's size pin,
+`gpu_material_size_is_436_bytes`) and a `triangle.frag` consumer —
 never a CDB slot index, never a reuse of `smooth_spec`/`specular`. When the
 first role lands, `starfield_single_channel_kinds_are_parked_by_name_or_canonical`
 (the XOR guard beside the lookup-miss pin in `asset_provider/tests/starfield_mat.rs`)
@@ -883,9 +886,10 @@ forces this table and the struct to move together.
 2026-11-26).** The contract the opacity, roughness, metalness and occlusion
 roles land under ([PRD](../prd/starfield-material-maps.md); sources and the
 census are in the
-[Phase 0 record](../audits/SF_MATERIAL_CENSUS_2026-11-26.md)). Nothing here
-is implemented yet. The format rules rest on one third-party source, the
-`fo76utils` viewer at `3797c893`.
+[Phase 0 record](../audits/SF_MATERIAL_CENSUS_2026-11-26.md)). Opacity is
+implemented (#7421); roughness, metalness and occlusion are not yet. The
+format rules rest on one third-party source, the `fo76utils` viewer at
+`3797c893`.
 
 | Role (new) | CDB slot / `TXST` | Layer | Map is sampled | Constant travels as | Absent shades as |
 |---|---|---|---|---|---|
@@ -897,8 +901,10 @@ is implemented yet. The format rules rest on one third-party source, the
 - **Colour space.** A Map is sampled in its file's own colour space. Nearly
   all are `BC4_UNORM`; a few dozen are `BC1_UNORM_SRGB` and decode as sRGB.
   The data-role profile in `map_secondary_texture_handles` forces the linear
-  view, which would skip that decode, so these four roles need an
-  as-authored view.
+  view, which would skip that decode, so these four roles use
+  `TextureColorSpace::AsAuthored`. `parse_dds` presumes sRGB for the
+  colour-capable formats whatever the file declares, so that view reads the
+  DX10 header: only an `_SRGB` DXGI format decodes as sRGB.
 - **One layer.** A slot's texture and replacement come from one layer.
   `CdbLayeredMaterial::first_supplying` states the rule; `MaterialIndex::lookup`
   does not apply it yet.
@@ -922,9 +928,17 @@ is implemented yet. The format rules rest on one third-party source, the
   default 6 (`>=`).
 - **Layer number.** `MATERIAL_LAYER_n` is the layer whose `LayerID` component
   index is `n`; an unresolved name leaves opacity Absent.
-- **Loose files.** `parse_loose_mat` merges every object's components with no
-  layer structure and does not read `OpacitySourceLayer`, so it cannot yet
-  apply the two layer rules (SMM-SRC-002).
+- **Coverage readers.** Every shader coverage test takes its alpha through
+  `crates/renderer/shaders/include/coverage_alpha.glsl`: the visible surface,
+  `rayHitHasCoverage` for traced hits, and the volumetrics sun trace.
+- **Loose files.** `parse_loose_mat` reads the alpha settings and the opacity
+  layer along the file's root → `LayerID` → `MaterialID` → `TextureSetID`
+  graph, as the database lookup does, so a LOD material's settings no longer
+  reach the main material. Where the root's parent is a `.mat` path the
+  database holds, the alpha settings the file leaves unauthored are the
+  parent's; nothing else is inherited from outside the file. The reader still
+  merges every object for the other properties, so SMM-SRC-010's one-layer
+  rule is not applied to them yet.
 
 **Starfield additive-family blend modes — partly forwarded (SF-2026-10-09-D6-01,
 #5509, recorded 2026-10-11; `Additive` / `Multiply` landed 2026-11-07).**
@@ -1028,7 +1042,7 @@ the record that each gap is known and bounded, with its unblocking consumer:
 | inv marker | `BSInvMarker` | parsed, not walked into `Imported*` | inventory-icon system |
 | `NiSwitchNode` identity | `NiSwitchNode` | walked via **active-index** (furniture states, sheaths, destruction); the type discriminator is not surfaced. Content-present (Skyrim ~165, FO4 ~51) | geometry state-switching driver (gameplay) |
 | `bs_bound` | `BSBound` extra-data | consumed on the **loose-NIF** path only (`nif_loader.rs`), not the cell path | a cell-path bound consumer (low value — the cell path already derives `WorldBound` from geometry) |
-| ~~`glass_roughness_scratch` / `glass_dirt_overlay`~~ | `BGEM` (v21+/v22) | **NOT PARKED — routed since #2109 (CLOSED).** Both are named roles on `MaterialTextureSet<T>` (`crates/nif/src/import/types/material.rs`), carry `supplemental_texture_slot::GLASS_ROUGHNESS_SCRATCH` / `GLASS_DIRT_OVERLAY` lanes on `GpuMaterial`, and are sampled by `triangle.frag`. Row kept struck-through rather than deleted because the claim survived #2109 by 33 lines below this section's own "22 named roles" count and was filed again as #3907 | (consumed — no longer blocked) |
+| ~~`glass_roughness_scratch` / `glass_dirt_overlay`~~ | `BGEM` (v21+/v22) | **NOT PARKED — routed since #2109 (CLOSED).** Both are named roles on `MaterialTextureSet<T>` (`crates/nif/src/import/types/material.rs`), carry `supplemental_texture_slot::GLASS_ROUGHNESS_SCRATCH` / `GLASS_DIRT_OVERLAY` lanes on `GpuMaterial`, and are sampled by `triangle.frag`. Row kept struck-through rather than deleted because the claim survived #2109 by 33 lines below this section's own "23 named roles" count and was filed again as #3907 | (consumed — no longer blocked) |
 
 **In-cell LOD (2026-06-02, user-directed):** measured prevalence before building. `NiLODNode`
 (node-level Z-depth LOD) is **content-absent** across all target games; the parser +

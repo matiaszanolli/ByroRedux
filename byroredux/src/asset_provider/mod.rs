@@ -5,6 +5,7 @@ mod animation;
 mod archetype_idle;
 mod archive;
 mod archive_set;
+pub(crate) mod constant_texture;
 mod layered;
 pub(crate) mod audio;
 pub(crate) mod material;

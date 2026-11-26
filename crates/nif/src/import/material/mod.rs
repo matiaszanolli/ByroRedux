@@ -1339,6 +1339,9 @@ impl MaterialInfo {
 
         let effect = self.effect_shader.as_ref();
         super::types::MaterialTextureSet {
+            // No inline NIF producer: only the Starfield material merge
+            // fills opacity.
+            opacity: None,
             base_color: self.texture_path,
             normal: self.normal_map,
             emissive: self.glow_map,
@@ -1564,6 +1567,7 @@ impl MaterialInfo {
             model_space_normals: self.model_space_normals,
             from_bgsm: false,
             external_material_resolved: false,
+            opacity_held: None,
             bgem_glass: false,
             thin_glass: false,
             glass_fresnel_color: [1.0; 3],

@@ -76,7 +76,7 @@ pub use error::{Error, Result};
 #[cfg(any(test, feature = "test-support"))]
 pub use index::test_support;
 pub use index::{
-    material_key, material_layer_number, CdbLayeredMaterial, CdbMaterial, CdbSlotSet,
+    material_key, material_layer_number, opacity_layer_of, CdbLayeredMaterial, CdbMaterial, CdbSlotSet,
     MaterialIndex, RefKind, SLOT_AMBIENT_OCCLUSION, SLOT_COLOR, SLOT_EMISSIVE, SLOT_HEIGHT,
     SLOT_METALNESS, SLOT_NORMAL, SLOT_OPACITY, SLOT_ROUGHNESS, SLOT_TRANSMISSIVE,
 };

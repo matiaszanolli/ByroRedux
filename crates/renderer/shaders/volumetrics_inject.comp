@@ -54,6 +54,7 @@ layout(std430, set = 0, binding = 32) readonly buffer MaterialWordBuffer {
     uint materialWords[];
 };
 layout(set = 1, binding = 0) uniform sampler2D textures[];
+#include "include/coverage_alpha.glsl"
 
 
 float materialWordFloat(uint materialId, uint word) {
@@ -101,6 +102,8 @@ bool sunHitIsSolid(uint instanceIndex, uint primitiveIndex, vec2 barycentrics) {
     float alpha = textureLod(
         textures[nonuniformEXT(boundaryInstances[instanceIndex].textureIndex)], uv, 0.0).a;
     if ((instanceFlags & INSTANCE_FLAG_DIFFUSE_ALPHA) == 0u && alphaThreshold == 0.0) alpha = 1.0;
+    alpha = coverageAlphaLod(
+        materialWords[materialId * GPU_MATERIAL_STRIDE_WORDS + MATERIAL_OPACITY_MAP_WORD], alpha, uv);
     alpha *= materialWordFloat(materialId, MATERIAL_ALPHA_WORD) * vertexAlpha;
     if (!alphaComparePass(alpha, alphaThreshold,
             materialWords[materialId * GPU_MATERIAL_STRIDE_WORDS + MATERIAL_ALPHA_TEST_FUNC_WORD])) {

@@ -57,13 +57,14 @@ use super::*;
 ///   seven Bethesda lighting-response scalars and two translated mask
 ///   handles, then 432 → 428 when #3909 dropped the unsampled
 ///   `texture_index`, then 428 → 432 under #4422 (+4 B for
-///   `detail_neutral`, the producer-declared detail-combine neutral).
+///   `detail_neutral`, the producer-declared detail-combine neutral),
+///   then 432 → 436 under #7421 (+4 B for `opacity_map_index`).
 ///   Test name includes
 ///   the size so a future size
 ///   shift updates it in lockstep with the assertion.
 #[test]
-fn gpu_material_size_is_432_bytes() {
-    assert_eq!(std::mem::size_of::<GpuMaterial>(), 432);
+fn gpu_material_size_is_436_bytes() {
+    assert_eq!(std::mem::size_of::<GpuMaterial>(), 436);
 }
 
 /// `#[repr(C)]` puts no implicit padding between f32/u32 fields,
@@ -178,6 +179,7 @@ mod supplemental_lane_guard {
         ("GLASS_DIRT_OVERLAY", "glassDirtOverlayMapIndex", true),
         ("LIGHTING_MASK", "lightingMaskMapIndex", true),
         ("BACK_LIGHTING", "backLightingMapIndex", true),
+        ("OPACITY", "opacityMapIndex", true),
     ];
 
     /// The slot constants declared by `material::supplemental_texture_slot`,
@@ -336,7 +338,7 @@ mod supplemental_lane_guard {
 /// Regression guard for `GpuMaterial` GLSL field names —
 /// REN-D14-NEW-02 (audit 2026-05-09). The offset pin
 /// (`gpu_material_field_offsets_match_shader_contract`) and the
-/// size pin (`gpu_material_size_is_432_bytes`) catch byte-level
+/// size pin (`gpu_material_size_is_436_bytes`) catch byte-level
 /// drift, but neither catches a GLSL-side field rename: the
 /// shader still reads from the same offset, the value still
 /// arrives in the right register, but the field's MEANING in
@@ -478,6 +480,8 @@ fn gpu_material_glsl_field_names_pinned() {
         "grayscaleToPaletteScale;",
         "lightingMaskMapIndex;",
         "backLightingMapIndex;",
+        "detailNeutral;",
+        "opacityMapIndex;",
     ] {
         assert!(
             src.contains(name),
@@ -489,7 +493,7 @@ fn gpu_material_glsl_field_names_pinned() {
 }
 
 /// Regression guard for the GpuMaterial Shader Struct Sync (#806).
-/// The size pin (`gpu_material_size_is_432_bytes`) catches additions
+/// The size pin (`gpu_material_size_is_436_bytes`) catches additions
 /// or removals; this catches reorderings within the record that the
 /// size pin alone would miss — e.g. swapping
 /// `normal_map_index` and `dark_map_index` within vec4 #4 would
@@ -680,6 +684,8 @@ fn gpu_material_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuMaterial, grayscale_to_palette_scale), 416);
     assert_eq!(offset_of!(GpuMaterial, lighting_mask_map_index), 420);
     assert_eq!(offset_of!(GpuMaterial, back_lighting_map_index), 424);
+    assert_eq!(offset_of!(GpuMaterial, detail_neutral), 428);
+    assert_eq!(offset_of!(GpuMaterial, opacity_map_index), 432);
 }
 
 #[test]
@@ -1457,7 +1463,7 @@ mod gpu_material_size_claims {
     }
 
     /// Rule-1 prefixes: the pin-test family each type spells its size pin
-    /// as — `gpu_material_size_is_432_bytes` but `gpu_light_is_64_bytes`
+    /// as — `gpu_material_size_is_436_bytes` but `gpu_light_is_64_bytes`
     /// for everyone else — mapped to the live size the digits must state.
     fn pinned_prefixes() -> Vec<(String, usize)> {
         pinned_sizes()
@@ -1859,12 +1865,12 @@ mod gpu_material_size_claims {
             ),
             (
                 "crates/renderer/src/vulkan/material.rs",
-                "back_lighting_map_index: u32,",
+                "opacity_map_index: u32,",
                 material,
             ),
             ("docs/engine/shader-pipeline.md", "### `GpuMaterial` — ", material),
-            // #4422 moved the total onto the detail_neutral row (now last).
-            ("docs/engine/shader-pipeline.md", "detail-combine neutral → total **", material),
+            // #7421 moved the total onto the opacity_map_index row (now last).
+            ("docs/engine/shader-pipeline.md", "Opacity map → total **", material),
             (
                 "docs/engine/memory-budget.md",
                 "| Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | ",
@@ -1883,7 +1889,7 @@ mod gpu_material_size_claims {
             let line = rest.lines().next().unwrap_or("");
             // The last number on the anchored line is the stated size:
             // `// offset 424 → total 428` carries an offset first.
-            let stated = if anchor.starts_with("back_lighting") {
+            let stated = if anchor.starts_with("opacity_map_index") {
                 numbers(line).last().map(|n| n.0)
             } else {
                 numbers(line).first().map(|n| n.0)
@@ -2128,6 +2134,7 @@ fn gpu_material_word_constants_match_the_host_struct() {
     assert_eq!(MATERIAL_ALPHA_THRESHOLD_WORD, word(offset_of!(GpuMaterial, alpha_threshold)));
     assert_eq!(MATERIAL_ALPHA_TEST_FUNC_WORD, word(offset_of!(GpuMaterial, alpha_test_func)));
     assert_eq!(MATERIAL_KIND_WORD, word(offset_of!(GpuMaterial, material_kind)));
+    assert_eq!(MATERIAL_OPACITY_MAP_WORD, word(offset_of!(GpuMaterial, opacity_map_index)));
     assert_eq!(MATERIAL_ALPHA_WORD, word(offset_of!(GpuMaterial, material_alpha)));
     assert_eq!(MATERIAL_UV_OFFSET_WORD, word(offset_of!(GpuMaterial, uv_offset_u)));
     assert_eq!(MATERIAL_UV_OFFSET_WORD + 1, word(offset_of!(GpuMaterial, uv_offset_v)));

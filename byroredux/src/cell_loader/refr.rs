@@ -74,6 +74,8 @@ pub(crate) struct RefrTextureOverlay {
     /// aliasing it to `env_mask` is the TXST/NIF ordering regression this
     /// overlay boundary is responsible for preventing.
     pub(crate) wrinkle: Option<FixedString>,
+    /// Starfield TXST TX19 (SMM-SRC-009). A named role, like `wrinkle`.
+    pub(crate) opacity: Option<FixedString>,
     /// BGSM v>2 / BGEM `lighting_texture`. Like `wrinkle`, this has no
     /// `BSShaderTextureSet` wire-slot analog (a raw TXST/XTXR override
     /// can never carry it) — the only producer is `fill_from_bgsm`, on
@@ -159,6 +161,7 @@ impl RefrTextureOverlay {
         Self::fill(&mut self.inner, ts.inner.as_deref(), pool);
         Self::fill(&mut self.specular, ts.specular.as_deref(), pool);
         Self::fill(&mut self.wrinkle, ts.wrinkle.as_deref(), pool);
+        Self::fill(&mut self.opacity, ts.opacity.as_deref(), pool);
         Self::fill(&mut self.material_path, ts.material_path.as_deref(), pool);
         // #972 / FO4-D4-NEW-09 — propagate `HasModelSpaceNormals` (bit 2
         // of `TextureSet.flags`) only when this TXST actually contributed

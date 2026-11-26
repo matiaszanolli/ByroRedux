@@ -33,7 +33,7 @@ writes the missing design.
 | Mechanism | Owning design |
 |---|---|
 | Per-game material signals → canonical `Material` (the translate step) | [NIFAL §3](../engine/nifal.md#3-materials--the-reference-realisation), [NIFAL shader flags](../engine/nifal.md#shader-flags--texture-sets--effect-shaders--converged-surveyed-2026-06-02), [Material Abstraction §3](../engine/material-abstraction.md#3-the-canonical-contract-target-state) |
-| `GpuMaterial` layout and the shader-struct contract | [Shader Pipeline § GpuMaterial](../engine/shader-pipeline.md#gpumaterial--432-bytes-ssbo-set-1-binding-13) |
+| `GpuMaterial` layout and the shader-struct contract | [Shader Pipeline § GpuMaterial](../engine/shader-pipeline.md#gpumaterial--436-bytes-ssbo-set-1-binding-13) |
 | G-buffer attachments a screen-space pass reads | [Shader Pipeline § G-Buffer Layout](../engine/shader-pipeline.md#g-buffer-layout) |
 | Visibility vocabulary, transport, ray budget | [Physical Lighting Backbone](../engine/physical-lighting-backbone.md#runtime-contract) |
 | Deterministic Cornell captures and A/B workflow | [Renderer Evaluation](../engine/renderer-evaluation.md#current-scope-and-next-cases) |
@@ -566,7 +566,7 @@ profile.
 | The translate step and its converged material contract | [nifal.md §3](../engine/nifal.md#3-materials--the-reference-realisation) |
 | The `_sk` parking note and per-game flag vocabularies | [nifal.md § shader flags](../engine/nifal.md#shader-flags--texture-sets--effect-shaders--converged-surveyed-2026-06-02) |
 | Canonical material history and the no-per-game-shader rule | [material-abstraction.md](../engine/material-abstraction.md#3-the-canonical-contract-target-state) |
-| `GpuMaterial` fields and the struct-sync contract | [shader-pipeline.md](../engine/shader-pipeline.md#gpumaterial--432-bytes-ssbo-set-1-binding-13) |
+| `GpuMaterial` fields and the struct-sync contract | [shader-pipeline.md](../engine/shader-pipeline.md#gpumaterial--436-bytes-ssbo-set-1-binding-13) |
 | G-buffer attachments | [shader-pipeline.md](../engine/shader-pipeline.md#g-buffer-layout) |
 | Units, visibility, ray budget | [physical-lighting-backbone.md](../engine/physical-lighting-backbone.md#runtime-contract) |
 | Cornell captures and the A/B workflow | [renderer-evaluation.md](../engine/renderer-evaluation.md#current-scope-and-next-cases) |

@@ -333,6 +333,30 @@ pub(crate) fn tex_stream_bench_line(
 /// so it contributes nothing. A drawn terrain tile wants its layer textures
 /// at level 0: layer UVs tile by a per-layer scale this estimate does not
 /// model yet.
+/// Every 2D material texture one draw samples at its own UVs: the dedicated
+/// lanes and the whole supplemental array (SMM-GPU-004, #7421). Some lanes
+/// carry a channel selector in bit 31, which is not part of the handle.
+fn material_map_handles(draw: &DrawCommand) -> impl Iterator<Item = TextureHandle> + '_ {
+    use byroredux_renderer::shader_constants::{
+        NORMAL_ALPHA_SPEC_BIT, PARALLAX_ALPHA_HEIGHT_BIT, TINT_ALPHA_WEIGHT_BIT,
+    };
+    const SELECTORS: u32 =
+        NORMAL_ALPHA_SPEC_BIT | PARALLAX_ALPHA_HEIGHT_BIT | TINT_ALPHA_WEIGHT_BIT;
+    [
+        draw.texture_handle,
+        draw.normal_map_index,
+        draw.dark_map_index,
+        draw.glow_map_index,
+        draw.detail_map_index,
+        draw.gloss_map_index,
+        draw.parallax_map_index,
+        draw.env_mask_index,
+    ]
+    .into_iter()
+    .chain(draw.supplemental_texture_indices.iter().copied())
+    .map(|handle| handle & !SELECTORS)
+}
+
 pub(crate) fn compute_wanted(
     draws: &[DrawCommand],
     ctx: &VulkanContext,
@@ -405,16 +429,7 @@ pub(crate) fn compute_wanted(
         let centre = model.transform_point3(Vec3::new(bound[0], bound[1], bound[2]));
         let distance = (camera.distance(centre) - bound[3] * scale).max(0.1);
         let px_per_uv = px_per_unit_at_unit_depth * world_per_uv * scale / distance;
-        for handle in [
-            draw.texture_handle,
-            draw.normal_map_index,
-            draw.dark_map_index,
-            draw.glow_map_index,
-            draw.detail_map_index,
-            draw.gloss_map_index,
-            draw.parallax_map_index,
-            draw.env_mask_index,
-        ] {
+        for handle in material_map_handles(draw) {
             let Some(width) = registry.stream_width(handle) else {
                 continue;
             };
@@ -437,6 +452,29 @@ mod tests {
     use super::*;
 
     const POSE: StreamPose = ([0.0, 1.0, 2.0], [0.0, 0.0, 1.0], 1.2);
+
+    /// SMM-GPU-004 (A8) — a role in the supplemental array is wanted like any
+    /// other. A handle the walk misses stays at its floor for good.
+    #[test]
+    fn material_map_roles_receive_a_wanted_level() {
+        use byroredux_renderer::shader_constants::TINT_ALPHA_WEIGHT_BIT;
+        use byroredux_renderer::vulkan::material::supplemental_texture_slot as slot;
+        let mut draw = crate::render::draw_sort_key_tests::cmd(false, false, false);
+        for (lane, handle) in draw.supplemental_texture_indices.iter_mut().enumerate() {
+            *handle = 100 + lane as u32;
+        }
+        draw.supplemental_texture_indices[slot::TINT] |= TINT_ALPHA_WEIGHT_BIT;
+        let visited: Vec<TextureHandle> = material_map_handles(&draw).collect();
+        assert!(visited.contains(&(100 + slot::OPACITY as u32)), "opacity is wanted");
+        for lane in 0..slot::COUNT {
+            assert!(visited.contains(&(100 + lane as u32)), "supplemental lane {lane}");
+        }
+        let pass = byroredux_core::source_scan::function_text(
+            include_str!("texture_streamer.rs"),
+            "pub(crate) fn compute_wanted(",
+        );
+        assert!(pass.contains("for handle in material_map_handles(draw)"));
+    }
 
     /// #7144 — the provider is rebuilt only when an archive was replaced since it was built.
     /// #7164 — driven by explicit generations: reading the process-wide counter raced the

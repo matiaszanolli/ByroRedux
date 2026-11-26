@@ -786,6 +786,9 @@ fn parse_txst_group_inner(
                     b"TX05" => set.env = extract(&sub.data),
                     b"TX06" => set.inner = extract(&sub.data),
                     b"TX07" => set.specular = extract(&sub.data),
+                    b"TX19" if game == GameKind::Starfield => {
+                        set.opacity = extract(&sub.data)
+                    }
                     // FO4+ BGSM material path. 37 % of vanilla
                     // `Fallout4.esm` TXST records (140 / 382) are
                     // MNAM-only with no TX00 at all; pre-#406 they were

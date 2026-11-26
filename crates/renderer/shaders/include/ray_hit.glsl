@@ -6,6 +6,7 @@
 // generated material/instance flag constants.
 
 #include "alpha_compare.glsl"
+#include "coverage_alpha.glsl"
 #include "ray_origin.glsl"
 #include "normal_transform.glsl"
 
@@ -419,6 +420,12 @@ bool rayHitHasCoverage(
     if ((inst.flags & INSTANCE_FLAG_DIFFUSE_ALPHA) == 0u
         && mat.alphaThreshold == 0.0) {
         alpha = 1.0;
+    }
+    // SMM-OPA-002 — the same coverage source as the visible surface. The
+    // carried sample takes it too: glass shadow attenuation reads its alpha.
+    alpha = coverageAlphaLod(mat.opacityMapIndex, alpha, uv);
+    if (mat.opacityMapIndex != 0u) {
+        baseSample.a = alpha;
     }
     alpha *= mat.materialAlpha
         * getHitVertexAlpha(instanceIdx, primitiveIdx, barycentrics);

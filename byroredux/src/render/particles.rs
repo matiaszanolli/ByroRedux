@@ -278,7 +278,7 @@ pub(super) fn emit_particles(
                 // Pre-#3590 this was hardcoded `0` unconditionally, so the
                 // palette bits above could never fire on any particle draw.
                 greyscale_lut_index: em.greyscale_lut_index,
-                supplemental_texture_indices: [0; 16],
+                supplemental_texture_indices: [0; 17],
                 translucency_subsurface_color: [0.0; 3],
                 translucency_transmissive_scale: 0.0,
                 translucency_turbulence: 0.0,

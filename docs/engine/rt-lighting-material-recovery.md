@@ -116,7 +116,7 @@ carried forward.
   provenance, and SHA-256 manifests for 30 days. The first remote dispatch is
   the remaining operational step; the same artifact path is locally proven.
 - **R5 canonical roles, authored response, and provider breadth baseline complete.**
-  The 432-byte `GpuMaterial` carries BGEM glass optics plus soft/rim/back,
+  The 436-byte `GpuMaterial` carries BGEM glass optics plus soft/rim/back,
   Fresnel, palette, lighting-mask and back-lighting inputs through upload,
   hashing, GLSL layout and shading. Soft/rim/back terms share the selected
   light's visibility; glass uses authored refraction/blur/scratch/dirt inputs.
@@ -642,7 +642,7 @@ At minimum reconcile:
 - cluster and reservoir flow;
 - current TLAS consumers and cull masks;
 - origin/tMin and RT LOD policy;
-- generated material flags and the 432-byte `GpuMaterial` layout;
+- generated material flags and the 436-byte `GpuMaterial` layout;
 - canonical texture roles and FO3/FNV TXST permutation;
 - water and volumetric consumers already live at HEAD.
 

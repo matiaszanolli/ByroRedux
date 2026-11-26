@@ -189,7 +189,7 @@ measured allocations.
 | Instance SSBO ² | `INITIAL_INSTANCE_CAPACITY` = 65 536, grows to `MAX_INSTANCES` = 262 144 | 65 536 | 160 B (#3231) | 10.5 MB | **21.0 MB** (≤ 83.9 MB) |
 | Previous-model SSBO (`33d9a468`) ² | same | 65 536 | 64 B (`mat4`) | 4.2 MB | **8.4 MB** (≤ 33.6 MB) |
 | Indirect draw SSBO ³ | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
-| Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 432 B | 7.1 MB | **14.2 MB** |
+| Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 436 B | 7.1 MB | **14.3 MB** |
 | Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 240 B (`GpuTerrainTile`: 3× `[u32; 8]` texture indices + #4057's two `[f32; 4]` cover-affinity rows, `cell_origin_xz`, `water_y`, `canopy_height`, #4056's ground-cover detail-atlas `uvec4`, #4903/#4907's `base_cover_affinity` + `base_diffuse_index`, and #6195's `base_height_index` + `[u32; 8]` layer height handles, #6196's `height_blend_band`, #6197's three parallax settings + the LOD-soften lane, and TSD-4.3's four patch-geometry lanes; pinned by `gpu_terrain_tile_is_240_bytes`) | — | **~240 KB** (single shared buffer, NOT FIF-doubled) |
 | Terrain-patch readback (TSD-4.1, host-visible, one per frame in flight) | `TERRAIN_PATCH_SLOTS` = 24 × `TERRAIN_PATCH_READBACK_WORDS` = 524 words (2 × `TERRAIN_PATCH_EDGE_SAMPLES` 260 + 4) | 24 | 2 096 B (524 × 4 B) | 50 304 B | **100 608 B** |
 | Bone buffers ¹ | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB/buffer | **100.6 MB** |

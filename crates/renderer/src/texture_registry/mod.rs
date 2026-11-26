@@ -1854,10 +1854,17 @@ fn texture_keyed_path_with_color_space(
     color_space: TextureColorSpace,
 ) -> String {
     let mut s = texture_keyed_path(path, clamp_mode, view_kind);
-    if color_space == TextureColorSpace::Linear {
-        s.push_str("|linear");
-    }
+    s.push_str(color_space_key_suffix(color_space));
     s
+}
+
+/// The cache-key suffix that keeps two views of one file apart.
+const fn color_space_key_suffix(color_space: TextureColorSpace) -> &'static str {
+    match color_space {
+        TextureColorSpace::Srgb => "",
+        TextureColorSpace::Linear => "|linear",
+        TextureColorSpace::AsAuthored => "|authored",
+    }
 }
 
 fn should_destroy_pending(current_frame: u64, queued_frame: u64) -> bool {

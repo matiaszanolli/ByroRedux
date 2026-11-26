@@ -234,8 +234,9 @@ fn fill(
 ///
 /// **Texture slots** (measured census, 2026-09-30): 0=color, 1=normal,
 /// 7=emissive land in their canonical `MaterialTextureSet` roles through
-/// the same NIF-first [`fill`] precedence the BGSM/BGEM arms use. Slots
-/// 2/3/4/5/6/8 (opacity, roughness, metalness, AO, height, transmissive)
+/// the same NIF-first [`fill`] precedence the BGSM/BGEM arms use, and slot 2
+/// (opacity) through [`super::opacity::apply_cdb_opacity`]'s one-layer rule.
+/// Slots 3/4/5/6/8 (roughness, metalness, AO, height, transmissive)
 /// are deliberately NOT forwarded: `MaterialTextureSet` has no such
 /// fields (beyond the roles below), and those Starfield kinds stay in
 /// nifal.md's parked table under the #4429 XOR guard until the struct +
@@ -313,7 +314,9 @@ fn apply_cdb_material(
                 pool,
                 texture_exists,
             ),
-            // Parked slots (opacity/roughness/metal/ao/height/transmissive):
+            // Opacity is not taken from this merged walk: it comes from one
+            // named layer, below (SMM-OPA-005).
+            // Parked slots (roughness/metal/ao/height/transmissive):
             // present in the CDB, no canonical destination yet. #5381 moved
             // height here: a Starfield `_height` map blends alpha layers —
             // it is not a parallax input, and the canonical `height` role
@@ -346,24 +349,21 @@ fn apply_cdb_material(
             *touched = true;
         }
 
-    if let Some(threshold) = cdb_mat.alpha_test_threshold {
-        // #5196 / #5661 — the threshold applies only where an opacity
-        // channel is authored: `HasOpacity = true` somewhere on the
-        // material's `Parent` chain. The lookup walks that chain to its
-        // root (#5502), so `None` means no object authors the field and
-        // the class default applies, which the vanilla CDB's diff census
-        // puts at `false`: `true` is authored 1,449 times, always over an
-        // inherited `None`; `false` 28 times, 27 of them overriding an
-        // inherited `true`; the one CK-written loose `.mat` with alpha
-        // settings spells `"HasOpacity": "true"` too. That default is
-        // measured, not sourced (no schema or CK documentation names it).
-        // Treating `None` as present alpha-tested 1,265 of the 10,152
-        // NIF-referenced materials against base-colour alpha, which is not
-        // their opacity channel (that is slot 2, parked).
-        if threshold > 0.0 && cdb_mat.has_opacity == Some(true) {
-            material.alpha_test = true;
-            material.alpha_threshold = threshold;
-            *touched = true;
+    // Opacity and its cutout (SMM-SRC / SMM-OPA, #7421).
+    if let Some(path) = super::opacity::apply_cdb_opacity(material, cdb_mat, touched) {
+        let before = material.textures.opacity;
+        fill(
+            &mut material.textures.opacity,
+            &path,
+            touched,
+            pool,
+            texture_exists,
+        );
+        // Labelled here, not only by the `.mat` arm's provenance pass: the
+        // sidecar-miss routes reach this too, and `mat.dump` reads the label
+        // to tell a database Map from an Override (SMM-OBS-001).
+        if material.textures.opacity != before {
+            material.texture_sources.opacity = ImportedTextureSource::Mat;
         }
     }
     // #5196 — `IsGlass` is the authoritative authored glass signal, the
@@ -614,8 +614,17 @@ pub(crate) fn merge_external_material(
         // this is the mod path. #5396 — a file that does not decode no
         // longer pre-empts the CDB: it falls through to the lookup below.
         if let Some(bytes) = provider.extract_from_archives(&path)
-            && let Some(outcome) =
-                apply_loose_mat(material, &bytes, pool, &mut touched, texture_exists)
+            && let Some(outcome) = {
+                let parent = super::loose_mat::database_parent(provider, &bytes);
+                apply_loose_mat(
+                    material,
+                    &bytes,
+                    parent.as_ref(),
+                    pool,
+                    &mut touched,
+                    texture_exists,
+                )
+            }
             {
                 trace_merge_outcome(&path, outcome);
                 return outcome;
@@ -1903,11 +1912,12 @@ fn merge_bgem_arm(
 fn apply_loose_mat(
     material: &mut ImportedMaterial,
     bytes: &[u8],
+    parent: Option<&CdbMaterial>,
     pool: &mut byroredux_core::string::StringPool,
     touched: &mut bool,
     texture_exists: &dyn Fn(&str) -> bool,
 ) -> Option<MergeOutcome> {
-    let (stage, cdb_mat) = super::loose_mat::parse_loose_mat(bytes)?;
+    let (stage, cdb_mat) = super::loose_mat::parse_loose_mat(bytes, parent)?;
     if stage != super::loose_mat::LooseMatStage::Decoded {
         log::debug!("loose .mat present but no recognized component — resolving through the CDB");
         return None;
@@ -1936,12 +1946,12 @@ mod loose_mat_merge_tests {
         let mut touched = false;
         let exists = |_: &str| true;
         let undecodable = br#"{"Objects": [{"Components": [{"Data": {"Name": "x"}, "Index": 0, "Type": "BSComponentDB::CTName"}]}]}"#;
-        assert!(apply_loose_mat(&mut material, undecodable, &mut pool, &mut touched, &exists).is_none());
-        assert!(apply_loose_mat(&mut material, b"not json", &mut pool, &mut touched, &exists).is_none());
+        assert!(apply_loose_mat(&mut material, undecodable, None, &mut pool, &mut touched, &exists).is_none());
+        assert!(apply_loose_mat(&mut material, b"not json", None, &mut pool, &mut touched, &exists).is_none());
         assert!(!material.is_pbr, "a file that does not decode leaves routing to the CDB arm");
 
         let decodable = br#"{"Objects": [{"Components": [{"Data": {"FileName": "Data/Textures/a_color.dds"}, "Index": 0, "Type": "BSMaterial::MRTextureFile"}]}]}"#;
-        let outcome = apply_loose_mat(&mut material, decodable, &mut pool, &mut touched, &exists);
+        let outcome = apply_loose_mat(&mut material, decodable, None, &mut pool, &mut touched, &exists);
         assert_eq!(outcome, Some(MergeOutcome::Merged));
         assert!(material.is_pbr);
         assert!(material.external_material_resolved);

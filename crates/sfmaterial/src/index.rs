@@ -125,6 +125,14 @@ pub struct CdbMaterial {
     /// Disabled (`Enabled == false`) replacements are skipped at capture;
     /// `Enabled` absent is treated as enabled (4,481 corpus instances).
     pub flat_color_slots: Vec<(u8, [f32; 4])>,
+    /// `AlphaSettingsComponent.OpacitySourceLayer` as authored, inherited
+    /// down the root's `Parent` chain.
+    pub opacity_source_layer: Option<String>,
+    /// SMM-OPA-005: what the layer [`Self::opacity_source_layer`] names
+    /// (layer 0 when unauthored) supplies, apart from every other layer.
+    /// `None` when the material has no such layer, or the name is not
+    /// `MATERIAL_LAYER_<n>`.
+    pub opacity_layer: Option<CdbSlotSet>,
 }
 
 /// What one layer's texture sets author, slot by slot: each set's own
@@ -138,9 +146,13 @@ pub struct CdbSlotSet {
 }
 
 impl CdbSlotSet {
+    /// The slot's texture path. An authored empty path is no texture (the
+    /// `fo76utils` viewer falls back to the replacement for one,
+    /// `glproperty.cpp` `getSFTexture`); it is still kept in
+    /// [`Self::textures`], where it stops a `Parent`'s path being inherited.
     pub fn texture(&self, slot: u8) -> Option<&str> {
         let found = self.textures.iter().find(|(s, _)| *s == slot);
-        found.map(|(_, path)| path.as_str())
+        found.map(|(_, path)| path.as_str()).filter(|path| !path.is_empty())
     }
 
     pub fn replacement(&self, slot: u8) -> Option<[f32; 4]> {
@@ -197,6 +209,20 @@ impl CdbLayeredMaterial {
 /// (`libfo76utils` `matcomps.cpp` `readLayerNumber`, PRD SMM-OPA-005).
 pub fn material_layer_number(name: &str) -> Option<u8> {
     name.strip_prefix("MATERIAL_LAYER_")?.parse().ok()
+}
+
+/// The layer opacity comes from (SMM-OPA-005): the named one among `layers`,
+/// or layer 0 when `source_layer` is unauthored (`material.cpp` starts it
+/// there). Shared by the compiled and loose producers (SMM-SRC-002).
+pub fn opacity_layer_of(
+    source_layer: Option<&str>,
+    layers: Vec<(u8, CdbSlotSet)>,
+) -> Option<CdbSlotSet> {
+    let number = match source_layer {
+        None => 0,
+        Some(name) => material_layer_number(name)?,
+    };
+    layers.into_iter().find(|(n, _)| *n == number).map(|(_, set)| set)
 }
 
 /// #5190 — one texture-set object's enabled `TextureReplacement`
@@ -510,6 +536,11 @@ impl MaterialIndex {
                 self.collect_slots(tex_set, &mut out);
             }
         }
+        out.opacity_source_layer = self.opacity_source_layer_of(root);
+        out.opacity_layer = opacity_layer_of(
+            out.opacity_source_layer.as_deref(),
+            self.layer_slot_sets(root),
+        );
         Some(out)
     }
 
@@ -517,38 +548,51 @@ impl MaterialIndex {
     /// [`Self::lookup`] without merging across layers.
     pub fn layered(&self, path: &str) -> Option<CdbLayeredMaterial> {
         let root = *self.objects_by_key.get(&material_key(path))?;
-        let slot_set = |tex_sets: &mut dyn Iterator<Item = u32>, out: &mut CdbMaterial| {
-            for tex_set in tex_sets {
-                self.collect_slots(tex_set, out);
-            }
-        };
-        let mut root_slots = CdbMaterial::default();
-        slot_set(&mut self.texture_sets_of(root), &mut root_slots);
-
-        let mut layers: Vec<(u8, CdbMaterial)> = Vec::new();
-        for (number, mat_obj) in self.layer_materials(root) {
-            if layers.last().is_none_or(|(n, _)| *n != number) {
-                layers.push((number, CdbMaterial::default()));
-            }
-            if let Some((_, slots)) = layers.last_mut() {
-                slot_set(&mut self.texture_sets_of(mat_obj), slots);
-            }
-        }
-        let into_set = |m: CdbMaterial| CdbSlotSet {
-            textures: m.textures,
-            flat_color_slots: m.flat_color_slots,
-        };
         Some(CdbLayeredMaterial {
-            root_sets: into_set(root_slots),
-            layers: layers.into_iter().map(|(n, m)| (n, into_set(m))).collect(),
-            opacity_source_layer: self
-                .ancestry(root)
-                .find_map(|node| self.opacity_source_layers.get(&node).cloned()),
+            root_sets: self.slot_set(self.texture_sets_of(root)),
+            layers: self.layer_slot_sets(root),
+            opacity_source_layer: self.opacity_source_layer_of(root),
             shader_route: self
                 .ancestry(root)
                 .find_map(|node| self.shader_routes.get(&node).cloned()),
             has_effect_settings: self.ancestry(root).any(|node| self.effect.contains_key(&node)),
         })
+    }
+
+    /// `OpacitySourceLayer` on `root`'s `Parent` chain, nearest first.
+    fn opacity_source_layer_of(&self, root: u32) -> Option<String> {
+        self.ancestry(root)
+            .find_map(|node| self.opacity_source_layers.get(&node).cloned())
+    }
+
+    /// What `tex_sets` supply together, by [`Self::lookup`]'s slot rules.
+    fn slot_set(&self, tex_sets: impl Iterator<Item = u32>) -> CdbSlotSet {
+        let mut slots = CdbMaterial::default();
+        for tex_set in tex_sets {
+            self.collect_slots(tex_set, &mut slots);
+        }
+        CdbSlotSet {
+            textures: slots.textures,
+            flat_color_slots: slots.flat_color_slots,
+        }
+    }
+
+    /// Each layer `root` reaches with what its own texture sets supply, as
+    /// (`LayerID` component index, slots), in authored order.
+    fn layer_slot_sets(&self, root: u32) -> Vec<(u8, CdbSlotSet)> {
+        let mut by_layer: Vec<(u8, Vec<u32>)> = Vec::new();
+        for (number, mat_obj) in self.layer_materials(root) {
+            if by_layer.last().is_none_or(|(n, _)| *n != number) {
+                by_layer.push((number, Vec::new()));
+            }
+            if let Some((_, sets)) = by_layer.last_mut() {
+                sets.extend(self.texture_sets_of(mat_obj));
+            }
+        }
+        by_layer
+            .into_iter()
+            .map(|(number, sets)| (number, self.slot_set(sets.into_iter())))
+            .collect()
     }
 
     /// The texture-set objects `obj` names directly, in authored order.
@@ -1154,6 +1198,50 @@ pub mod test_support {
     const T_LIST: i32 = 0xFFFF_FF03u32 as i32;
     /// A Map builtin type ref.
     const T_MAP: i32 = 0xFFFF_FF04u32 as i32;
+
+    /// One material's authored opacity data, for [`opacity_index`] (SMM).
+    pub struct OpacityCase<'a> {
+        pub path: &'a str,
+        /// `AlphaSettingsComponent` on the root; each field may be unauthored.
+        pub has_opacity: Option<bool>,
+        pub threshold: Option<f32>,
+        pub source_layer: Option<&'a str>,
+        /// Numbered from 0: each layer's slot-2 (texture, replacement red).
+        pub layers: &'a [(Option<&'a str>, Option<f32>)],
+    }
+
+    /// An index holding `cases`, in the measured root → layer → material →
+    /// texture-set shape, for consumers that test opacity resolution without
+    /// a binary payload.
+    pub fn opacity_index(cases: &[OpacityCase]) -> MaterialIndex {
+        let mut idx = MaterialIndex::default();
+        for (case_number, case) in cases.iter().enumerate() {
+            let root = 1000 * (case_number as u32 + 1);
+            idx.objects_by_key.insert(material_key(case.path), root);
+            idx.alpha.insert(root, (case.threshold, case.has_opacity));
+            if let Some(name) = case.source_layer {
+                idx.opacity_source_layers.insert(root, name.to_string());
+            }
+            for (number, (texture, replacement)) in case.layers.iter().enumerate() {
+                let layer = root + 10 * (number as u32 + 1);
+                let (material, set) = (layer + 1, layer + 2);
+                idx.child_refs
+                    .entry(root)
+                    .or_default()
+                    .push((RefKind::Layer, layer, number as u8));
+                idx.child_refs.insert(layer, vec![(RefKind::Material, material, 0)]);
+                idx.child_refs.insert(material, vec![(RefKind::TextureSet, set, 0)]);
+                if let Some(texture) = texture {
+                    idx.textures.insert(set, vec![(SLOT_OPACITY, texture.to_string())]);
+                }
+                if let Some(red) = replacement {
+                    let color = [*red, *red, *red, 1.0];
+                    idx.flat_colors.insert(set, vec![(SLOT_OPACITY, color, Some(true))]);
+                }
+            }
+        }
+        idx
+    }
 
     /// Build a CDB whose stream is:
     ///   [0] CTName (noise, proves skipping)
@@ -2248,6 +2336,45 @@ mod tests {
         assert_eq!(set.texture(SLOT_ROUGHNESS), None);
         assert_eq!(set.replacement(SLOT_ROUGHNESS), Some([0.25, 0.0, 0.0, 1.0]));
         assert!(layered.first_supplying(SLOT_METALNESS).is_none());
+    }
+
+    /// SMM-OPA-005: texture and replacement come from the named layer only.
+    #[test]
+    fn lookup_takes_opacity_from_the_named_layer_alone() {
+        let mut idx = split_layer_index();
+        idx.textures.insert(40, vec![(SLOT_OPACITY, "zero_opacity.dds".to_string())]);
+        idx.flat_colors.insert(41, vec![(SLOT_OPACITY, [0.5, 0.5, 0.5, 1.0], Some(true))]);
+        // Unauthored: layer 0.
+        let opacity = idx.lookup("materials\\split.mat").expect("resolves").opacity_layer;
+        let layer = opacity.expect("layer 0 exists");
+        assert_eq!(layer.texture(SLOT_OPACITY), Some("zero_opacity.dds"));
+        assert_eq!(layer.replacement(SLOT_OPACITY), None);
+
+        for (name, replacement) in
+            [("MATERIAL_LAYER_1", Some([0.5, 0.5, 0.5, 1.0])), ("MATERIAL_LAYER_4", None)]
+        {
+            idx.opacity_source_layers.insert(1, name.to_string());
+            let found = idx.lookup("materials\\split.mat").expect("resolves");
+            assert_eq!(found.opacity_source_layer.as_deref(), Some(name));
+            let layer = found.opacity_layer;
+            assert_eq!(layer.is_some(), replacement.is_some(), "{name}");
+            assert_eq!(layer.and_then(|l| l.replacement(SLOT_OPACITY)), replacement);
+        }
+        assert_eq!(opacity_layer_of(Some("Layer 1"), idx.layer_slot_sets(1)), None);
+    }
+
+    /// An authored empty path is no texture: the layer supplies the slot only
+    /// through its replacement.
+    #[test]
+    fn an_empty_texture_path_is_no_texture() {
+        let mut set = CdbSlotSet {
+            textures: vec![(SLOT_OPACITY, String::new())],
+            flat_color_slots: Vec::new(),
+        };
+        assert_eq!(set.texture(SLOT_OPACITY), None);
+        assert!(!set.supplies(SLOT_OPACITY));
+        set.flat_color_slots.push((SLOT_OPACITY, [1.0; 4]));
+        assert!(set.supplies(SLOT_OPACITY));
     }
 
     #[test]

@@ -40,15 +40,16 @@ use std::sync::Once;
 /// (`scene_buffer/upload.rs`) with actual default-to-0 behaviour.
 static INTERN_OVERFLOW_WARNED: Once = Once::new();
 
-/// std430 GPU-side material record. **432 bytes** per material.
+/// std430 GPU-side material record. **436 bytes** per material.
 /// Size history: 272 B → 260 B (#804 R1-N4 dropped `avg_albedo_r/g/b`)
 /// → 296 B (#1249 Disney sheen/subsurface) → 300 B (#1250 `anisotropic`)
 /// → 348 B (common supplemental texture roles) → 364 B (#2221 animated
 /// shader color/float, unsampled) → 396 B (BGEM v21+ glass optics)
 /// → 432 B (Bethesda lighting response + canonical mask roles) → 428 B
 /// (#3909 dropped the unsampled `texture_index`) → 432 B (#4422
-/// `detail_neutral` — the producer-declared detail-combine neutral).
-/// Pinned by `gpu_material_size_is_432_bytes`.
+/// `detail_neutral` — the producer-declared detail-combine neutral)
+/// → 436 B (#7421 `opacity_map_index`).
+/// Pinned by `gpu_material_size_is_436_bytes`.
 ///
 /// (Historical: the per-instance → per-material migration shipped as
 /// R1 Phases 4–6, finishing with #785. The layout below was originally
@@ -74,7 +75,7 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// (`scene_buffer/shader_contract_tests.rs`)
 /// pins this for `ui.vert` after #776 / #785; mirror checks for the
 /// other two stages live in the same module. Layout invariant is pinned
-/// by `gpu_material_size_is_432_bytes` and
+/// by `gpu_material_size_is_436_bytes` and
 /// `gpu_material_field_offsets_match_shader_contract` (added #806 to
 /// catch within-vec4 reorderings the size pin alone would miss).
 #[repr(C)]
@@ -90,7 +91,7 @@ pub struct GpuMaterial {
     /// albedo — set when the source NIF declared
     /// `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`. Pre-#695
     /// this slot was an unused pad; routing the bit through here keeps
-    /// the std430 layout pinned by `gpu_material_size_is_432_bytes`.
+    /// the std430 layout pinned by `gpu_material_size_is_436_bytes`.
     pub material_flags: u32, // offset 12
 
     // ── Emissive RGB + specular_strength (vec4 #2) ─────────────────
@@ -392,7 +393,7 @@ pub struct GpuMaterial {
     pub fresnel_power: f32,              // offset 412
     pub grayscale_to_palette_scale: f32, // offset 416
     pub lighting_mask_map_index: u32,    // offset 420
-    pub back_lighting_map_index: u32,    // offset 424; total 432 with detail_neutral
+    pub back_lighting_map_index: u32,    // offset 424
 
     // ── Detail combine (#4422, offset 428) ─────────────────────────
     /// Encoded-space detail-combine neutral declared by the producer
@@ -400,14 +401,19 @@ pub struct GpuMaterial {
     /// fragment shaders divide the raw-view detail sample by this;
     /// `detailNeutral` leaves albedo unchanged on the producer's own
     /// authored neutral texture.
-    pub detail_neutral: f32, // offset 428 → total 432
+    pub detail_neutral: f32, // offset 428
+
+    // ── Material maps (SMM, #7421) ─────────────────────────────────
+    /// Opacity texture, sampled from red; `0` means base-colour alpha is
+    /// coverage, as for every material without an opacity source.
+    pub opacity_map_index: u32, // offset 432 → total 436
 }
 
-// SAFETY: `#[repr(C)]` over 108 four-byte scalars (`f32` / `u32`) only, so
-// every byte of the declared 432 is covered by a field and the struct's
+// SAFETY: `#[repr(C)]` over 109 four-byte scalars (`f32` / `u32`) only, so
+// every byte of the declared 436 is covered by a field and the struct's
 // alignment is 4 — there is no larger member for the compiler to pad toward,
-// and 432 % 4 == 0 so the array stride needs no tail padding either.
-// `gpu_material_size_is_432_bytes` and
+// and 436 % 4 == 0 so the array stride needs no tail padding either.
+// `gpu_material_size_is_436_bytes` and
 // `gpu_material_field_offsets_match_shader_contract` pin both halves of that.
 //
 // #3990 — landed alongside `GpuInstance`'s, so the two most churn-prone GPU
@@ -562,17 +568,18 @@ impl Default for GpuMaterial {
             // #4422 — default detail-combine neutral = the classic
             // MODULATE2X convention (128/255 encoded).
             detail_neutral: byroredux_core::ecs::components::material::DEFAULT_DETAIL_NEUTRAL,
+            opacity_map_index: 0,
         }
     }
 }
 
 /// Indexes into `DrawCommand::supplemental_texture_indices`.
 ///
-/// These are the 16 `MaterialTextureSet` roles carried by the generic
+/// These are the 17 `MaterialTextureSet` roles carried by the generic
 /// supplemental texture array: `tint`, `inner_layer`, `specular`, `lighting`,
 /// `flow`, `wrinkle`, `reflectance`, `emittance_gradient`, the four `decals`,
-/// `glass_roughness_scratch`, `glass_dirt_overlay`, `lighting_mask`, and
-/// `back_lighting`. The other roles have dedicated `GpuMaterial` fields:
+/// `glass_roughness_scratch`, `glass_dirt_overlay`, `lighting_mask`,
+/// `back_lighting`, and `opacity`. The other roles have dedicated `GpuMaterial` fields:
 /// `base_color`, `normal`, `emissive`, `detail`, `smooth_spec`, `dark`,
 /// `height`, `environment`, `environment_mask`, and `greyscale_lut`.
 ///
@@ -596,7 +603,8 @@ pub mod supplemental_texture_slot {
     pub const GLASS_DIRT_OVERLAY: usize = 13;
     pub const LIGHTING_MASK: usize = 14;
     pub const BACK_LIGHTING: usize = 15;
-    pub const COUNT: usize = 16;
+    pub const OPACITY: usize = 16;
+    pub const COUNT: usize = 17;
 }
 
 /// `GpuMaterial::material_flags` bit catalog. The single source of truth
@@ -845,7 +853,7 @@ impl Eq for GpuMaterial {}
 ///    ~107 dependent steps per draw per frame: 0.48 ms at MedTek's 7,359
 ///    draws, measured in release. `FxHasher::write` compresses a byte slice
 ///    16 bytes at a time on two independent streams, ~27 steps for these
-///    432 bytes, and building the struct first is plain memory writes. The
+///    436 bytes, and building the struct first is plain memory writes. The
 ///    two together measured 0.17 ms on the same workload.
 ///  * **Coverage by discipline.** A field added to the struct but not to
 ///    the walk silently collapsed two distinct materials onto one table slot
@@ -856,7 +864,7 @@ impl Eq for GpuMaterial {}
 ///    longer disagree about what "the same material" means.
 ///
 /// Sound because `GpuMaterial` is `#[repr(C)]` with no padding: every field
-/// is a 4-byte `u32` or `f32` and `gpu_material_size_is_432_bytes` pins the
+/// is a 4-byte `u32` or `f32` and `gpu_material_size_is_436_bytes` pins the
 /// total, so there are no uninitialised bytes to hash (see [`GpuMaterial::as_bytes`]).
 /// Float fields hash by bit pattern, exactly as the `to_bits()` walk did, so
 /// `-0.0`/`0.0` and distinct NaN payloads stay distinct.
@@ -1047,7 +1055,7 @@ impl MaterialTable {
     /// hash in the message. In release we trust the hash; collisions
     /// (rare on FxHash's 64-bit output over `GpuMaterial`'s full scalar
     /// field set — see `size_of::<GpuMaterial>()`, currently pinned by
-    /// `gpu_material_size_is_432_bytes`, rather than restating a field
+    /// `gpu_material_size_is_436_bytes`, rather than restating a field
     /// count here that drifts on every struct growth, #1368/#2273)
     /// would silently alias to the first-seen material at that hash.
     pub fn intern_by_hash(

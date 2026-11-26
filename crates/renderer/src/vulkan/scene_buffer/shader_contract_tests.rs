@@ -3617,7 +3617,7 @@ fn hash_gpu_material_fields_covers_every_gpu_material_field() {
     for offset in 0..size {
         let mut probe = base;
         // SAFETY: `GpuMaterial` is `#[repr(C)]` with no padding (every field
-        // is a 4-byte u32/f32; `gpu_material_size_is_432_bytes` pins the
+        // is a 4-byte u32/f32; `gpu_material_size_is_436_bytes` pins the
         // total), so every byte is a valid part of some u32/f32 and any bit
         // pattern written there is a valid value of that field. `offset` is
         // bounded by `size_of::<GpuMaterial>()`.
@@ -8698,4 +8698,148 @@ fn explicit_bindless_lods_are_view_relative_under_streaming() {
         "found only {corrected} corrected explicit-LOD samples"
     );
     assert!(scanned > corrected + REVIEWED_EXPLICIT_LODS.len(), "the LOD-0 samples were read too");
+}
+
+/// Every GLSL source under `shaders/`, as (relative path, code without comments).
+fn all_shader_code() -> Vec<(String, String)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let mut found = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("shader dir") {
+            let path = entry.expect("shader dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("vert" | "frag" | "comp" | "glsl")
+            ) {
+                let name = path.strip_prefix(&root).expect("under root");
+                let src = std::fs::read_to_string(&path).expect("shader source");
+                let code = byroredux_core::source_scan::strip_comments(&src);
+                found.push((name.to_string_lossy().replace('\\', "/"), code));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// SMM-OPA-002 — every coverage test takes its alpha through
+/// `include/coverage_alpha.glsl`, between the BC1 pin and the material alpha,
+/// as the visible surface does. A new shader that runs the alpha comparison
+/// fails here until it is listed with its own order check.
+#[test]
+fn every_coverage_reader_uses_the_opacity_source() {
+    let sources = all_shader_code();
+    let readers: Vec<&str> = sources
+        .iter()
+        .filter(|(name, code)| {
+            name != "include/alpha_compare.glsl" && code.contains("alphaComparePass(")
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        readers,
+        ["include/ray_hit.glsl", "triangle.frag", "volumetrics_inject.comp"],
+        "the set of shaders that run an alpha comparison changed: a coverage \
+         reader must take its alpha through coverage_alpha.glsl (SMM-OPA-002)"
+    );
+
+    let code = |name: &str| {
+        let found = sources.iter().find(|(n, _)| n == name);
+        found.map(|(_, c)| c.as_str()).expect("listed shader")
+    };
+    // (shader, enclosing function, BC1 pin, coverage source, material alpha)
+    for (file, function, pin, source, material_alpha) in [
+        (
+            "triangle.frag",
+            "void main()",
+            "texColor.a = 1.0;",
+            "texColor.a = coverageAlphaGrad(",
+            "texColor.a *= mat.materialAlpha",
+        ),
+        (
+            "include/ray_hit.glsl",
+            "bool rayHitHasCoverage(",
+            "alpha = 1.0;",
+            "alpha = coverageAlphaLod(mat.opacityMapIndex, alpha, uv);",
+            "alpha *= mat.materialAlpha",
+        ),
+        (
+            "volumetrics_inject.comp",
+            "bool sunHitIsSolid(",
+            "alpha = 1.0;",
+            "alpha = coverageAlphaLod(",
+            "alpha *= materialWordFloat(materialId, MATERIAL_ALPHA_WORD)",
+        ),
+    ] {
+        let body = glsl_fn_body(code(file), function);
+        let at = |needle: &str| {
+            body.find(needle)
+                .unwrap_or_else(|| panic!("{file}: `{function}` must contain `{needle}`"))
+        };
+        let (pin, source, scaled, compare) =
+            (at(pin), at(source), at(material_alpha), at("alphaComparePass("));
+        assert!(
+            pin < source && source < scaled && scaled < compare,
+            "{file}: coverage order must be BC1 pin, opacity source, material alpha, comparison"
+        );
+    }
+    // The word the volumetrics trace reads is the opacity lane.
+    assert!(code("volumetrics_inject.comp")
+        .contains("materialId * GPU_MATERIAL_STRIDE_WORDS + MATERIAL_OPACITY_MAP_WORD"));
+    // Glass shadow attenuation reads the carried sample, so it takes the source too.
+    assert!(glsl_fn_body(code("include/ray_hit.glsl"), "bool rayHitHasCoverage(")
+        .contains("baseSample.a = alpha;"));
+}
+
+/// SMM-GPU-002 — the opacity branch runs only for a bound map: an unbound lane
+/// (0) returns the base alpha before any sample, and the carried ray sample is
+/// rewritten under the same gate.
+#[test]
+fn opacity_branches_are_gated_on_a_bound_map() {
+    let sources = all_shader_code();
+    let code = |name: &str| {
+        let found = sources.iter().find(|(n, _)| n == name);
+        found.map(|(_, c)| c.as_str()).expect("listed shader")
+    };
+    for function in ["float coverageAlphaGrad(", "float coverageAlphaLod("] {
+        let body = glsl_fn_body(code("include/coverage_alpha.glsl"), function);
+        let gate = body.find("if (opacityMap == 0u) return baseAlpha;").expect("gate");
+        assert!(gate < body.find("texture").expect("sample"), "{function}");
+    }
+    let rays = glsl_fn_body(code("include/ray_hit.glsl"), "bool rayHitHasCoverage(");
+    let gate = rays.find("if (mat.opacityMapIndex != 0u) {").expect("gate");
+    assert!(gate < rays.find("baseSample.a = alpha;").expect("rewrite"));
+    // Nothing else samples the lane.
+    for (name, text) in &sources {
+        assert!(
+            !text.contains("textures[nonuniformEXT(mat.opacityMapIndex)]"),
+            "{name} samples the opacity lane outside coverage_alpha.glsl"
+        );
+    }
+}
+
+/// SMM-OPA-003 — a blended material with an opacity source blends by it. The
+/// lit path otherwise takes a blended surface's alpha from the material alone,
+/// to keep noisy colour-texture alpha from showing through solid furniture; a
+/// bound opacity map is excluded from that rule, so the final alpha stays the
+/// coverage chain's (opacity × material alpha × vertex alpha).
+#[test]
+fn a_blended_material_with_an_opacity_map_blends_by_it() {
+    let sources = all_shader_code();
+    let frag = sources
+        .iter()
+        .find(|(name, _)| name == "triangle.frag")
+        .map(|(_, code)| code.as_str())
+        .expect("triangle.frag");
+    let start = frag.find("bool coverageOnlyBlend =").expect("the binary-coverage rule");
+    let rule = &frag[start..start + frag[start..].find(';').expect("statement end")];
+    assert!(
+        rule.contains("&& mat.opacityMapIndex == 0u"),
+        "the binary-coverage rule must leave an opacity-mapped blend alone: {rule}"
+    );
+    let initial = frag.find("float finalAlpha = texColor.a;").expect("final alpha");
+    assert!(initial < start, "the final alpha starts as the coverage chain's value");
 }

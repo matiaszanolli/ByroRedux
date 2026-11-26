@@ -92,11 +92,13 @@ impl TextureRegistry {
                 } else {
                     clamp_len
                 };
-                for color_space in [TextureColorSpace::Srgb, TextureColorSpace::Linear] {
+                for color_space in [
+                    TextureColorSpace::Srgb,
+                    TextureColorSpace::Linear,
+                    TextureColorSpace::AsAuthored,
+                ] {
                     key.truncate(view_len);
-                    if color_space == TextureColorSpace::Linear {
-                        key.push_str("|linear");
-                    }
+                    key.push_str(super::color_space_key_suffix(color_space));
                     if self.path_map.contains_key(key.as_str()) {
                         return true;
                     }

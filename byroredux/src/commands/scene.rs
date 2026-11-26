@@ -1272,10 +1272,6 @@ impl ConsoleCommand for MatDumpCommand {
             handles.parallax_height_scale,
             handles.parallax_max_passes,
         ));
-        lines.push(
-            "  textures (role | handle | set binding | color | view | state | source | path):"
-                .into(),
-        );
 
         let p = &debug.paths;
         let s = &debug.sources;
@@ -1285,8 +1281,18 @@ impl ConsoleCommand for MatDumpCommand {
             "base_color" | "emissive" | "detail" | "dark" | "tint" | "inner_layer"
             | "greyscale_lut" | "emittance_gradient" | "glass_dirt_overlay" | "decal0"
             | "decal1" | "decal2" | "decal3" => ("sRGB", "2D"),
+            "opacity" => ("file", "2D"),
             _ => ("linear", "2D"),
         };
+        lines.push(opacity_source_line(
+            debug.paths.opacity.as_deref(),
+            debug.sources.opacity,
+            debug.opacity_held,
+        ));
+        lines.push(
+            "  textures (role | handle | set binding | color | view | state | source | path):"
+                .into(),
+        );
         for (((role, path), (source_role, source)), (handle_role, handle)) in
             p.roles().zip(s.roles()).zip(h.roles())
         {
@@ -1631,6 +1637,60 @@ impl ConsoleCommand for RagdollCommand {
             )),
             Err(e) => CommandOutput::line(format!("ragdoll: {e}")),
         }
+    }
+}
+
+/// `mat.dump`'s opacity line: the property's source and its value or path
+/// (SMM-OBS-001; the four sources of the PRD §3.1).
+fn opacity_source_line(
+    path: Option<&str>,
+    source: MaterialTextureSource,
+    held: Option<byroredux_nif::import::OpacityHeld>,
+) -> String {
+    use crate::asset_provider::constant_texture::constant_texture_value;
+    let Some(path) = path else {
+        let rule = held.map(|h| format!("; {}", h.rule())).unwrap_or_default();
+        return format!("  opacity: absent (base-colour alpha{rule})");
+    };
+    if !matches!(source, MaterialTextureSource::Mat) {
+        return format!("  opacity: Override {path} (from {})", source.label());
+    }
+    match constant_texture_value(path) {
+        Some(value) => format!(
+            "  opacity: Constant {:.4} ({value}/255)",
+            f32::from(value) / 255.0
+        ),
+        None => format!("  opacity: Map {path}"),
+    }
+}
+
+#[cfg(test)]
+mod opacity_source_line_tests {
+    use super::*;
+    use byroredux_nif::import::OpacityHeld;
+
+    #[test]
+    fn mat_dump_names_each_opacity_source() {
+        use MaterialTextureSource::{Absent, Mat, NifTextureSet};
+        let constant = crate::asset_provider::constant_texture::constant_texture_path(64);
+        assert_eq!(
+            opacity_source_line(Some("textures\\a_opacity.dds"), Mat, None),
+            "  opacity: Map textures\\a_opacity.dds"
+        );
+        assert_eq!(
+            opacity_source_line(Some(&constant), Mat, None),
+            "  opacity: Constant 0.2510 (64/255)"
+        );
+        assert!(opacity_source_line(Some("n.dds"), NifTextureSet, None)
+            .starts_with("  opacity: Override n.dds (from "));
+        assert_eq!(
+            opacity_source_line(None, Absent, None),
+            "  opacity: absent (base-colour alpha)"
+        );
+        assert_eq!(
+            opacity_source_line(None, Absent, Some(OpacityHeld::NoHasOpacity)),
+            "  opacity: absent (base-colour alpha; SMM-OPA-006: HasOpacity is not true)"
+        );
     }
 }
 

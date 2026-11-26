@@ -110,6 +110,10 @@ pub enum TextureColorSpace {
     Srgb,
     /// Numeric slots such as normal, height, specular/gloss, and masks.
     Linear,
+    /// The transfer function the file itself declares. Starfield's
+    /// single-channel material maps are nearly all `BC4_UNORM`, but a few
+    /// are `BC1_UNORM_SRGB` and must decode as sRGB (SMM-SRC-003).
+    AsAuthored,
 }
 
 /// Source pixel layout for an uncompressed `DDPF_RGB` or `DDPF_LUMINANCE`
@@ -683,8 +687,34 @@ pub fn parse_dds_with_color_space(
     color_space: TextureColorSpace,
 ) -> Result<DdsMetadata> {
     let mut meta = parse_dds(data)?;
+    // `parse_dds` presumes sRGB for the colour-capable formats, whatever the
+    // file declares, so the file's own declaration is read here.
+    let color_space = match color_space {
+        TextureColorSpace::AsAuthored if declares_srgb(data) => TextureColorSpace::Srgb,
+        TextureColorSpace::AsAuthored => TextureColorSpace::Linear,
+        slot_space => slot_space,
+    };
     meta.format = format_for_color_space(meta.format, color_space);
     Ok(meta)
+}
+
+/// Whether a DDS file itself declares the sRGB transfer function: only a DX10
+/// header can, through an `_SRGB` DXGI format.
+fn declares_srgb(data: &[u8]) -> bool {
+    if byroredux_core::bytes::le_u32_at(data, 84) != Some(FOURCC_DX10) {
+        return false;
+    }
+    matches!(
+        byroredux_core::bytes::le_u32_at(data, HEADER_SIZE),
+        Some(
+            DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+                | DXGI_FORMAT_BC1_UNORM_SRGB
+                | DXGI_FORMAT_BC2_UNORM_SRGB
+                | DXGI_FORMAT_BC3_UNORM_SRGB
+                | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB
+                | DXGI_FORMAT_BC7_UNORM_SRGB
+        )
+    )
 }
 
 fn format_for_color_space(format: vk::Format, color_space: TextureColorSpace) -> vk::Format {
@@ -1238,6 +1268,26 @@ pub(crate) mod tests {
         assert_eq!(numeric.format, vk::Format::BC3_UNORM_BLOCK);
         assert_eq!(color.block_size, numeric.block_size);
         assert_eq!(color.data_offset, numeric.data_offset);
+    }
+
+    /// SMM-SRC-003 — the as-authored view keeps what the file declares, where
+    /// `parse_dds` alone presumes sRGB.
+    #[test]
+    fn as_authored_view_follows_the_files_own_declaration() {
+        use TextureColorSpace::AsAuthored;
+        let view = |data: &[u8]| parse_dds_with_color_space(data, AsAuthored).unwrap().format;
+        for (dxgi, format) in [
+            (DXGI_FORMAT_R8G8B8A8_UNORM, vk::Format::R8G8B8A8_UNORM),
+            (DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, vk::Format::R8G8B8A8_SRGB),
+            (DXGI_FORMAT_BC1_UNORM, vk::Format::BC1_RGBA_UNORM_BLOCK),
+            (DXGI_FORMAT_BC1_UNORM_SRGB, vk::Format::BC1_RGBA_SRGB_BLOCK),
+            (DXGI_FORMAT_BC4_UNORM, vk::Format::BC4_UNORM_BLOCK),
+        ] {
+            assert_eq!(view(&make_dx10_header(256, 256, 1, dxgi)), format, "DXGI {dxgi}");
+        }
+        // A legacy header declares no transfer function: sampled as data.
+        let legacy = make_dds_header(512, 512, 10, b"DXT1");
+        assert_eq!(view(&legacy), vk::Format::BC1_RGBA_UNORM_BLOCK);
     }
 
     #[test]

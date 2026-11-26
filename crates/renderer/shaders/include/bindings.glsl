@@ -49,7 +49,7 @@ layout(std430, set = 1, binding = 3) readonly buffer BoneBuffer {
 
 // ── R1 Phase 4: deduplicated material table ─────────────────────────
 //
-// Mirrors the Rust `GpuMaterial` (432 B std430) defined
+// Mirrors the Rust `GpuMaterial` (436 B std430) defined
 // in `crates/renderer/src/vulkan/material.rs`. Indexed by
 // `GpuInstance.materialId`. Phase 4 migrates one field (`roughness`)
 // off the per-instance copy onto this path; Phases 5–6 do the rest
@@ -57,11 +57,12 @@ layout(std430, set = 1, binding = 3) readonly buffer BoneBuffer {
 //
 // **Shader Struct Sync**: any field added here must be added in
 // lockstep to the Rust `GpuMaterial` struct + the matching
-// `intern`/encoding sites; the size of this struct (432 B) is pinned by
-// `gpu_material_size_is_432_bytes` on the Rust side.
+// `intern`/encoding sites; the size of this struct (436 B) is pinned by
+// `gpu_material_size_is_436_bytes` on the Rust side.
 //
 // (#3909 shrank it 432 -> 428 by removing the unsampled `textureIndex` lane;
-// #4422 then appended `detailNeutral`, 428 -> 432.)
+// #4422 then appended `detailNeutral`, 428 -> 432; #7421 appended
+// `opacityMapIndex`, 432 -> 436.)
 struct GpuMaterial {
     // PBR scalars (vec4 #1)
     float roughness;
@@ -207,6 +208,10 @@ struct GpuMaterial {
     // everything else the classic MODULATE2X 128/255. Declared by the
     // NIFAL boundary; this struct carries no per-game branch.
     float detailNeutral;
+    // #7421 — opacity texture, red channel; 0 = base-colour alpha is
+    // coverage (offset 432). Read only through
+    // include/coverage_alpha.glsl.
+    uint opacityMapIndex;
 };
 
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {

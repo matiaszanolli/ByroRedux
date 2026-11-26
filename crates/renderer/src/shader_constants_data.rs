@@ -324,8 +324,9 @@ pub const VERTEX_BONE_WEIGHTS_OFFSET_FLOATS: u32 =
 // shader cannot share, so it indexes `materialWords[materialId * GPU_MATERIAL_STRIDE_WORDS + WORD]`.
 // Literals, because the build script that generates the header cannot see the host struct;
 // `gpu_material_word_constants_match_the_host_struct` pins each to `size_of` / `offset_of`.
-pub const GPU_MATERIAL_STRIDE_WORDS: u32 = 108;
+pub const GPU_MATERIAL_STRIDE_WORDS: u32 = 109;
 pub const MATERIAL_ALPHA_THRESHOLD_WORD: u32 = 11;
+pub const MATERIAL_OPACITY_MAP_WORD: u32 = 108;
 pub const MATERIAL_ALPHA_TEST_FUNC_WORD: u32 = 20;
 pub const MATERIAL_KIND_WORD: u32 = 21;
 pub const MATERIAL_ALPHA_WORD: u32 = 22;
@@ -2394,7 +2395,10 @@ pub const RENDER_DEBUG_RADIANCE_CACHE: u32 = 21;
 // RCG-VAL-002 — the eligible-pixel mask: white where a pixel's primary surface meets the material
 // conditions of GI eligibility (PRD §2), black elsewhere, with no ray-budget or distance term in it.
 pub const RENDER_DEBUG_GI_ELIGIBLE: u32 = 22;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_GI_ELIGIBLE;
+// SMM-OBS-003 — the opacity value the visible surface's coverage test reads: grey where an opacity map or
+// constant supplies it, blue where it is the colour texture's alpha.
+pub const RENDER_DEBUG_MATERIAL_OPACITY: u32 = 23;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_MATERIAL_OPACITY;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -2424,6 +2428,7 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_SHADOW_FILTER_RADIUS", RENDER_DEBUG_SHADOW_FILTER_RADIUS),
     ("RENDER_DEBUG_RADIANCE_CACHE", RENDER_DEBUG_RADIANCE_CACHE),
     ("RENDER_DEBUG_GI_ELIGIBLE", RENDER_DEBUG_GI_ELIGIBLE),
+    ("RENDER_DEBUG_MATERIAL_OPACITY", RENDER_DEBUG_MATERIAL_OPACITY),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];
@@ -2996,6 +3001,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint GPU_MATERIAL_STRIDE_WORDS),
     shader_define!(Uint MATERIAL_ALPHA_THRESHOLD_WORD),
     shader_define!(Uint MATERIAL_ALPHA_TEST_FUNC_WORD),
+    shader_define!(Uint MATERIAL_OPACITY_MAP_WORD),
     shader_define!(Uint MATERIAL_KIND_WORD),
     shader_define!(Uint MATERIAL_ALPHA_WORD),
     shader_define!(Uint MATERIAL_UV_OFFSET_WORD),
@@ -3565,6 +3571,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint RENDER_DEBUG_SHADOW_FILTER_RADIUS),
     shader_define!(Uint RENDER_DEBUG_RADIANCE_CACHE),
     shader_define!(Uint RENDER_DEBUG_GI_ELIGIBLE),
+    shader_define!(Uint RENDER_DEBUG_MATERIAL_OPACITY),
     shader_define!(Uint RENDER_DEBUG_MODE_MAX),
     shader_define!(Uint RENDER_DEBUG_LEGACY_FLAGS),
     HeaderLine::Blank,

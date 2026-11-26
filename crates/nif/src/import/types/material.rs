@@ -6,6 +6,31 @@ use super::*;
 /// Provenance of a canonical texture path while it is still attached to an
 /// imported NIF material.
 ///
+/// The recorded rule holding authored Starfield opacity data unused
+/// (docs/prd/starfield-material-maps.md §5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OpacityHeld {
+    /// `AlphaSettingsComponent.HasOpacity` is not true (SMM-OPA-006).
+    NoHasOpacity,
+    /// `OpacitySourceLayer` names a layer the material does not have
+    /// (SMM-OPA-005).
+    UnresolvedLayer,
+    /// The named layer authors nothing for the opacity slot; another layer
+    /// does (SMM-OPA-005).
+    UnsuppliedLayer,
+}
+
+impl OpacityHeld {
+    /// The rule's id and one-line wording, for reports.
+    pub const fn rule(self) -> &'static str {
+        match self {
+            Self::NoHasOpacity => "SMM-OPA-006: HasOpacity is not true",
+            Self::UnresolvedLayer => "SMM-OPA-005: the named opacity layer does not exist",
+            Self::UnsuppliedLayer => "SMM-OPA-005: the named opacity layer authors no opacity",
+        }
+    }
+}
+
 /// Inline NIF authoring is the default. The application-side material
 /// provider changes only roles it actually fills from an external sidecar;
 /// this lets diagnostics distinguish NIF texture sets from BGSM/BGEM without
@@ -93,6 +118,10 @@ pub struct MaterialTextureSet<T> {
     pub glass_roughness_scratch: T,
     /// FO76/Starfield BGEM v21+ dirt overlay composited over glass optics.
     pub glass_dirt_overlay: T,
+    /// Per-texel opacity, sampled from the red channel in the file's own
+    /// colour space (SMM-SRC-003). Where bound it replaces base-colour alpha
+    /// in every coverage test. Filled by Starfield materials only.
+    pub opacity: T,
     /// Ordered legacy material-overlay layers.
     pub decals: [T; 4],
 }
@@ -134,6 +163,7 @@ impl<T> MaterialTextureSet<T> {
             ("emittance_gradient", &self.emittance_gradient),
             ("glass_roughness_scratch", &self.glass_roughness_scratch),
             ("glass_dirt_overlay", &self.glass_dirt_overlay),
+            ("opacity", &self.opacity),
             ("decal0", &self.decals[0]),
             ("decal1", &self.decals[1]),
             ("decal2", &self.decals[2]),
@@ -168,6 +198,7 @@ impl<T> MaterialTextureSet<T> {
             emittance_gradient: map(&self.emittance_gradient),
             glass_roughness_scratch: map(&self.glass_roughness_scratch),
             glass_dirt_overlay: map(&self.glass_dirt_overlay),
+            opacity: map(&self.opacity),
             decals: std::array::from_fn(|index| map(&self.decals[index])),
         }
     }
@@ -205,6 +236,7 @@ impl<T> MaterialTextureSet<T> {
                 &other.glass_roughness_scratch,
             ),
             glass_dirt_overlay: map(&self.glass_dirt_overlay, &other.glass_dirt_overlay),
+            opacity: map(&self.opacity, &other.opacity),
             decals: std::array::from_fn(|index| map(&self.decals[index], &other.decals[index])),
         }
     }
@@ -238,6 +270,7 @@ impl<T> MaterialTextureSet<T> {
             &self.emittance_gradient,
             &self.glass_roughness_scratch,
             &self.glass_dirt_overlay,
+            &self.opacity,
         ]
         .into_iter()
         .chain(self.decals.iter())
@@ -310,16 +343,17 @@ mod material_texture_set_tests {
             emittance_gradient: 19,
             glass_roughness_scratch: 20,
             glass_dirt_overlay: 21,
-            decals: [22, 23, 24, 25],
+            opacity: 22,
+            decals: [23, 24, 25, 26],
         };
 
         assert_eq!(
             textures.values().copied().collect::<Vec<_>>(),
-            (0..26).collect::<Vec<_>>()
+            (0..27).collect::<Vec<_>>()
         );
         assert_eq!(
             textures.secondary_values().copied().collect::<Vec<_>>(),
-            (1..26).collect::<Vec<_>>()
+            (1..27).collect::<Vec<_>>()
         );
     }
 
@@ -422,6 +456,11 @@ pub struct ImportedMaterial {
     /// the CDB path). Read by the glass keyword promotion in
     /// `classify_glass_into_material`.
     pub external_material_resolved: bool,
+    /// Why a Starfield material that authors opacity data has no opacity
+    /// source. `None` when it has one, or authors nothing. Decided by
+    /// `merge_external_material` alone (SMM-SRC-001); read by `mat.dump` and
+    /// the reach test.
+    pub opacity_held: Option<OpacityHeld>,
     pub bgem_glass: bool,
     pub thin_glass: bool,
     /// BGEM v21+ artist tint for the dielectric reflection/Fresnel lobe.
@@ -602,6 +641,7 @@ impl Default for ImportedMaterial {
             back_lighting: false,
             from_bgsm: false,
             external_material_resolved: false,
+            opacity_held: None,
             bgem_glass: false,
             thin_glass: false,
             glass_fresnel_color: [1.0; 3],

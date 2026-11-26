@@ -542,6 +542,7 @@ impl DrawCommand {
             grayscale_to_palette_scale: self.grayscale_to_palette_scale,
             lighting_mask_map_index: self.supplemental_texture_indices[slot::LIGHTING_MASK],
             back_lighting_map_index: self.supplemental_texture_indices[slot::BACK_LIGHTING],
+            opacity_map_index: self.supplemental_texture_indices[slot::OPACITY],
         }
     }
 

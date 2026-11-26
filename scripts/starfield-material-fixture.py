@@ -4,11 +4,13 @@
 The acceptance scenarios A4 to A6 of docs/prd/starfield-material-maps.md
 read pixels from a surface whose authored values are known. This writes a
 loose root holding a loose `.mat` at a vanilla material's own path, and the
-textures it names. Nothing here comes from game data.
+textures it names. Nothing here comes from game data. The `.mat` has the
+installed loose files' shape: the root names a layer, the layer a material,
+the material a texture set; the alpha settings are the root's.
 
     python3 scripts/starfield-material-fixture.py <kind> <material> <out-root>
 
-    <kind>      opacity | pbr | ao | ao-open
+    <kind>      opacity | opacity-inverse | pbr | ao | ao-open
     <material>  the material path to override, as `mat.dump` prints it
     <out-root>  an empty or earlier fixture directory
 
@@ -39,8 +41,9 @@ SLOTS = {"color": 0, "opacity": 2, "rough": 3, "metal": 4, "ao": 5}
 # Block values, as 8-bit red, by (column, row).
 PATTERNS = {
     "color": lambda x, y: 186,
-    # A checkerboard: half the blocks closed, half open.
+    # A checkerboard: half the blocks closed, half open; and its inverse.
     "opacity": lambda x, y: 255 if (x + y) % 2 == 0 else 0,
+    "opacity-inverse": lambda x, y: 0 if (x + y) % 2 == 0 else 255,
     # Roughness varies by column and metalness by row, so each of the 16
     # blocks has its own pair.
     "rough": lambda x, y: (64, 128, 192, 255)[x],
@@ -53,6 +56,7 @@ PATTERNS = {
 
 KINDS = {
     "opacity": ["color", "opacity"],
+    "opacity-inverse": ["color", "opacity-inverse"],
     "pbr": ["color", "rough", "metal"],
     "ao": ["color", "ao"],
     "ao-open": ["color", "ao-open"],
@@ -102,31 +106,38 @@ def relative(path):
     return pathlib.PurePosixPath(*parts)
 
 
+def component(kind, index, data):
+    return {"Type": f"BSMaterial::{kind}", "Index": index, "Data": data}
+
+
 def write(kind, material, root):
     material_file = root / relative(material)
-    components = []
+    textures = []
     for name in KINDS[kind]:
-        slot_name = "ao" if name == "ao-open" else name
+        # A variant pattern ("ao-open", "opacity-inverse") fills its base slot.
+        slot_name = name.split("-")[0]
         file_name = f"{kind}_{slot_name}.dds"
         texture = root / "textures" / "smm_fixture" / file_name
         texture.parent.mkdir(parents=True, exist_ok=True)
         dxgi = DXGI_RGBA8_UNORM_SRGB if name == "color" else DXGI_RGBA8_UNORM
         texture.write_bytes(dds(PATTERNS[name], dxgi))
-        components.append({
-            "Type": "BSMaterial::MRTextureFile",
-            "Index": SLOTS[slot_name],
-            "Data": {"FileName": f"Data\\Textures\\smm_fixture\\{file_name}"},
-        })
-    if "opacity" in KINDS[kind]:
-        components.append({
-            "Type": "BSMaterial::AlphaSettingsComponent",
-            "Index": 0,
-            "Data": {"HasOpacity": "true", "AlphaTestThreshold": "0.5",
-                     "OpacitySourceLayer": "MATERIAL_LAYER_0"},
-        })
+        textures.append(component("MRTextureFile", SLOTS[slot_name],
+                                  {"FileName": f"Data\\Textures\\smm_fixture\\{file_name}"}))
+    settings = [component("LayerID", 0, {"ID": "fixture:layer"})]
+    if kind.startswith("opacity"):
+        settings.append(component("AlphaSettingsComponent", 0,
+                                  {"HasOpacity": "true", "AlphaTestThreshold": "0.5",
+                                   "OpacitySourceLayer": "MATERIAL_LAYER_0"}))
+    objects = [
+        {"Components": settings},
+        {"ID": "fixture:layer",
+         "Components": [component("MaterialID", 0, {"ID": "fixture:material"})]},
+        {"ID": "fixture:material",
+         "Components": [component("TextureSetID", 0, {"ID": "fixture:textures"})]},
+        {"ID": "fixture:textures", "Components": textures},
+    ]
     material_file.parent.mkdir(parents=True, exist_ok=True)
-    material_file.write_text(json.dumps({"Version": 1, "Objects": [{"Components": components}]},
-                                        indent=2) + "\n")
+    material_file.write_text(json.dumps({"Version": 1, "Objects": objects}, indent=2) + "\n")
     return material_file
 
 

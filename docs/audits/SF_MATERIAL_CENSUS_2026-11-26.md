@@ -115,6 +115,15 @@ paths before and after the refactor that added the per-layer view.
 
 Added bytes are for the whole population, not for any one scene.
 
+**Corrected in Phase 1 (#7421).** The first run counted an authored empty
+texture path as a texture. The `fo76utils` viewer treats it as none and uses
+the replacement (`glproperty.cpp` `getSFTexture`), and `CdbSlotSet::texture`
+now does too. The tables below are the corrected run. What moved: the
+presence splits (opacity was 1,921 / 17 / 39 / 294, roughness 7,201 / 804 /
+1,547 / 606, metalness 2,220 / 1,993 / 182 / 5,763, occlusion 3,282 / 89 / 5 /
+6,782), the layer counts, slot 2 without the flag (was 434 effect and 546
+other) and, by 0.7 MiB, occlusion's added bytes.
+
 ### Population
 
 | Measure | Materials |
@@ -134,26 +143,26 @@ Added bytes are for the whole population, not for any one scene.
 
 | Property | Texture only | Replacement only | Both | Neither |
 |---|---:|---:|---:|---:|
-| roughness | 7201 | 804 | 1547 | 606 |
-| metalness | 2220 | 1993 | 182 | 5763 |
-| ambient occlusion | 3282 | 89 | 5 | 6782 |
+| roughness | 7169 | 960 | 1391 | 638 |
+| metalness | 2148 | 2021 | 158 | 5831 |
+| ambient occlusion | 3220 | 89 | 5 | 6844 |
 
 ### Layers (SMM-OBS-005)
 
 | Property | More than one layer supplies it | SMM-SRC-010 layer is not the first | `lookup` takes texture and replacement from two layers |
 |---|---:|---:|---:|
-| opacity | 111 | 105 | 57 |
-| roughness | 1979 | 44 | 816 |
-| metalness | 307 | 116 | 182 |
-| ambient occlusion | 1245 | 93 | 162 |
+| opacity | 109 | 108 | 54 |
+| roughness | 1898 | 45 | 848 |
+| metalness | 297 | 120 | 179 |
+| ambient occlusion | 908 | 97 | 162 |
 
 ### Replacement colours on the SMM-SRC-010 layer (supports SMM-SRC-004)
 
 | Property | Grey (r = g = b) | Not grey | Commonest red values (value × count) |
 |---|---:|---:|---|
-| opacity | 375 | 0 | 0 × 116, 128 × 54, 204 × 25, 175 × 11, 78 × 10, 230 × 10 |
+| opacity | 378 | 0 | 0 × 116, 128 × 54, 204 × 28, 175 × 11, 78 × 10, 230 × 10 |
 | roughness | 2351 | 0 | 20 × 327, 128 × 221, 255 × 185, 35 × 111, 0 × 93, 34 × 92 |
-| metalness | 2175 | 0 | 255 × 1265, 128 × 134, 94 × 56, 0 × 55, 230 × 23, 235 × 21 |
+| metalness | 2179 | 0 | 255 × 1266, 128 × 134, 94 × 56, 0 × 55, 230 × 23, 235 × 21 |
 | ambient occlusion | 94 | 0 | 128 × 31, 233 × 23, 142 × 9, 0 × 5, 215 × 5, 102 × 2 |
 
 ### Opacity with `HasOpacity` true (SMM-OPA-004, -005)
@@ -174,34 +183,34 @@ Added bytes are for the whole population, not for any one scene.
 
 | Slot 2 on the named layer | Texture only | Replacement only | Both | Neither |
 |---|---:|---:|---:|---:|
-| `HasOpacity` true, layer resolved | 1921 | 17 | 39 | 294 |
+| `HasOpacity` true, layer resolved | 1912 | 19 | 37 | 303 |
 
 ### Slot-2 data without `HasOpacity` true (SMM-OPA-006)
 
 | Measure | Materials |
 |---|---:|
-| Effect materials | 434 |
-| Not effect materials | 546 |
-| `HasOpacity` authored false | 13 |
-| `HasOpacity` not on the chain | 967 |
+| Effect materials | 432 |
+| Not effect materials | 494 |
+| `HasOpacity` authored false | 1 |
+| `HasOpacity` not on the chain | 925 |
 
 ### Texture formats of the chosen textures (SMM-SRC-003)
 
 | Property | Format | Textures |
 |---|---|---:|
-| opacity | (not found) | 5 |
+| opacity | (not found) | 4 |
 | opacity | BC1_UNORM_SRGB | 17 |
 | opacity | BC4_UNORM | 1331 |
-| roughness | (not found) | 18 |
+| roughness | (not found) | 17 |
 | roughness | BC1_UNORM_SRGB | 10 |
 | roughness | BC4_UNORM | 3694 |
 | roughness | R8_UNORM | 2 |
-| metalness | (not found) | 9 |
+| metalness | (not found) | 8 |
 | metalness | BC1_UNORM | 1 |
 | metalness | BC1_UNORM_SRGB | 11 |
 | metalness | BC4_UNORM | 1784 |
-| ambient occlusion | (not found) | 11 |
-| ambient occlusion | BC4_UNORM | 2733 |
+| ambient occlusion | (not found) | 10 |
+| ambient occlusion | BC4_UNORM | 2734 |
 | ambient occlusion | R8_UNORM | 2 |
 
 ### Added texture bytes (PRD §8)
@@ -213,5 +222,80 @@ Distinct textures each property would bind that no material in the population bi
 | opacity | 1340 | 4 | 1214.4 | 57.3 | 0.3 | 7 |
 | roughness | 3708 | 17 | 5447.2 | 156.4 | 2.3 | 18 |
 | metalness | 1798 | 8 | 2496.6 | 74.0 | 0.0 | 34 |
-| ambient occlusion | 2745 | 10 | 4665.3 | 116.2 | 2.3 | 12 |
-| all four, each texture once | 9561 | 39 | 13799.5 | 402.6 | 5.0 | 71 |
+| ambient occlusion | 2746 | 10 | 4666.0 | 116.2 | 2.3 | 12 |
+| all four, each texture once | 9562 | 39 | 13800.1 | 402.6 | 5.0 | 71 |
+
+## Phase 1 acceptance (opacity, #7421)
+
+Run on 2026-11-26 against the installed game, in the Studio viewer.
+
+**Reach** (`starfield_material_property_reach`, SMM-OBS-006). It counts
+database records on imported shapes; the census above counts path strings,
+and some records are named by more than one spelling.
+
+| Measure | Value |
+|---|---:|
+| Models parsed | 68,459 |
+| Records on imported shapes that resolve | 10,073 |
+| Records authoring opacity data (144,995 shapes) | 2,875 |
+| …reaching on every shape, as Map | 1,934 |
+| …reaching on every shape, as Constant | 19 |
+| …held: `HasOpacity` not true (SMM-OPA-006) | 920 |
+| …held: the named layer does not exist (SMM-OPA-005) | 1 |
+| …held: the named layer authors no opacity (SMM-OPA-005) | 1 |
+| …with no recorded rule | 0 |
+
+**A4, fixture** (`scripts/starfield-material-acceptance.py a4`): every check
+passed. `mat.dump` named the fixture as Map; the 14 lid readings and 6
+tabletop readings held the exact value for their block's state in both
+patterns. Direct light on the floor, mean of five captures, 0 to 255:
+
+| Floor point | Behind an open block | Behind a closed block | Two identical runs differ by |
+|---|---:|---:|---:|
+| centre | 253.1 | 128.8 | 0.3 |
+| left | 231.7 | 198.1 | 0.1 |
+| right | 212.9 | 180.8 | 0.0 |
+
+The floor shadow comes from the flat tabletop behind the upright lid. The
+side points stay well short of full shadow behind a closed block, because
+light also arrives through neighbouring openings and from the fill light, so
+the script requires a gap of 20 rather than a lit and a dark level. Single
+captures within one run spread by up to 3.1, hence the mean.
+
+**A4, vanilla captures** of `grasssage01.nif`, same pose, engine at
+`1326f9b13` and with Phase 1. Before: solid rectangular cards showing the
+colour texture's off-leaf texels. After: stems and leaves, with a floor
+shadow of the same outline. The cutout test moved from `>=` to `>` (func 6
+to 4) and `mat.dump` names the sagebrush opacity map. The captures show game
+content and are not checked in.
+
+**Blended materials** (SMM-OPA-003). Five records on 29 shapes blend and
+have an opacity map (signs and labels): three on 25 shapes without a cutout,
+two on 4 shapes with one. A temporary count in the reach test, not kept, gave
+these. The lit path took a blended surface's alpha from the material alone, so
+opacity only discarded texels near zero. That rule now leaves a surface with a
+bound opacity map alone. Checked on a loose `AlphaBlend` fixture on the table:
+before the change a quarter-opaque block drew solid; after it the blocks blend,
+and half-opaque blocks read 229 to 237 (final view, luminance) between solid
+(143 to 187) and fully open (243 to 246). Traced rays still treat a blended
+non-glass surface as blocking wherever its coverage is at least 1/255, so a
+half-opaque surface casts a full shadow.
+
+**Missing texture** (SMM-SRC-011, -OBS-002): with the fixture's opacity file
+deleted the table drew solid, as an opaque one does, and `tex.missing` listed
+the file as `slot=opacity, src=mat`.
+
+**Loose materials.** Reading the alpha settings along the layer graph stops a
+LOD material's settings reaching the main material, which is where
+`portablegreenhouse02.mat` had been getting its cutout. Its parent,
+`portablegreenhouse01`, authors `HasOpacity` in the database, so the loose
+reader now takes the alpha settings a file leaves unauthored from its database
+parent. Five installed screen materials on `genericglow01_base`
+(`requisitionkiosk_splashscreen_*`) inherit `HasOpacity` the same way. They
+author no opacity map, and the top mip of each of their `BC3_SRGB` colour
+textures has alpha 255 throughout, so their cutout removes nothing at that
+level. None of the six was captured in the viewer.
+
+**Added resident bytes** on `grasssage01.nif`, streaming off: 2.7 MiB
+(10.9 MiB resident against 8.3 MiB at `1326f9b13`). No GPU time delta was
+measured; Phase 1's exit does not ask for one.

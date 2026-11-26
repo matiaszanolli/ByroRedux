@@ -136,7 +136,7 @@ Source: `crates/renderer/src/vulkan/`
   into a deduped per-frame `MaterialTable` SSBO indexed by
   `material_id: u32`. `GpuInstance` shrank to 112 bytes at R1 (160 bytes
   today — 128 B as of #2219, then 160 B as of #3231's morph-target fields);
-  `GpuMaterial` was 300 bytes at R1 (432 bytes today,
+  `GpuMaterial` was 300 bytes at R1 (436 bytes today,
   since `1d94eb24`'s cross-game texture-role unification). See
   [Material table](#material-table-r1).
 - **Disney BSDF** (#1248–#1257, 2026-05): IOR-derived Fresnel F0, Burley +
@@ -609,7 +609,7 @@ alpha state, Skyrim+ shader-variant payloads, BSEffect falloff, BGSM UV
 transform, NiMaterialProperty diffuse/ambient — was duplicated onto every
 per-instance struct, so a cell that places one material 10–30 times carried
 the same ~35 fields that many times. R1 factored them into a deduped
-**`GpuMaterial`** (300 bytes at R1, 432 bytes today — see
+**`GpuMaterial`** (300 bytes at R1, 436 bytes today — see
 [`shader-pipeline.md`](shader-pipeline.md) for the current field layout)
 and a per-frame **`MaterialTable`** SSBO
 (binding 13, `MAX_MATERIALS = 16384`). `GpuInstance` (160 bytes as of
@@ -830,7 +830,7 @@ word. Modes are `final`, `shadow_visibility`, `selected_light`, `direct_only`,
 enters `indirectLight`, M-LIGHT RLT-GI-009), `filtered_direct` (`direct_only`
 with the shadow filter's correction, RLT-SHD-009), `shadow_filter_radius`
 (the shadow filter reach from blue at one pixel to red at the tier maximum,
-PAF-011), `radiance_cache` (the radiance cache's level and hit per pixel, RCG-DBG-001; magenta is "no sample", which is every fragment until the cache's lookup exists), `gi_eligible` (the eligible-pixel mask coverage is measured over, RCG-VAL-002: white where the primary surface meets the material conditions of GI eligibility), and `restir_history` (the direct-light
+PAF-011), `radiance_cache` (the radiance cache's level and hit per pixel, RCG-DBG-001; magenta is "no sample", which is every fragment until the cache's lookup exists), `material_opacity` (SMM-OBS-003: the visible surface's coverage value, grey from a Starfield opacity map or constant and blue where it is the colour texture's alpha), `gi_eligible` (the eligible-pixel mask coverage is measured over, RCG-VAL-002: white where the primary surface meets the material conditions of GI eligibility), and `restir_history` (the direct-light
 shadow-ratio history: grey = length over the active cap, green tint = the deep
 scene-static tail, red = rejected this frame, blue = a blended decal borrowing
 its surface's history); the legacy
