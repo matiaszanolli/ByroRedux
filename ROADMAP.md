@@ -104,8 +104,8 @@ all-slots fence wait that dominates GPU-bound frames (#5365, the throughput half
   speaking and numbers the replies; the dialogue layers and voice are live
   ([`dialogue-trees.md`](docs/engine/dialogue-trees.md)).
 - Starfield CDB materials: `.mat` texture slots merge from the streaming CDB
-  index (`224a19372`, `18fce7e43`); #3398 stays open until its definition of
-  done is checked.
+  index (`224a19372`, `18fce7e43`); opacity, roughness, metalness and occlusion
+  are not used yet (#7419).
 - Texture streaming (M39) is off by default (`render.texture_streaming`) until its open gates close:
   the A11 reflection A/B, a clean FO4 A9 soak and the default flip
   ([results](docs/engine/texture-streaming.md#12-measured-results-2026-11-04)).
@@ -656,14 +656,15 @@ performance finding. The measured knob table is in
 - [ ] **One Starfield NIF (`meshes\marker_radius.nif`) asks for a 318 MB
   single allocation**, above `MAX_SINGLE_ALLOC_BYTES` (256 MB); raising the
   cap weakens the hostile-`u32` defence. One file in the corpus.
-- [ ] **Starfield CDB Phase 2: texture slots landed, closure unverified**
-  ([#3398](https://github.com/matiaszanolli/ByroRedux/issues/3398)). A
-  streaming `MaterialIndex` (`224a19372`) feeds the `.mat` arm of
-  `merge_external_material` (`18fce7e43`): a hit forwards texture slots and
-  flat-colour replacements as `Merged`, a miss keeps the Phase-1 PBR flip;
-  per-slot replacements, scalars and flags translate honestly (#5190, #5196,
-  #5197); `ObjectInfo.Parent` inheritance resolves for settings (`5c14ebdf8`) and texture sets (#5502; glass-coverage signal still undecided), blend
-  state is captured (#5277), emissive is parked (*tracked here only*: #5503 closed 2026-10-11). Owed: definition of done + a live Cydonia render.
+- [ ] **Starfield material maps** ([#7419](https://github.com/matiaszanolli/ByroRedux/issues/7419),
+  [PRD](docs/prd/starfield-material-maps.md)): opacity, roughness, metalness and
+  occlusion from the material database. Published metrics: none yet.
+- [ ] **Starfield material leftovers from #3398** (*tracked here only*, except
+  #5509): a live Cydonia render (waits on the load fitting in memory,
+  [PRD](docs/prd/starfield-memory.md), proposed); decal settings, UV transform,
+  address mode, shader route, flow, layer opacity mixing and collision material
+  unread; two-sided source not established; emissive brightness parked;
+  glass-coverage signal undecided; remaining blend modes (#5509).
 
 - [ ] **Parsed-but-unconsumed minimal records** (TD6-2026-10-25-01, #6387).
   Nineteen `EsmIndex` maps built from EDID+FULL-only record types have no reader

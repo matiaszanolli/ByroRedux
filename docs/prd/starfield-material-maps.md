@@ -1,8 +1,10 @@
 # Starfield Material Maps — Product Requirements
 
-**Status**: APPROVED (2026-11-26). The owner approved revision 3, which
-folds in review round 1 (a self-review by the author's agent) and two
-decision amendments (§10, Q2 and Q3). Revision 4 records the approval.
+**Status**: ACTIVE (2026-11-26). Revision 5 files the tracking issues and
+clarifies what Phase 0 may change. The owner approved revision 3, recorded
+as revision 4; §12 has the history.
+
+**Tracking**: #7419 (parent). Phases: #7420 (0), #7421 (1), #7422 (2), #7423 (3). Phase 0's verify items are listed in #7420.
 Statements about how an original engine, format or tool behaves cite
 external sources; a claim that could not be verified is marked
 **Phase 0: verify** instead of being stated as fact.
@@ -478,8 +480,11 @@ Starfield material maps entry for this PRD. It replaces the #3398 entry when
 
 ## 9. Delivery sequence
 
-**Phase 0 — Verify and measure (no engine code).** Check in the census
-command as a tool (SMM-OBS-004, -005) and publish its counts. Close the
+**Phase 0 — Verify and measure (no change to translation or rendering).**
+Check in the census command as a tool (SMM-OBS-004, -005) and publish its
+counts. The census needs each layer's data and `OpacitySourceLayer`, so this
+phase may add read-only access to them in `crates/sfmaterial`;
+`MaterialIndex::lookup` keeps today's selection until Phase 2. Close the
 verify items of SMM-SRC-003 to -005, -007 and -009, SMM-OPA-004 to -006, and
 §6 rows 2 and 4. Measure added texture bytes from archive headers. Name the
 acceptance meshes, record the peak memory of loading each, make the viewer
@@ -588,3 +593,4 @@ that its definition of done is met and the four properties moved here
 | 2 | 2026-11-26 | Owner decisions Q1 to Q5 recorded, each as recommended, and folded in: acceptance evidence, one layer per property (SMM-SRC-010, SMM-OBS-005), the occlusion rule, no city-cell exit, tracking | — |
 | 3 | 2026-11-26 | Review round 1 folded in: layer rule, count provenance, opacity sources, census and reach split, acceptance viewer and pass rules, occlusion combine rule, map and missing-map rules, metric home, phase assignments, verify wording and pinned source, GPU lane route and glass non-goal, Fallout 76 reason, document map; SMM-PBR-006 withdrawn; owner amendments to Q2 and Q3 | claude: revise |
 | 4 | 2026-11-26 | Approved by the owner: PROPOSED → APPROVED; every decision (Q1 to Q5) decided; no requirement changed from revision 3 | owner: approved |
+| 5 | 2026-11-26 | APPROVED → ACTIVE: tracking issues #7419 to #7423 filed, with Phase 0's verify items listed in #7420; the §9 Phase 0 wording now allows read-only access for the census in `crates/sfmaterial`; no requirement changed | — |
