@@ -120,12 +120,11 @@ its compressed xWMA entry through the asset provider. The entire track
 must never be staged as PCM.
 
 The ring depth is kira 0.12.5's `BUFFER_SIZE`, which `DecodeScheduler::new`
-creates the ring with and `DecodeScheduler::run` fills
-(`src/sound/streaming/sound/decode_scheduler.rs`).
-`DecodeScheduler::frame_at_index`, in the same file, retains a previous decode
-chunk while the next one is being produced. The mixer takes a four-frame
-interpolation window (`StreamingSound::next_frames`,
-`src/sound/streaming/sound.rs`). Recheck these capacities on a kira upgrade.
+creates the ring with and `DecodeScheduler::run` fills, in the decode scheduler
+of kira's streaming sound. `DecodeScheduler::frame_at_index`, there too,
+retains a previous decode chunk while the next one is being produced. The mixer
+takes a four-frame interpolation window (`StreamingSound::next_frames`). Recheck
+these capacities on a kira upgrade.
 A crossfade or palette counts each live voice independently and sums its usage
 against the number of live voices.
 
