@@ -103,16 +103,24 @@ impl VulkanContext {
         self.texture_registry.set_texture_budget(budget);
     }
 
-    /// M39 — the `render.texture_streaming` switch and the texture budget
-    /// override, then this frame's queued promotions and demotions, at most
-    /// `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` of uploads (TXS-BUD-006). Call
-    /// before `draw_frame` so the new images' descriptor writes reach this
-    /// frame's slot at its `begin_frame`.
-    pub fn update_texture_streaming(&mut self, streaming: bool, budget_override_mib: u64) {
+    /// M39 — the `render.texture_streaming` switch and, while it is on, the
+    /// texture budget under `budget_override_mib`. Call before the wanted-mip
+    /// pass (`TextureRegistry::apply_wanted`): a pass with no budget asks for
+    /// every promotion unchecked, and the reads the host takes from it land
+    /// past a budget set afterwards (TXS-BUD-008).
+    pub fn prepare_texture_streaming(&mut self, streaming: bool, budget_override_mib: u64) {
         self.texture_registry.set_streaming(streaming);
         if streaming {
             self.refresh_texture_budget(budget_override_mib);
         }
+    }
+
+    /// M39 — this frame's queued promotions and demotions, at most
+    /// `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` of uploads (TXS-BUD-006). Call
+    /// after the finished reads have landed and before `draw_frame`, so the
+    /// new images' descriptor writes reach this frame's slot at its
+    /// `begin_frame`.
+    pub fn flush_texture_streaming(&mut self) {
         if self.texture_registry.pending_promotion_count() == 0 {
             return;
         }

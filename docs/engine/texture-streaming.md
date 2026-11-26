@@ -370,7 +370,12 @@ F              = 0.80
 (`render.texture_budget_mib`, §8), when non-zero, replaces the whole
 expression unclamped. `VulkanContext::refresh_texture_budget` re-derives it
 twice a second while streaming is on, logs the first derivation with its
-terms (TXS-BUD-001), and `tex.residency` prints the current one.
+terms (TXS-BUD-001), and `tex.residency` prints the current one. The host
+sets it (`prepare_texture_streaming`) **before** the wanted pass, from the
+first streaming frame. Until #7417 it was set afterwards, so the first pass
+asked for every promotion with no budget, and the four reads the host took
+from it landed unchecked: Skyrim `WhiterunBanneredMare` at 30 MiB peaked at
+1.06 times the budget in six runs of six, then evicted back under it.
 
 ### 7.2 Eviction (TXS-BUD-002…004, -007)
 

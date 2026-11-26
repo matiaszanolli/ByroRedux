@@ -103,16 +103,18 @@ fn push_texture_streaming(
     ctx.texture_registry
         .set_source_generation_counter(crate::asset_provider::archive_replacement_counter());
     ctx.texture_registry.set_promotable_generation(generation);
+    let budget_override_mib =
+        crate::setting_number(world, byroredux_debug_ui::TEXTURE_BUDGET_MIB_SETTING_ID, 0.0)
+            .max(0.0) as u64;
+    // The budget before the pass that spends it (TXS-BUD-008).
+    ctx.prepare_texture_streaming(streaming, budget_override_mib);
     if let Some(streamer) = streamer.as_mut() {
         if streaming {
             streamer.update_wanted(draws, ctx, frame.camera_pos, frame.camera_fov_y);
         }
         streamer.step(&mut ctx.texture_registry);
     }
-    let budget_override_mib =
-        crate::setting_number(world, byroredux_debug_ui::TEXTURE_BUDGET_MIB_SETTING_ID, 0.0)
-            .max(0.0) as u64;
-    ctx.update_texture_streaming(streaming, budget_override_mib);
+    ctx.flush_texture_streaming();
     if let Some(streamer) = streamer.as_mut() {
         let pose = (frame.camera_pos, frame.cam_forward, frame.camera_fov_y);
         streamer.observe_settle(&ctx.texture_registry, pose);
@@ -2165,5 +2167,31 @@ mod terrain_lod_soften_tests {
         assert!((onset - 325.0).abs() < 1e-3, "onset at 0.325 of the edge, got {onset}");
         // A higher setting starts the fade earlier.
         assert!(terrain_lod_soften_end(ring_edge, 0.75) < terrain_lod_soften_end(ring_edge, 0.25));
+    }
+}
+
+/// #7417 — the texture budget must be in force before the wanted-mip pass. A
+/// pass without one asks for every promotion unchecked, and on the first frame
+/// the host took four of them, which landed past a tight budget (Skyrim
+/// `WhiterunBanneredMare` at 30 MiB peaked at 1.06 times it). The order is
+/// between two calls that need a live `VulkanContext`, so it is pinned from
+/// the source.
+#[cfg(test)]
+mod texture_budget_ordering_tests {
+    #[test]
+    fn the_budget_is_set_before_the_wanted_pass_and_changes_flush_after_the_reads() {
+        let src = byroredux_core::source_scan::production_text(include_str!("app_frame.rs"));
+        let at = |needle: &str| {
+            src.find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` not found in app_frame.rs"))
+        };
+        assert!(
+            at("ctx.prepare_texture_streaming(") < at("streamer.update_wanted("),
+            "the wanted pass hands out reads: it needs this frame's budget"
+        );
+        assert!(
+            at("streamer.step(") < at("ctx.flush_texture_streaming("),
+            "reads that landed this frame upload this frame"
+        );
     }
 }
