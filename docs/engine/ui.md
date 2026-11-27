@@ -1218,6 +1218,34 @@ one activation for it, and a pair outside every tile yields none. The first live
 surface for a non-HUD menu is the FNV dialogue document (Phase 4, above), which
 routes the frame's input through `route` / `owns_input`.
 
+#### Race menu (GUI-PAGE-002 / 003)
+
+As built (checked 2026-11-27); the promise and what is still open are the
+[PRD's](../prd/game-ui-integration.md#58-native-pages-and-residues-gui-page).
+
+- **Request.** ObScript `ShowRaceMenu` and Papyrus `Game.ShowRaceMenu()`
+  (`Effect::ShowRaceMenu`) queue a `race` menu request;
+  `script_ui_request_system` puts the screen on `ChargenSession`
+  (`byroredux/src/chargen.rs`). The script is not held. Fallout 4's appearance
+  modes (`Effect::ShowAppearanceMenu`) carry a fallback, so they are only
+  reported (S4).
+- **Surface.** The native character-creation page on every game; no original
+  movie or document is opened. It publishes in the registry under the game's
+  menu name (`RaceSex Menu` on Skyrim, `RaceSexMenu`, code 1036, on FO3 /
+  FNV), which `MenuMode` and `Begin MenuMode 1036` read.
+- **Name.** Skyrim's and Oblivion's race menus take the name, so there the
+  request queues the sex-and-race screen and then a name screen under the same
+  menu. FO3 / FNV name the player in a separate menu.
+- **Answer.** The page, or the `chargen` console command, applies the choice
+  (`chargen::apply`: `CharacterIdentity`, and a player body rebuild when the
+  sex or race changes). `ui.close`, with `accept` or `cancel`, closes the menu
+  unchanged, along with its queued screens. With no native UI the screen is
+  dismissed unchanged. Which screen is open is never saved.
+- **Open** (#6667): the `m48-race-menu.sh` gate (PRD §7.2 scenario 9), the
+  MQ101 known issue, whether the stage 0 `MQQuickstart` conditions are
+  honoured (#6824), and whether the original call returns before its menu
+  closes.
+
 #### Strings and fonts the design depends on
 
 - **`-s` strings (GUI-FONT-005).** They are XML entities (`&-sContinue;`), not
@@ -1525,8 +1553,9 @@ pin, plus a compass-band ink check (327 columns). Corpus facts and
 the graft/instantiate render are pinned env-gated in
 `crates/menuxml/tests/fo3_corpus.rs` (`BYROREDUX_FO3_DATA`). The
 FO3 HUD art ships untinted (white ticks/strip) — the engine tints
-via `systemcolor &hudmain;`, whose default constant is not yet
-pinned from game settings, so M48.5 renders art-native colors.
+via `systemcolor &hudmain;`. M48 Phase 0 found the default in the shipped
+`Fallout_default.ini` ([PRD §9.1](../prd/game-ui-integration.md#91-phase-0-results-2026-11-08-6643-corrected-2026-11-27)),
+but no code applies it yet (GUI-HUD-006), so M48.5 renders art-native colors.
 
 ## Scaleform HUD (M48.6 Skyrim / M48.7 Fallout 4)
 
