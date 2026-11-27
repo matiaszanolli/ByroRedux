@@ -840,7 +840,7 @@ MenuXml input parts are Phases 2 and 3. Evidence is in `docs/data/game-ui/`
   menuCanBeVisible` with `kRendersUnderPauseMenu`; Skyrim's lever is not
   named; FO3 / FNV's HUD runs a state machine (`HUDMainMenu::HUDStates`) fed by
   the other menus. Default until measured: the registry keeps the HUD open and
-  nothing hides it; the draw rule is a runtime-measured item (filed).
+  nothing hides it; the draw rule is a runtime-measured item (#7430).
 - **Surfaces and Q1.** The target surface per menu is derived, not hand-set:
   `scripts/game-ui-data/join_surfaces.py` appends `target_surface`,
   `fallback_surface` and the basis to each `menu-inventory-*.tsv`. A movie whose

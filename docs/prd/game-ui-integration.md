@@ -1,6 +1,6 @@
 # Game UI Integration — Product Requirements
 
-**Status**: ACTIVE (2026-11-27). Revision 12 records the owner's approval of revision 11 (review round 4); the history is §12. Statements about
+**Status**: ACTIVE (2026-11-27). Revision 13 names #7430 as the owner of two open verify items; the history is §12. Statements about
 how an original engine, file format or tool behaves cite external sources
 (the Creation Kit / GECK / CS wikis, xEdit's record definitions, Autodesk's
 Scaleform documentation, the Ruffle project); a claim that could not be
@@ -242,8 +242,7 @@ methods:
   the modal's flags (GUI-REG-004). Phase 0 settled the reported half for
   Skyrim and Fallout 4 (§9.1). **Phase 0: verify** what the original draws in
   that state, settled by a capture of the original or a documented source (the
-  public SKSE64 / F4SE definitions and the GECK / CS pages name no rule); no
-  open issue owns this (§9.1).
+  public SKSE64 / F4SE definitions and the GECK / CS pages name no rule); #7430 (§9.1).
 - **GUI-REG-004.** Each menu's flags MUST come from a per-game table in which
   every entry carries either a cited source or the mark `undocumented` with
   the engine default it gets and why. Phase 0 sourced the Skyrim and Fallout 4
@@ -253,7 +252,7 @@ methods:
   F4SE's custom-menu `MenuData` (§2) gives one vanilla value
   ([FO4 CK: MenuData Struct](https://falloutck.uesp.net/wiki/MenuData_Struct_-_UI)).
   **Phase 0: verify** the entries still `undocumented`, settled by a
-  documented source for them; no open issue owns this (§9.1).
+  documented source for them; #7430 (§9.1).
 - **GUI-REG-005.** All open movies MUST render through the one process wgpu
   device, shared since #2733 (`shared_descriptors`,
   `crates/ui/src/player.rs`), so that stacking N menus does not create N GPU
@@ -844,8 +843,8 @@ native-page residues, #6825; the AVM2 path adapter, which Phase 2 built with its
 
 | Item | Why open | Owner |
 |---|---|---|
-| GUI-REG-003, HUD *drawn* under a modal | No public source names the rule. The registry default (HUD keeps drawing) stands until measured. | **No open issue** (the Phase 1 owner, #6653, is closed) |
-| Oblivion / FO3 / FNV menu flags and unnamed menu codes (GUI-REG-004 / -006) | Undocumented in every source read; the engine default stands. Skyrim and Fallout 4 menus with no sourced flags are in the same state. | **No open issue** (#6653 is closed) |
+| GUI-REG-003, HUD *drawn* under a modal | No public source names the rule. The registry default (HUD keeps drawing) stands until measured. | #7430 |
+| Oblivion / FO3 / FNV menu flags and unnamed menu codes (GUI-REG-004 / -006) | Undocumented in every source read; the engine default stands. Skyrim and Fallout 4 menus with no sourced flags are in the same state. | #7430 |
 | Skyrim `call` callback reaching the vitals and compass angle | Bytecode reading only. The HUD meters are fed through the path service, so nothing depends on it today. | #6826 |
 | Ruffle's behaviour for the `provisional:` extension rows | Rest on Autodesk semantics, not a Ruffle test. | #6826 |
 | Skyrim LE: `ToggleFavorite`, exported `.gfx` menu paths | Catalog and path-resolution gaps; LE is in scope (§7.1). | #6826 |
@@ -1062,3 +1061,4 @@ Each needs the project owner. The recommendation is the first option.
 | 10 | 2026-11-22 | Review round 3 folded in: §3.1 replaced by links to the checked-in menu inventories, the ui.md registry design and the ROADMAP M48 row, keeping only the rows not yet built, re-measured at HEAD (Scaleform extensions, H1 host behaviour, the `-s` strings, UI frame cost, the race menu's exit, wave 2 and Starfield); §1 dated to the draft; the menu registry defined as built and the Related row linked; §9 records Phases 1, 2 and 4 closed and Phase 3 partly built; the requirement clauses the built phases made untrue dropped or re-pointed at the new §3.1 rows (GUI-REG-001, -002, -005, -007…-011, GUI-HOST-001, -004, GUI-PATH-001, GUI-HUD-001, -004, -005, GUI-GFX-001, GUI-EVT-001, -003, -005, -006, GUI-XML-001, GUI-PAGE-002, -003, -006, GUI-OPS-005); the Tracking line on one line; the status line trimmed | claude: revise |
 | 11 | 2026-11-27 | Review round 4 folded in. §9.1 and requirements corrected where refuted: vanilla uses `MenuMode` codes; FNV `VCG01` and FO3 `CG00` also call `ShowRaceMenu`, and no caller proves the call's return timing (GUI-PAGE-002 narrowed, GUI-PAGE-007 added as an engine choice). §3.1 rows 2–4, GUI-HUD-004, GUI-REG-005, line references, resolved verify notes and orphaned owners updated. Starfield moved out of §7.1 scope as Q6 decided (GUI-NG-009); Skyrim LE's gaps owned. Q7 decided: one narrow Ruffle text patch, GUI-NG-001 reworded. One observable per ID (GUI-REG-012, -013, GUI-XML-008…017); §6 rows 9–11; scenarios 8, 9, 11, 12; four stale HEAD citations in §2 and GUI-HOST-002; §8 homes and denominator; Phase 7; design owners; §9.1 shortened | claude: revise |
 | 12 | 2026-11-27 | Owner approved revision 11's scope changes: GUI-NG-001 narrowed by Q7; Starfield out of scope (GUI-NG-009); GUI-PAGE-007; host behaviour coverage published in the M48 row; Phase 7 and the split requirement IDs | owner: approved |
+| 13 | 2026-11-27 | #7430 filed to own the two verify items that had no open issue (the HUD draw rule under a modal; menu flags and codes with no source); GUI-REG-003, GUI-REG-004 and the §9.1 open table name it | — |
