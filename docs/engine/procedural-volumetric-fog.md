@@ -592,7 +592,8 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   air brightens the frame in step with the shaft contrast; a fix needs the owner's view of how much haze a shaft may
   cost, or a scene-adaptive exposure-aware gain, neither of which is built.
 - **Per-fixture noon and low-sun in-scatter (VLM-SH-006, 2026-11-08,
-  `docs/smoke-tests/exterior-shafts-content.sh`).** `render.debug volumetric_radiance` at the five fixtures' default
+  `docs/smoke-tests/exterior-shafts-content.sh`).** The script has since moved to the VLM-SH-012 views; this table is
+  from its earlier default-spawn form. `render.debug volumetric_radiance` at the five fixtures' default
   spawns, `renderer-stepped`, 1280x720, linear in-scatter radiance (frame mean / 95th / 5th percentile) and the finished
   frame's mean level, at 12:00, 07:00 and 17:30:
 
@@ -619,7 +620,8 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
 
 ### Content shaft pose scouting (VLM-SH-012, 2026-11-26)
 
-The owner named all five on 2026-11-27 (PRD VLM-SH-012; Oblivion's as temporary); none is checked into a script yet.
+The owner named all five on 2026-11-27 (PRD VLM-SH-012; Oblivion's as temporary), and they are now checked into the content script
+([record](#content-shaft-contrast-from-the-checked-in-script-vlm-sh-006--012-2026-11-27)). The table below is the scouting measurement.
 Each was measured with PRD §2's content shaft
 contrast from two runs of `exterior-shafts-content.sh` at the pose (`BYRO_CONTENT_CAMERA_POS` / `_FORWARD`), one with
 `BYRO_FROXEL_SUN_OCCLUSION=0`, and the pair was then run again (2026-11-26 and -27, release build, 1280x720). Each
@@ -673,6 +675,30 @@ success, so the first dump after a camera move belongs to the previous pose; dis
 `pick` after a camera jump listed only distant-LOD entries in the Skyrim cell the script runs stream in; read what
 loaded from the engine log, not from `pick`.
 
+### Content shaft contrast from the checked-in script (VLM-SH-006, -012, 2026-11-27)
+
+`exterior-shafts-content.sh all`, which now holds the five named views, their sample regions and the content contrast
+rule (PRD §2, §10 Q15). Release build of the engine source at `19f46251a`, RTX 4070 Ti, 1280x720, TAA,
+`renderer-stepped` with the static camera, cloud seed 0, each fixture's own weather, shipped haze floor: 50 captures,
+exit 0, all five views pass.
+
+| Fixture | Noon | Low sun | Contrast | Repeat | Repeat noise | Finished-frame pixels the shadow changes by > 4 of 255 |
+|---|---|---|---|---|---|---|
+| FNV | 0.0102 | 07:00 | 0.2346 | 0.2346 | 0.0000 | 16.0 % |
+| FO3 | 0.0082 | 07:00 | 0.1351 | 0.1351 | 0.0000 | 38.5 % |
+| Oblivion | 0.0000 | 17:30 | 0.1454 | 0.1454 | 0.0000 | 0.0 % |
+| Skyrim | −0.0006 | 07:00 | 0.2294 | 0.2237 | 0.0057 | 13.7 % |
+| FO4 | 0.0000 | 07:00 | 0.1539 | 0.1539 | 0.0000 | 25.8 % |
+
+- FNV, FO3, Oblivion and FO4 give the scouting contrasts to four decimals.
+- **Skyrim moves between runs.** Its four low-sun readings so far are 0.2346 and 0.2331 (scouting) and 0.2294 and
+  0.2237 (this run), a spread of 0.0109, and this run's repeat noise is about four times the scouting figure. All are
+  far above the 0.05 bar and twice either noise figure. The cause is not established; it is the one view whose
+  occluder streams in after the first grid loads (all ten of this run's logs show it loaded before the screenshot).
+- The verdict logic was checked against saved scouting captures: it reproduces the scouting values, and fails when
+  the shadow-off capture equals the shadow-on one, when the repeat pair reads zero (noise as large as the value), and
+  when the shadow-off region holds no in-scatter.
+
 ### Haze floor after the authored fog power (Q12 re-measure, 2026-11-19)
 
 PRD VLM-SH-011 asked for the floor-off / floor-on captures to be redone once the authored fog power entered the
@@ -714,8 +740,8 @@ zero in this mode, and FO3 comes out bit-identical, which is the control):
 The in-scatter ratios follow the extinction ratios (FNV 07:00 floor/authored 2.00, in-scatter x2.0; Oblivion 07:00
 5.00, x3.6), so the table is the floor acting and nothing else.
 
-**What this does not measure.** Shaft contrast on content (VLM-SH-006) still needs the depth-matched poses of
-VLM-SH-012, so no capture here says whether the floor makes a content shaft visible. Skyrim never binds, so it was
+**What this does not measure.** Shaft contrast on content (VLM-SH-006) still needed the depth-matched poses of
+VLM-SH-012 at the time (named and recorded 2026-11-27, above), so no capture here says whether the floor makes a content shaft visible. Skyrim never binds, so it was
 not captured; FO4 binds only at 06:00 and 20:00, which were not captured; Oblivion and FNV were captured at three
 hours. The PRD's rev 20 figures (FNV Goodsprings noon 0.000582 to 0.002704 /m) are for a different weather than this
 fixture's, which now resolves to Black Mountain through the region table; the two are not reconciled here.

@@ -32,14 +32,17 @@ changes; `GATE=0` makes it measure only. The three captures per game stay in the
 directory. It needs FNV and Skyrim SE data (`BYROREDUX_FNV_DATA`, `BYROREDUX_SKYRIMSE_DATA`), a display or
 `xvfb-run`, and Python with numpy and Pillow; exit `77` when one is missing.
 
-`exterior-shafts-content.sh` is the A8 measurement on content (VLM-SH-006, #6773). For FNV, FO3, Oblivion, Skyrim and
-FO4 it captures the default-spawn frame and the froxel in-scatter radiance view at 12:00, 07:00 and 17:30 in the
-deterministic `renderer-stepped` mode and prints the frame's mean / p95 / p5 in-scatter radiance with the finished-frame
-mean. It measures and exits `0`: a shaft contrast across a named occluder needs a lit and an occluded sample at one
-depth, which these poses do not offer. Needs the five games' data, a display or `xvfb-run`, a Vulkan device, and Python
-with numpy and Pillow. The `all` run exits `77` if any fixture is missing. Each capture uses isolated settings,
-and the measurement rejects frames that are not 1280 × 720. For one fixture,
-`BYRO_CONTENT_CAMERA_POS` and `BYRO_CONTENT_CAMERA_FORWARD` together pin a camera pose.
+`exterior-shafts-content.sh` is the A8 measurement on content (VLM-SH-006, -012, #6773). For FNV, FO3, Oblivion,
+Skyrim and FO4 it captures the view named for VLM-SH-012 in the deterministic `renderer-stepped` mode: the finished
+frame and the froxel in-scatter radiance view at 12:00 and the view's low-sun hour, with the froxel sun shadow on and
+off (`BYRO_FROXEL_SUN_OCCLUSION`), plus a repeat of the low-sun radiance pair (10 captures a game). It prints the shaft
+contrast over each view's fixed sample region and exits `1` unless every view's low-sun value is at least 0.05 and more
+than twice its repeat noise (PRD §10 Q15); noon is printed, not judged. A pass does not mean the shaft shows in the
+finished frame, and the Oblivion view is temporary. Needs the five games' data, a display or `xvfb-run`, a Vulkan
+device, and Python with numpy and Pillow. The `all` run exits `77` if any fixture is missing. Each capture uses
+isolated settings, and the measurement rejects frames that are not 1280 × 720. Setting `BYRO_CONTENT_CAMERA_POS` and
+`BYRO_CONTENT_CAMERA_FORWARD` together scouts another pose on one fixture: 12:00, 07:00 and 17:30, radiance
+statistics only, no verdict.
 
 `interior-shafts-content.sh` is A9, the interior day / night pass on real cells (VLM-INT-001 to -003, #6727). For each
 listed cell (the sun-path census's list: `shaft` cells the census predicts can show a shaft, `sealed` controls with no sun path, and `gap` cells with an authored sun and no medium, which are reported and never fail the run) it boots the cell held open
