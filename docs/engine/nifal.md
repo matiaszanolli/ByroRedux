@@ -189,15 +189,18 @@ renderer space. This is the cleanest category — it is the model the others sho
 match. No `Option` leaks; the consumer (`MeshRegistry::upload`) is format-agnostic.
 
 **Placement-root replacement (62782dd3b, 7f2d98944; #6820).** One per-game rule
-rewrites a transform on the raw scene before any importer runs: for FO3/FNV and
-FO4 a REFR *replaces* its model's root-node local transform rather than composing
-with it (`placement_replaces_model_root`, `cell_loader/references/import.rs`),
-applied through `prepare_placed_model_scene` → `NifScene::clear_root_transform`
+rewrites a transform on the raw scene before any importer runs: for FO3/FNV,
+FO4 and Skyrim a REFR *replaces* its model's root-node local transform rather
+than composing with it (`placement_replaces_model_root`,
+`cell_loader/references/import.rs`), applied through
+`prepare_placed_model_scene` → `NifScene::clear_root_transform`
 (`crates/nif/src/scene.rs`). It is a single mutation site on the raw tier, ahead
 of `extract_bsx_flags`, mesh/collision/light/emitter/animation import and the
-scene satellites, so every consumer sees the cleared scene. Oblivion, Skyrim,
-FO76 and Starfield still compose (`placement_replaces_model_root_only_for_verified_games`
-pins the set). Every REFR cache-fill path must route through it — the sync path
+scene satellites, so every consumer sees the cleared scene. Oblivion, FO76 and
+Starfield still compose (`placement_replaces_model_root_only_for_verified_games`
+pins the set). Skyrim joined in `c9e705a74` on the `WhiterunBanneredMare`
+kitchen floor; no other Skyrim cell, interior or exterior, was checked by eye.
+Every REFR cache-fill path must route through it — the sync path
 (including SCOL/PKIN children), the streaming worker (`streaming/pre_parse.rs`)
 and `precombined.rs`. Deliberate exemptions: ground-cover templates (not
 placements), LOD, and `_physics.nif`, which must keep its authored root.
