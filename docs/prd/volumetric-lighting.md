@@ -1,9 +1,11 @@
 # Volumetric Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-26). The owner approved revision 38, which folds in review round 3
+**Status**: ACTIVE (2026-11-27). The owner approved revision 38, which folds in review round 3
 (revision 39); revision 40 records the tracking repairs, revision 41 the `env.health` lines and the
 90 m shaft gate, and revision 42 the owner's Q13 decision with the reworded VLM-INT-007, approved at
-revision 43. The revision history is §12. This document covers
+revision 43. Revision 44 records the owner's Q14 decision on content shaft contrast, approved at
+revision 45. Revision 46 records the owner naming the five VLM-SH-012 poses and deciding the content
+pass bar (Q15); its reworded text awaits approval. The revision history is §12. This document covers
 the remainder of ROADMAP milestone M55 after the froxel fog slice, the transported
 combustion solver and the interior godray vertical slice shipped. Statements about
 how an original engine, a record format, a paper or another engine behaves cite
@@ -117,7 +119,7 @@ interior aperture dust floor (VLM-INT-008).
 | **Weather source** | Which authored record chose the weather in effect: a forced weather, a region weather table, a cell `XCCM`, or the climate. |
 | **Override lock** | The optional second argument of ObScript `ForceWeather` that keeps a forced weather until `ReleaseWeatherOverride` (`ForcedWeather::locked`). |
 | **Shaft** | A visible difference in in-scattered radiance between lit and occluded parts of the medium along the view, produced by the froxel sun or local-light term and RT visibility. |
-| **Shaft contrast** | On content: the mean linear radiance in a shaft region minus that in an adjacent occluded region of the same frame, in a `render.debug composite_term` capture. No script computes it yet (VLM-SH-012). |
+| **Shaft contrast** | On content: the share of the froxel in-scatter that the exterior sun shadow removes from a pose's sample region, 1 − (mean with the froxel sun shadow on) ÷ (mean with it off, `BYRO_FROXEL_SUN_OCCLUSION=0`), over the same pixels of two `render.debug volumetric_radiance` captures at one pose, each pixel made linear as −ln(1 − v) of its channel mean. The sample region is a rectangle fixed for the pose before measuring and is not re-selected from the captures being measured. A pose passes the **content contrast rule** when its low-sun value is at least 0.05 and more than twice the repeat noise, \|value − repeat value\|, the repeat being a second run of the same on / off pair (§10 Q15); the lab's solid-variant ceiling has no content counterpart. No checked-in script computes either yet (VLM-SH-012; §10 Q14). |
 | **Lab shaft contrast** | What `exterior-shafts.sh` computes: (lit − shadow) / (lit + shadow) over the wall body (rows 335–519, columns 375–904 at the default 55 m; the same part of the wall, projected into the 90 m camera, is rows 404–516, columns 479–800) of an 8-bit grayscale `render.debug volumetric_term` capture, which shows `max(1 − exp(−radiance), opacity)` and is not linear radiance. Lit columns are the gaps and shadow columns the slats, found from a finished frame of the open lab. |
 | **Sky aperture** | A proved source plane, `FogProfile::SkyAperture` ([handoff](../engine/interior-godrays-status.md#what-is-implemented)). |
 | **Portal sun** | The outdoor sun an interior's medium sees through an opening ([SKYAL interior lane](../engine/skyal.md#the-interior-outdoor-sky-lane-4927-2026-10-01)). |
@@ -500,8 +502,8 @@ The RT visibility replaces cascades (VLM-NG-006).
   [2026-11-07 sweep](../engine/procedural-volumetric-fog.md#shaft-range-sweep-vlm-sh-005) is the earlier range
   measurement.
 - **VLM-SH-006.** On each exterior fixture of §7.2, a noon and a low-sun
-  capture under the fixture's vanilla weather MUST be recorded with the
-  shaft contrast across a named occluder. Phase 0 measured clear-weather extinction (rev 3: 0.000349 /m at FNV Goodsprings, about 4.5 % optical depth over the froxel range) and §10 Q7 decided the haze floor (VLM-SH-010) on that evidence. **Content measurement, 2026-11-08** (`docs/smoke-tests/exterior-shafts-content.sh`, #6773): the in-scatter term at noon, 07:00 and 17:30 on the five fixtures is recorded in the fog design (the sun response is large on every fixture), but a contrast across a named occluder is not measurable at the default poses: the froxel view samples at pixel depth, so an occluder's column reads darker from nearness, not shadow. The restated need is VLM-SH-012.
+  capture under the fixture's vanilla weather MUST be recorded, the low-sun
+  one with the shaft contrast (§2) across a named occluder (§10 Q14). Phase 0 measured clear-weather extinction (rev 3: 0.000349 /m at FNV Goodsprings, about 4.5 % optical depth over the froxel range) and §10 Q7 decided the haze floor (VLM-SH-010) on that evidence. **Content measurement, 2026-11-08** (`docs/smoke-tests/exterior-shafts-content.sh`, #6773): the in-scatter term at noon, 07:00 and 17:30 on the five fixtures is recorded in the fog design (the sun response is large on every fixture), but a contrast across a named occluder is not measurable at the default poses: the froxel view samples at pixel depth, so an occluder's column reads darker from nearness, not shadow. The restated need is VLM-SH-012.
 - **VLM-SH-007.** Under a pinned camera and frozen clock, frame-to-frame
   luminance variation inside a shaft region MUST be captured as a frame
   sequence (`--bench-capture-every`, `--bench-capture-dir`) and reviewed by
@@ -536,20 +538,20 @@ The RT visibility replaces cascades (VLM-NG-006).
   horizon at night.
 - **VLM-SH-011.** The floor's default MUST be chosen from captures and
   published: on each exterior fixture of §7.2 a noon and a low-sun capture with
-  the floor off and on, the shaft contrast across a named occluder (VLM-SH-006)
-  and the mean luminance change of pixels outside any shaft. The default MUST
-  make the low-sun shaft pass VLM-SH-002's contrast rule and MUST keep the
+  the floor off and on, the low-sun shaft contrast across a named occluder
+  (VLM-SH-006) and the mean luminance change of pixels outside any shaft. The default MUST
+  make the low-sun shaft pass the content contrast rule (§2) and MUST keep the
   noon non-shaft luminance change inside the tolerance the owner reviews in
   the capture set, so the floor makes shafts visible without washing out the
   authored look. The floor MUST be adjustable at run time through the existing
   volumetrics settings surface and MUST report its live value on `env.health`.
   *The default value is decided* (§10 Q12;
   [record](../engine/procedural-volumetric-fog.md#haze-floor-re-measure-and-decision-vlm-sh-011)). **Open:** the
-  shaft-contrast clause has not been measured (#6773). It waits on VLM-SH-012's poses,
-  which must also define how VLM-SH-002's open-against-solid rule applies to a
-  content pose.
+  shaft-contrast clause has not been measured (#6773). It needs floor-off and floor-on
+  captures at the VLM-SH-012 poses, which are named but not yet in the content script.
+  The values in the scouting record were taken with the shipped floor only.
 
-- **VLM-SH-012.** Each exterior fixture of §7.2 MUST have one depth-matched pose, a far surface behind a named occluder, checked into `docs/smoke-tests/exterior-shafts-content.sh`, on which VLM-SH-006's shaft contrast is recorded at noon and at low sun. The owner names the poses and occluders (decided 2026-11-19); until they are named this requirement is open and A8's contrast cell is not met.
+- **VLM-SH-012.** Each exterior fixture of §7.2 MUST have one depth-matched pose, a far surface behind a named occluder, with its sample region (§2), checked into `docs/smoke-tests/exterior-shafts-content.sh`. VLM-SH-006's shaft contrast is recorded on it at one of the script's low-sun hours (07:00 or 17:30), and the same pose is also captured at noon, where no shaft is required (§10 Q14). The owner names the poses and occluders (decided 2026-11-19). **Named 2026-11-27:** all five poses of the [scouting record](../engine/procedural-volumetric-fog.md#content-shaft-pose-scouting-vlm-sh-012-2026-11-26), each with its camera, sample region, occluder and the low-sun hour measured there (07:00; Oblivion 17:30). The Oblivion pose is temporary: its occluder is the SpeedTree placeholder billboard, so it MUST be measured again when real tree geometry replaces that billboard, and its shaft does not show in the finished frame. **Open:** the poses are not checked into the script, which does not compute the contrast; until both are done this requirement is open and A8's contrast cell is not met.
 
 ### 5.4 Interior coverage (`VLM-INT`)
 
@@ -698,7 +700,7 @@ adds them.
 | A5 | Fog profile translation | `cargo test` names in VLM-HF-002, -004, -010, -011 plus the Phase 1 translate tests | none | all pass |
 | A6 | Grid seam | `docs/smoke-tests/fog-grid-seam.sh`: pinned `--camera-pos` / `--camera-forward`, `renderer-stepped`, captures at two `--fog-grid-far-m` values (a gate since Phase 4, tolerance 2.5 levels) | FNV and Skyrim exterior fixtures | VLM-HF-007 holds |
 | A7 | Exterior shaft lab | `docs/smoke-tests/exterior-shafts.sh`, `shaft_lab_golden_frame` | none | VLM-SH-002, -003, -005 and -009 pass |
-| A8 | Exterior shafts on content | `--bench-hold` + `byro-dbg`: `time.set 12`, `render.debug composite_term`, `screenshot`, then a low-sun hour | the `m-exteriors.sh` fixture cells for Oblivion, FO3, FNV, Skyrim, FO4 | per-pass ms recorded (VLM-SH-008); contrast recorded on the VLM-SH-012 poses (VLM-SH-006) |
+| A8 | Exterior shafts on content | `docs/smoke-tests/exterior-shafts-content.sh` at each VLM-SH-012 pose: `volumetric_radiance` and finished frames at noon and a low-sun hour, run again with `BYRO_FROXEL_SUN_OCCLUSION=0` | the `m-exteriors.sh` fixture cells for Oblivion, FO3, FNV, Skyrim, FO4 | per-pass ms recorded (VLM-SH-008); low-sun contrast recorded on the VLM-SH-012 poses (VLM-SH-006), each passing the content contrast rule (§2) |
 | A9 | Interior day / night | `--bench-hold` + `byro-dbg` per VLM-INT-002, `docs/smoke-tests/interior-shafts-content.sh` | the sun-path census list in [interior-shaft-openings](../engine/interior-shaft-openings.md#sun-path-census-vlm-int-001-measured-2026-11-09-6727): the cells with a marked aperture or `LightShaft` volumes in a Show Sky cell (FNV Nellis hangars, six FO4 cells), the controls with no such path, and the gap cells (the handoff's candidates, first list, mostly had none) | each listed `shaft` cell passes VLM-INT-002, each control VLM-INT-003, and VLM-INT-004 on both routes (all nine shaft cells passed both routes in the 2026-11-18 measurements). The whole list is recorded on one commit from a clean tree. `BYRO_BENCH_HOLD_FREEZE_SIM=1` MAY be used only for a direct-route sealed control whose live failure is traced to moving geometry, with a live-sun positive control under the same setting, and the result is recorded as frozen. **Not yet met:** the 2026-11-18 and -19 runs include uncommitted builds, and the 12-control batch passed 11 live; the twelfth, NCR Prison Block B, passed its four poses frozen |
 | A10 | Interior lab regression | `docs/smoke-tests/interior-godrays.sh` (existing) | none | unchanged pass |
 | A11 | Distant-ridge fade | Pinned-camera captures at increasing ridge distance; no script yet | FNV and Skyrim far-ridge fixtures under distant LOD, not yet named | VLM-AP-001: the ridge-to-sky linear luminance difference falls monotonically with distance, on the same tracked terrain point. Open |
@@ -723,7 +725,7 @@ count, exterior shaft contrast, shaft range or the parity score.
 |---|---|---|
 | Region weather coverage | exterior cells whose weather source is a region ÷ exterior cells a Weather-bearing region's `RPLD` polygon covers (VLM-REG-008) | per game master |
 | Profile field coverage | decoded fog and god-ray fields reaching `FogMedium` ÷ decoded fields not ruled out under VLM-HF-009 | per game |
-| Exterior shaft contrast | VLM-SH shaft contrast at noon and low sun | per exterior fixture |
+| Exterior shaft contrast | VLM-SH shaft contrast (§2) at low sun | per exterior fixture |
 | Shaft range | farthest passing occluder distance in the lab (VLM-SH-005) | per grid configuration |
 | Interior pass count | listed cells passing VLM-INT-002 to -004 ÷ listed cells | per game |
 | Converter coverage | VLM-INT-006 | per game, base and DLC |
@@ -954,6 +956,37 @@ as VLM-NG-006 instead of being reopened.
     the dust. That is a shader change that adds an engine-supplied medium to those
     cells' shafts, and their day / night results would need measuring again.
     **Decided** (2026-11-26): the recommendation — the behaviour stands.
+14. **Q14 — How is shaft contrast measured on content, and at which hours?**
+    Recommended: compare the same pixels with the froxel sun shadow on and off over
+    a region fixed per pose (§2), and require a shaft at low sun only. Noon is still
+    captured, and VLM-SH-011 still judges the haze's change outside any shaft there.
+    The earlier same-frame measure, a shaft region minus an adjacent occluded one,
+    had the wrong sign at the one FNV pose scouted on 2026-11-26: the shadowed sky
+    near the sun read brighter than the lit sky, with the froxel sun shadow both on
+    and off
+    ([scouting record](../engine/procedural-volumetric-fog.md#content-shaft-pose-scouting-vlm-sh-012-2026-11-26)).
+    That search found no distant shaft at noon among the views it tried around one
+    FNV occluder; it covered no other FNV site and no other fixture. The five
+    low-sun poses recorded afterwards read about 0.01 or less at noon; they were
+    chosen for low sun, and no noon pose was searched for on the other four.
+    Alternative: keep the same-frame measure and require a shaft at both hours. It
+    needs lit and occluded regions that scatter sunlight equally toward the camera,
+    and a pose with a distant shaft at noon on each fixture; neither has been shown.
+    **Decided** (2026-11-27): the recommendation.
+15. **Q15 — What content shaft contrast passes?**
+    Recommended: the two bars VLM-SH-002 sets for the open lab variant, as the
+    content contrast rule (§2): at least 0.05 and more than twice the repeat noise.
+    The five scouted poses read 0.135 to 0.235 on 2026-11-26 and -27, with repeat
+    noise of at most 0.0015
+    ([scouting record](../engine/procedural-volumetric-fog.md#content-shaft-pose-scouting-vlm-sh-012-2026-11-26)).
+    The bar was set after those values were read, on regions chosen at a strong part
+    of each shaft, so its use is to catch a later loss of contrast. It measures froxel
+    radiance, so a pose can pass while its shaft does not show in the finished frame,
+    as Oblivion's does. The lab's solid-variant ceiling is not carried over: a content
+    pose has no solid variant.
+    Alternative: record the value and set no bar. VLM-SH-011's contrast clause and
+    A8's contrast cell would then have no value that fails.
+    **Decided** (2026-11-27): the recommendation.
 
 ---
 
@@ -1030,3 +1063,6 @@ as VLM-NG-006 instead of being reopened.
 | 41 | 2026-11-26 | `env.health` now prints the cell-climate-over-region order and both interior dust values (closes the open notes on VLM-HF-008, VLM-INT-007 and -008), with the frame builder recording the aperture-floor decision. A lock-order inversion in the same command is fixed. `exterior-shafts.sh` runs VLM-SH-005's 90 m case, which passes; §2 gains the 90 m crop, the same wall area projected into that camera, because the 55 m crop reads sky and open haze there. VLM-INT-007 now records that Show Sky interiors get no shaft dust. No requirement or promise changed | — |
 | 42 | 2026-11-26 | Owner decision Q13: Show Sky interiors get no shaft dust, and the shipped behaviour stands. VLM-INT-007 reworded to apply only in interiors closed to the sky and to name Show Sky interiors as open sky; the VLM-SH-010 cross-reference, §3 row 24 and §6 row 9 follow. No code change. The reworded text awaits the owner's approval | claude: revise |
 | 43 | 2026-11-26 | Owner approved revision 42: VLM-INT-007 as reworded, with Q13 | owner: approved |
+| 44 | 2026-11-27 | Owner decision Q14: content shaft contrast compares the same pixels with the froxel sun shadow on and off over a region fixed per pose, and a shaft is required at low sun only. §2, VLM-SH-006, -011, -012, A8 and the §8 metric follow. Two consequences are part of the new wording: the capture view is `volumetric_radiance`, not `composite_term`, whose sky and surface light would dilute the share; and VLM-SH-002's rule still has no content pass bar. Candidate poses for all five fixtures are recorded in the fog design; none is named or checked in. No code change. The reworded text awaits the owner's approval | claude: revise |
+| 45 | 2026-11-27 | Owner approved revision 44: Q14, with its two stated consequences, and the reworded §2, VLM-SH-006, -011, -012, A8 and §8 metric | owner: approved |
+| 46 | 2026-11-27 | Owner decisions: all five scouted poses named for VLM-SH-012, Oblivion's as temporary, and Q15, the content pass bar. §2 gains the content contrast rule; VLM-SH-011 and A8 require it; VLM-SH-011's open note and VLM-SH-012 follow. The poses are not yet in the content script, so both requirements stay open. No code change. The reworded text awaits the owner's approval | claude: revise |

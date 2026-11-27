@@ -617,6 +617,62 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
   inject figure above is one pose, not the fixture set).
 
+### Content shaft pose scouting (VLM-SH-012, 2026-11-26)
+
+The owner named all five on 2026-11-27 (PRD VLM-SH-012; Oblivion's as temporary); none is checked into a script yet.
+Each was measured with PRD §2's content shaft
+contrast from two runs of `exterior-shafts-content.sh` at the pose (`BYRO_CONTENT_CAMERA_POS` / `_FORWARD`), one with
+`BYRO_FROXEL_SUN_OCCLUSION=0`, and the pair was then run again (2026-11-26 and -27, release build, 1280x720). Each
+sample region is 100 x 32 pixels of distant surface (view depth at least 128 m, checked against a held-session depth
+capture). It was **chosen at a strong part of that pose's shaft** from frozen held-session captures (by hand on FNV,
+by a best-rectangle search on the others) and then measured on the script runs, so a contrast says how strong the
+shaft is there, not across the frame.
+
+| Fixture | Occluder (REFR) | Camera position | Camera forward | Region: columns, rows | Low sun: contrast, repeat | Noon | Finished-frame pixels the shadow changes by > 4 of 255 |
+|---|---|---|---|---|---|---|---|
+| FNV | `DLC03SatelliteDish01` (`000E7125`) | `-891,8327,-1988` | `0.97269,0.17365,0.15406` | 600–699, 204–235 | 07:00: 0.2346, 0.2346 | 0.0102 | 16.0 % |
+| FO3 | `MegatonChurchofAtom` (`0001CBF2`) | `-4022,12068,26501` | `0.88773,0.43837,0.14060` | 571–670, 261–292 | 07:00: 0.1351, 0.1351 | 0.0082 | 38.5 % |
+| Oblivion | `TreeSugarMapleForestSU` (`0006276B`) and neighbouring trees | `2048,3380,-1848` | `-0.80671,0.57358,0.14224` | 432–531, 149–180 | 17:30: 0.1454, 0.1454 | 0.0000 | 0.0 % |
+| Skyrim | `SFarmhouseWindMillDirt02Whiterun` (`0005CA6C`) | `16747,-4350,18321` | `0.93935,0.30902,0.14878` | 616–715, 226–257 | 07:00: 0.2346, 0.2331 | −0.0002, −0.0006 | 13.6 % |
+| FO4 | brick building in precombined geometry (no per-object REFR; `largebrickwall01`) | `2048,964,-1848` | `0.80907,0.57358,0.12814` | 724–823, 396–427 | 07:00: 0.1539, 0.1539 | 0.0000 | 25.8 % |
+
+The last column is the low-sun hour, shadows on against off. Occluders were identified with `pick`, which tests
+bounding spheres, at world points read from the depth captures: it names the structure, not the triangle that casts
+the sampled shadow.
+
+What limits each pose:
+
+- **Visibility.** With the froxel sun shadow off, the FNV, FO3, FO4 and Skyrim frames carry a haze or glow that the
+  shadow takes away; it is plainest on FO3 (a beam under the building's overhang) and faint on Skyrim. **The Oblivion
+  shaft does not show in the finished frame at all**: no pixel changes by more than 4 levels.
+- **Oblivion's occluder is a stand-in.** The engine draws SpeedTree trees as `sptplaceholderbillboard`, so real tree
+  geometry would need the pose measured again.
+- **Skyrim streams its occluder in.** The camera and windmill are in cell (4,−5), outside the 3x3 the script's
+  `--grid 2,-4` loads first. Streaming follows the camera; the four low-sun radiance logs checked show
+  `PelagiaFarmExterior` loaded before the screenshot. It is also the one pose whose repeat differs.
+- **Eye height.** The Oblivion and FO4 poses are at the fixture's default spawn position (turned toward the shaft).
+  The others were placed with the free camera, and no one has checked that a player can stand there.
+
+FNV detail (weather `NVBlackMountainWeather` through the region override; sun at 07:00 `[0.964, 0.220, 0.148]`):
+
+- Over the 17,903 distant pixels that lost more than 15 % at 07:00, the sun shadow removes 24.7 % of the froxel
+  radiance. The pixels were picked by that threshold from the same captures, so this locates the shaft and is not a
+  contrast over a fixed region. On those sky pixels the finished frame changes by less than 1 of 255, against a
+  bright overcast sky; the same shadow is visible lower down, on the unlit crater wall beside the dish pedestal.
+- No usable distant shaft at 12:00 or 17:30 at this pose. Two other views around the dish, in held sessions only,
+  removed 17 to 18 % at 17:30, when the sun stands about 32 degrees high against 13 at 07:00. No view tried around
+  the dish had a distant shaft at noon.
+- **The same-frame contrast has the wrong sign.** In held sessions at the 07:00 pose, with lit and shaded regions
+  picked from the captures, (lit − shaded) / lit was −0.650 with the froxel sun shadow on (lit 0.0871, shaded
+  0.1437) and −1.165 with it off: fog scatters more sunlight toward the camera near the sun, which outweighs the
+  shadow. This is why PRD §10 Q14 compares the same pixels.
+
+Three traps for the next capture. Two live sessions do not share a fog noise state, which reads as shadow; freeze
+them (`--bench-mode renderer-stepped` with `BYRO_BENCH_HOLD_FREEZE_SIM=1`). `depth.dump` re-arms after each
+success, so the first dump after a camera move belongs to the previous pose; discard it. In a frozen held session,
+`pick` after a camera jump listed only distant-LOD entries in the Skyrim cell the script runs stream in; read what
+loaded from the engine log, not from `pick`.
+
 ### Haze floor after the authored fog power (Q12 re-measure, 2026-11-19)
 
 PRD VLM-SH-011 asked for the floor-off / floor-on captures to be redone once the authored fog power entered the
