@@ -68,7 +68,7 @@ use crate::components::IsLodTerrain;
 use super::exterior::ExteriorWorldContext;
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
 use super::lod_support::{
-    lod_source_cell_exists, release_lod_gpu_resources, retain_resident,
+    keys_with_stale_holes, lod_source_cell_exists, release_lod_gpu_resources, retain_resident,
     worldspace_cell_bounds, LodLoadGate, LodReconcileInput, LodWorkBudget,
 };
 
@@ -97,21 +97,23 @@ pub(crate) struct ObjectLodBlock {
     pub(crate) extra_texture_handles: Vec<u32>,
     /// The cells of this (level-4, baked `.bto`) quad that were left out because full detail covers them
     /// (DLOD-OBJ-002): bit `(cy - qy) * 4 + (cx - qx)`, as [`super::lod_coverage::quad_resident_mask`]. `0` for
-    /// a whole quad. A resident quad whose mask no longer matches the full-detail residency is respawned.
+    /// a whole quad. A resident quad, drawn or empty, whose mask no longer matches the full-detail residency is
+    /// respawned ([`keys_with_stale_holes`]).
     pub(crate) hole_mask: u16,
 }
 
 impl ObjectLodBlock {
-    /// Sentinel for a quad that has no baked `.bto` (most do not). Inserted
-    /// so the streaming reconcile does not re-extract a missing archive entry
-    /// on every cell-boundary crossing.
-    pub(super) fn empty() -> Self {
+    /// Sentinel for a quad that produced nothing: no baked file (most quads have none), or nothing left once
+    /// the `hole_mask` cells were left out. Inserted so the streaming reconcile does not re-extract it on every
+    /// cell-boundary crossing. It records the mask it was built with, so it goes stale when that mask changes
+    /// (#7431): the cells it left out may be the only ones that had anything to draw.
+    pub(super) fn empty(hole_mask: u16) -> Self {
         Self {
             entities: Vec::new(),
             mesh_handles: Vec::new(),
             texture_handle: 0,
             extra_texture_handles: Vec::new(),
-            hole_mask: 0,
+            hole_mask,
         }
     }
 }
@@ -194,7 +196,7 @@ pub(crate) fn stream_object_lod_blocks(
         refine_within: -1,
         world_bounds: worldspace_cell_bounds(wctx),
         // #3502 — the object ring's only fallback for a missing quad is the
-        // `ObjectLodBlock::empty()` sentinel below, so subdividing into an
+        // `ObjectLodBlock::empty` sentinel below, so subdividing into an
         // unbaked level draws nothing. FO3 bakes 93 of its 366 plain object
         // quads at level 8 with no level-4 sibling (the archive's 422
         // `blocks\` entries also carry 54 `.high.` variants and 2
@@ -289,16 +291,14 @@ pub(crate) fn stream_object_lod_blocks(
     let mut unloaded = 0usize;
 
     // A resident quad whose hole mask no longer matches full-detail residency (a cell entered or left the
-    // resident set) is respawned: drop it so it becomes a candidate again below.
-    let stale: Vec<(i32, i32, i32)> = blocks
-        .iter()
-        .filter(|(key, blk)| {
-            !blk.entities.is_empty() && blk.hole_mask != hole_masks.get(key).copied().unwrap_or(0)
-        })
-        .map(|(key, _)| *key)
-        .collect();
+    // resident set) is respawned: drop it so it becomes a candidate again below. Empty sentinels too (#7431).
+    let stale = keys_with_stale_holes(blocks, |blk| &blk.hole_mask, |key| {
+        hole_masks.get(key).copied().unwrap_or(0)
+    });
     for key in stale {
-        if let Some(blk) = blocks.remove(&key) {
+        if let Some(blk) = blocks.remove(&key)
+            && !blk.entities.is_empty()
+        {
             unload_object_lod_block(world, ctx, &blk);
             unloaded += 1;
         }
@@ -328,12 +328,13 @@ pub(crate) fn stream_object_lod_blocks(
         if !gate.admit(budget, ctx.mesh_registry.prop_geometry_admission_open()) {
             break;
         }
+        let hole_mask = hole_masks.get(&(level, qx, qy)).copied().unwrap_or(0);
         let quad = ObjectLodQuadKey {
             scheme,
             level,
             qx,
             qy,
-            hole_mask: hole_masks.get(&(level, qx, qy)).copied().unwrap_or(0),
+            hole_mask,
         };
         match spawn_object_lod_quad(world, ctx, tex_provider, wctx, quad) {
             Some(blk) => {
@@ -342,11 +343,11 @@ pub(crate) fn stream_object_lod_blocks(
                 }
                 blocks.insert((level, qx, qy), blk);
             }
-            // No baked mesh for this quad — remember so we don't re-extract on
+            // Nothing to draw for this quad — remember so we don't re-extract on
             // every boundary crossing. A pool refusal (the quad was abandoned
             // whole by `spawn_object_lod_quad`) leaves no sentinel.
             None if gate.miss(budget, ctx.mesh_registry.prop_geometry_admission_open()) => {
-                blocks.insert((level, qx, qy), ObjectLodBlock::empty());
+                blocks.insert((level, qx, qy), ObjectLodBlock::empty(hole_mask));
             }
             None => break,
         }

@@ -1,6 +1,6 @@
 # Distant LOD Completion — Product Requirements
 
-**Status**: SHIPPED (2026-11-27). Revision 10 records the owner's decision Q8: a family whose files carry no per-cell partition is Gapped by data. Revision 9 folds in review round 3, including one gap Q8 does not cover: FO3's `.dtl` tree ring (F9) is still Drawn, gapped (§3.2). Revision 8 moved the PRD to SHIPPED on 2026-11-19; it is retained as history. Revision 7 records the Phase 4 terrain-LOD calibration (DLOD-TERR-001, -002). Revision 6 records the Phase 0 census results (§9.1). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2:
+**Status**: SHIPPED (2026-11-27). Revision 11 records the #7431 fix: FO3's `.dtl` trees are retired per cell and the gate counts Oblivion's and FO3's tree moat (§3.2). Revision 10 records the owner's decision Q8: a family whose files carry no per-cell partition is Gapped by data. Revision 9 folds in review round 3. Revision 8 moved the PRD to SHIPPED on 2026-11-19; it is retained as history. Revision 7 records the Phase 4 terrain-LOD calibration (DLOD-TERR-001, -002). Revision 6 records the Phase 0 census results (§9.1). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2:
 every HEAD claim re-checked on 2026-11-03, Skyrim's tree-LOD shape and the
 Distant LOD Multiplier sub-record sourced, the far-field-shadow non-goal
 aligned with the Reference Lighting PRD's decided Q4, descriptors given
@@ -170,10 +170,11 @@ Cross-cutting state, the same date:
 
 ### 3.2 State since ship
 
-The state at HEAD on 2026-11-27. The code was read that day; runtime
-results are those of revision 8's runs on 2026-11-19, and nothing was re-run.
+The state at HEAD on 2026-11-27, with the #7431 fix. That day
+`m-exteriors.sh all boundary` passed on all five profiles, and Fallout 3's
+Wasteland was run at A5's pose and as a `grid-cross` traversal from it.
 §3 defines Drawn with zero moat cells, but the gate counts a moat only for
-object quads and Skyrim's `.btt` trees. Where the last column says "no", the
+object quads and the tree rings. Where the last column says "no", the
 absence of a moat is a reading of the code, not a measurement.
 
 | # | State | Basis | Moat counted |
@@ -182,29 +183,34 @@ absence of a moat is a reading of the code, not a measurement.
 | F2 | Drawn | `terrain_lod.rs`; same holed blocks | no |
 | F3 | Drawn | `terrain_lod.rs`; same holed blocks | no |
 | F4 | Drawn | per-cell suppression at level 4 (#6639); zero object moat on the Skyrim and FO4 boundary runs | yes |
-| F5 | Gapped by data | one `NiTriShape` per quad, no segment table (V7); nonzero object moat on the FO3 and FNV boundary runs | yes |
+| F5 | Gapped by data | one `NiTriShape` per quad, no segment table (V7); resident objects with a nonzero object moat on the FNV boundary run and on FO3 Wasteland. The FO3 boundary profile (MegatonWorld) draws no object quad | yes |
 | F6 | Drawn | one unit per `.lod` cell, wanted only outside the resident set | no |
-| F7 | Drawn | crossed cards (#6638); one unit per `.lod` cell, wanted only outside the resident set (`tree_lod_legacy.rs`) | no |
+| F7 | Drawn | crossed cards (#6638); one unit per `.lod` cell, wanted only outside the resident set (`tree_lod_legacy.rs`); zero tree moat on the Oblivion boundary run | yes |
 | F8 | Drawn | per-cell hole mask on straddling quads (#6639); zero tree moat on the Skyrim boundary run | yes |
-| F9 | Drawn, gapped | authored flat meshes (DLOD-TREE-011); a `.dtl` file whose footprint holds a resident cell is still dropped whole (`footprint_has_resident_cell`, `tree_lod_legacy.rs`) | no |
+| F9 | Drawn | authored flat meshes (DLOD-TREE-011); a `.dtl` file that straddles the resident boundary draws the trees of its non-resident cells (#7431); zero tree moat and overlaps on both Wasteland runs, zero tree churn on the traversal | yes |
 | F10 | Read | `parse_lod_settings_origin` (`lod_support.rs`) | n/a |
 | F11 | Read | `parse_dlodsettings` (`legacy_lod_index.rs`); the SW cell is consumed, and the `DlodSettings` rustdoc says the other fields have no consumer | n/a |
 
 The separate tree family on FNV and FO4, the unnumbered row of §3.1, is
 still Not authored.
 
-`tree_moat_cells` is computed from Skyrim's `.btt` ring only
-(`update_lod_coverage`, `streaming_helpers.rs`; `tree_load_cells` returns
-`None` for every other title), so it reads 0 on Oblivion and Fallout 3
-whatever is drawn. DLOD-GATE-005 is therefore met for object quads and
-Skyrim's trees only.
+**F9's gap, found and closed on 2026-11-27 (#7431).** From #6638 until that
+day a `.dtl` file touching a resident cell was dropped whole, and
+`tree_moat_cells` was counted for Skyrim's `.btt` ring only, so the gate read
+0 for Oblivion and Fallout 3 whatever was drawn. A control build with the new
+count and the old whole-file drop reads a nonzero tree moat at A5's pose; the
+fixed build reads 0 there. With this, every family that DLOD-G-001 and the
+Phase 2 coverage exit count on Oblivion and Fallout 3 is Drawn or Read. For
+the terrain families (F2, F3) on both titles, and Oblivion's building
+placements (F6), that rests on the code, because the gate counts no moat for
+them.
 
-F9 is not Gapped by data: each `.dtl` record carries a position, so the file
-can be split by cell. Q8 does not cover it. On Fallout 3, DLOD-TREE-008
-(SHOULD) is not met, and DLOD-G-001 and the Phase 2 coverage exit stay
-unmet. As of 2026-11-27 the owner has not accepted this gap. #7431, filed
-that day, tracks it together with the missing moat count. The SHIPPED status
-was decided before this finding.
+The same day, DLOD-BAND-007's default-radius run on Fallout 3's Wasteland
+read `tree_resident=0` as required, but `verdict=FAIL`: the geometry pool was
+full and held back distant-LOD quads of other rings. A build without the
+#7431 change reads the same coverage line, so the failure is not that
+change's. #6638 recorded PASS for this run on 2026-11-08; what changed since
+was not investigated.
 
 ---
 
@@ -688,7 +694,7 @@ Not published at this granularity as of 2026-11-27:
 
 | Metric | Why not |
 |---|---|
-| Family coverage | no run measured it, and the gate counts no moat for several families (§3.2) |
+| Family coverage | no run reports it, and the gate counts no moat for the terrain families or the building placements (§3.2) |
 | Tree-LOD parse rate, other than FO3's | no dated per-title result was found |
 | Frame-time delta | A11 is recorded only as a range across all scene and configuration pairs, in the [readiness plan](../engine/exterior-readiness-plan.md#reversed-z-depth-m35-phase-5) |
 
@@ -769,8 +775,8 @@ first moat counts are published in the M35 row; A8 passes.
 -007 and -009 to -011, DLOD-BAND-002 and -007 as Q7 decides, and
 DLOD-PERF-001 to -003. Exit: A3, A4, A5 and A6 pass; tree-LOD parse rate is
 100% on FO3; family coverage is 100% on Oblivion and FO3, with families
-Gapped by data left out (Q8). At HEAD on 2026-11-27 the FO3 coverage exit
-is not met, because of F9 (§3.2).
+Gapped by data left out (Q8). The FO3 coverage exit was unmet until
+2026-11-27 (#7431); §3.2 records what it now rests on.
 
 **Phase 3 — No moat.** Ships DLOD-OBJ-002 to -006 and DLOD-TREE-008, as Q1
 decides. Exit: A1 to A3 pass with both moat counts at 0 wherever V6 and V7
@@ -955,3 +961,4 @@ marked otherwise:
 | 8 | 2026-11-19 | → SHIPPED. Phase exits re-checked on release builds of this date (HEAD `cbfb2b094` at the start of the runs): `lod_family_census`, A6 (108 of 108 `.dtl`, 32 275 trees), A7 (53 descriptors) and A8 pass with game data required; `m-exteriors.sh all boundary` passes on all five profiles (A1 to A4: Skyrim `tree_resident=97`, Oblivion `tree_resident=209` and `placement_resident=17`, moat 0 on Skyrim and FO4, FNV 52 and FO3 MegatonWorld 112 as at Phase 1); A5 reads `tree_resident=12` on FO3 Wasteland. A9 to A11 stand on the control-build records of 2026-11-07 and 2026-11-10 ([exterior readiness plan](../engine/exterior-readiness-plan.md#reversed-z-depth-m35-phase-5)); the pre-flip build was not re-run. FO3 / FNV `blocks\` quads stay Drawn, gapped by data (DLOD-OBJ-005), so §8's family coverage is below 100% on those two titles under the strict reading of §3. The per-title figures move to the ROADMAP compatibility matrix as §8 says | — |
 | 9 | 2026-11-27 | Review round 3 folded in: "today" read as the approval baseline, state since ship added (§3.2); DLOD-TREE-006 narrowed and -011 added for FO3's shipped flat meshes; DLOD-DEPTH-002 split into -002 and -007 to -009; A3, A7 and A10's record; V1, V12, Q6 and §6 sourcing; DLOD-PERF-003 miss recorded; unpublished metrics listed (§8); Q7 records the 2026-11-08 V1 ruling; unlogged 2026-11-07 / -08 edits noted. Found while folding in: the gate counts no moat for Oblivion or FO3 trees, and F9 is still Drawn, gapped. Follow-ups filed: #7431 (that gap and count) and #7432 (DLOD-PERF-003). Not folded: earlier log rows and the other long §9.1 cells are left as written | claude: revise |
 | 10 | 2026-11-27 | Q8: new state Gapped by data, applied to F5; G-001, the thesis corollary, DLOD-OBJ-005, family coverage and the Phase 2 exit changed to match. The question approved named only the `blocks\` gap; F9 is not covered | owner: approved |
+| 11 | 2026-11-27 | #7431: FO3's `.dtl` trees are retired per cell (DLOD-TREE-008), with DLOD-BAND-007 now enforced explicitly; tree moat counted for Oblivion and FO3 (DLOD-GATE-005). §3.2 and the Phase 2 note updated: F9 and F7 measured, F5's evidence corrected (the FO3 boundary profile draws no object quad), and the default-radius FO3 verdict failure recorded | — |

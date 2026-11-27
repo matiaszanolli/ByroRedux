@@ -144,13 +144,139 @@ fn dtl_file_names_parse_with_negative_coordinates() {
     assert_eq!(parse_dtl_name("meshes\\landscape\\lod\\wasteland\\trees\\other.level4.x0.y0.dtl"), None);
 }
 
-/// DLOD-TREE-007 -- a `.dtl` quad touching a resident full-detail cell is not drawn.
+/// A tree standing in the middle of cell `(cx, cy)`.
+fn tree_in_cell(cx: i32, cy: i32) -> DtlTree {
+    let centre = |c: i32| (c as f32 + 0.5) * 4096.0;
+    DtlTree { tree_type: 0, position: [centre(cx), centre(cy), 0.0], rotation: 0.0, scale: 1.0, ref_form_id: 1 }
+}
+
+/// Every cell within Chebyshev `radius` of `(0, 0)`.
+fn square(radius: i32) -> HashSet<(i32, i32)> {
+    (-radius..=radius).flat_map(|x| (-radius..=radius).map(move |y| (x, y))).collect()
+}
+
+fn dtl_files(quads: &[(i32, i32, i32)]) -> Vec<(i32, i32, i32, String)> {
+    quads.iter().map(|&(level, x, y)| (level, x, y, String::new())).collect()
+}
+
+/// A resident unit that drew one entity (or nothing, as a sentinel), built without `holes`.
+fn unit(drew: bool, holes: &[(i32, i32)]) -> LegacyTreeUnit {
+    let block = if drew {
+        let mut block = ObjectLodBlock::empty(0);
+        block.entities.push(1);
+        LegacyTreeBlock::Cards(block)
+    } else {
+        LegacyTreeBlock::sentinel()
+    };
+    LegacyTreeUnit { block, holes: holes.to_vec() }
+}
+
+/// #7431 / DLOD-TREE-008 -- a `.dtl` file that straddles the resident boundary is still wanted, built without
+/// its resident cells; only a wholly resident one is dropped. A level-8 quad covers 64 cells.
 #[test]
-fn a_dtl_quad_with_a_resident_cell_is_vetoed() {
-    let resident: HashSet<(i32, i32)> = [(5, 5)].into_iter().collect();
-    assert!(footprint_has_resident_cell(4, 4, 4, &resident));
-    assert!(!footprint_has_resident_cell(8, 4, 4, &resident));
-    assert!(footprint_has_resident_cell(0, 0, 8, &resident), "a level-8 quad covers 0..=7");
+fn a_straddling_dtl_quad_is_wanted_without_its_resident_cells() {
+    // Resident: cells -4..=4. The level-8 quad at (0, 0) covers 0..=7; the level-4 quad at (0, 0) is inside.
+    let resident = square(4);
+    let files = dtl_files(&[(8, 0, 0), (4, 0, 0), (8, 8, 0)]);
+    let wanted = wanted_dtl_quads(&files, (0, 0), 10, 5, &resident);
+    assert_eq!(wanted[&(8, 0, 0)].len(), 25, "cells 0..=4 in both axes are left out");
+    assert!(wanted[&(8, 0, 0)].is_sorted(), "the tree filter binary-searches the list");
+    assert_eq!(wanted.get(&(4, 0, 0)), None, "all 16 cells are resident");
+    assert_eq!(wanted[&(8, 8, 0)], Vec::<(i32, i32)>::new(), "nothing resident in it");
+    assert_eq!(wanted.len(), 2);
+}
+
+/// DLOD-TREE-007 / -008 -- the trees in the left-out cells are dropped and every other tree is kept, on both
+/// sides of the origin.
+#[test]
+fn only_the_trees_standing_in_left_out_cells_are_dropped() {
+    let trees = [tree_in_cell(4, 4), tree_in_cell(5, 4), tree_in_cell(4, 5), tree_in_cell(-3, -2)];
+    let mut holes = vec![(4, 4), (-3, -2)];
+    holes.sort_unstable();
+    assert_eq!(drop_dtl_trees_in_cells(&trees, &holes), [trees[1], trees[2]]);
+    assert_eq!(drop_dtl_trees_in_cells(&trees, &[]), trees, "no resident cell, nothing dropped");
+    // A cell's low edge belongs to it, its high edge to the next one.
+    let mut edge = tree_in_cell(0, 0);
+    edge.position = [4096.0, -4096.0, 0.0];
+    assert!(drop_dtl_trees_in_cells(&[edge], &[(1, -1)]).is_empty());
+}
+
+/// DLOD-BAND-007 -- a reach that ends inside the full-detail radius wants nothing, even though a level-8 file
+/// within reach extends past the resident cells and would draw trees beyond the reach.
+#[test]
+fn a_dtl_ring_inside_the_full_detail_radius_wants_nothing() {
+    // The default radius: 12 loaded, full-detail radius 13, FO3 reach 10. The quad covers 8..=15.
+    let (resident, files) = (square(12), dtl_files(&[(8, 8, 0)]));
+    assert!(wanted_dtl_quads(&files, (0, 0), 10, 13, &resident).is_empty());
+    // The A5 pose: radius 3, full-detail radius 4.
+    assert_eq!(wanted_dtl_quads(&files, (0, 0), 10, 4, &square(3)).len(), 1);
+}
+
+/// #7431 / DLOD-GATE-003 -- a resident cell inside a drawn unit counts as an overlap unless the unit was built
+/// without it. Sentinels draw nothing and never overlap.
+#[test]
+fn a_legacy_unit_overlaps_only_the_resident_cells_it_still_draws() {
+    let mut ring = LegacyTreeRing::default();
+    ring.blocks.insert((8, 0, 0), unit(true, &[(0, 0)]));
+    ring.blocks.insert((8, 8, 0), unit(false, &[]));
+    assert_eq!(ring.full_detail_overlaps(&[(0, 0), (9, 1)]), 0);
+    assert_eq!(ring.full_detail_overlaps(&[(0, 0), (1, 0), (7, 7), (8, 8)]), 2, "(1, 0) and (7, 7)");
+}
+
+/// #7431 / DLOD-GATE-005 -- the FO3 moat reads nonzero when an authored tree cell beside the resident set is
+/// left uncovered, and 0 once the files over those cells resolve.
+#[test]
+fn the_fo3_tree_moat_reads_an_uncovered_authored_cell() {
+    // The A5 pose. Every cell around the resident square is under one of four level-8 files.
+    let quads = [(8, -8, -8), (8, 0, -8), (8, -8, 0), (8, 0, 0)];
+    let resident = square(3);
+    let mut ring = LegacyTreeRing { dtl_files: Some(dtl_files(&quads)), ..Default::default() };
+    let moat = |ring: &LegacyTreeRing| ring.moat_cells(GameKind::Fallout3NV, &resident, (0, 0), 4);
+    assert!(moat(&ring) > 0, "nothing resolved yet");
+    for quad in quads {
+        ring.blocks.insert(quad, unit(true, &[]));
+    }
+    assert_eq!(moat(&ring), 0);
+    // Dropping one straddling file, as the whole-file veto did, reopens the gap.
+    ring.blocks.remove(&(8, 0, 0));
+    assert!(moat(&ring) > 0);
+    // A sentinel is a resolved file with nothing left to draw.
+    ring.blocks.insert((8, 0, 0), unit(false, &[]));
+    assert_eq!(moat(&ring), 0);
+}
+
+/// DLOD-GATE-005 -- cells no `.dtl` file covers are not a gap (FNV authors none, DLOD-TREE-009), nor is
+/// anything under a ring that wants nothing (DLOD-BAND-007) or has not scanned its files.
+#[test]
+fn the_fo3_tree_moat_is_zero_where_no_tree_is_wanted() {
+    let resident = square(3);
+    let moat = |files: Option<&[(i32, i32, i32)]>, full_detail_radius| {
+        let ring = LegacyTreeRing { dtl_files: files.map(dtl_files), ..Default::default() };
+        ring.moat_cells(GameKind::Fallout3NV, &resident, (0, 0), full_detail_radius)
+    };
+    assert_eq!(moat(Some(&[]), 4), 0, "no tree family");
+    assert_eq!(moat(None, 4), 0, "not scanned yet");
+    assert_eq!(moat(Some(&[(8, 0, 0)]), 13), 0, "the reach ends inside the full-detail radius");
+    assert!(moat(Some(&[(8, 0, 0)]), 4) > 0);
+    let skyrim = LegacyTreeRing::default().moat_cells(GameKind::Skyrim, &resident, (0, 0), 4);
+    assert_eq!(skyrim, 0, "no legacy tree container");
+}
+
+/// #7431 / DLOD-GATE-005 -- Oblivion wants one unit per non-resident cell in reach: the moat reads nonzero
+/// while a cell beside the resident set is unresolved.
+#[test]
+fn the_oblivion_tree_moat_reads_an_unresolved_cell() {
+    let resident = square(2);
+    let mut ring = LegacyTreeRing::default();
+    let moat = |ring: &LegacyTreeRing| ring.moat_cells(GameKind::Oblivion, &resident, (0, 0), 2);
+    // Cells within 4 of the resident square and within the 7-cell reach, less the square itself.
+    assert_eq!(moat(&ring), 13 * 13 - 5 * 5);
+    for (cx, cy) in placement_lod_cells_in_radius((0, 0), &resident, OBLIVION_TREE_RANGE_CELLS) {
+        ring.blocks.insert((1, cx, cy), unit(false, &[]));
+    }
+    assert_eq!(moat(&ring), 0);
+    ring.blocks.remove(&(1, 3, 0));
+    assert_eq!(moat(&ring), 1);
 }
 
 /// DLOD-BAND-001 -- the reaches are the documented INI readings, and only the two games that author a

@@ -6,7 +6,8 @@
 //!   bases, 98 661 placements: most of all `.lod` placements). [`super::placement_lod`] skips them, because
 //!   a TREE's `MODL` is a bare `.spt` name no `_far.nif` exists for.
 //! * **Fallout 3** — `meshes\landscape\lod\<ws>\trees\<ws>.level<L>.x<X>.y<Y>.dtl` files
-//!   ([`super::tree_lod::parse_dtl`]), each a list of `{position, scale, base FormID}` records.
+//!   ([`super::tree_lod::parse_dtl`]), each a list of records carrying a position, a rotation, a scale and the
+//!   placed reference's FormID.
 //!
 //! They are drawn differently, because the data differs:
 //!
@@ -48,8 +49,9 @@ use byroredux_renderer::VulkanContext;
 use crate::asset_provider::TextureProvider;
 
 use super::lod_bands::{cells_from_bu, quad_min_chebyshev};
+use super::lod_coverage::{count_moat_cells, QUAD_EDGE_CELLS};
 use super::lod_support::{
-    release_lod_gpu_resources, retain_resident, LodLoadGate,
+    keys_with_stale_holes, release_lod_gpu_resources, retain_resident, LodLoadGate,
     LodReconcileInput, LodWorkBudget,
 };
 use super::object_lod::{unload_object_lod_block, ObjectLodBlock};
@@ -282,12 +284,60 @@ pub(crate) fn parse_dtl_name(path: &str) -> Option<(String, i32, i32, i32)> {
     parts.next().is_none().then(|| (world.to_owned(), level, qx, qy))
 }
 
-/// Whether any resident full-detail cell lies inside the level-`level` quad at `(qx, qy)`: the full trees own
-/// that ground, so the file is not drawn (DLOD-TREE-007).
-fn footprint_has_resident_cell(qx: i32, qy: i32, level: i32, resident: &HashSet<(i32, i32)>) -> bool {
-    resident
+/// Whether cell `(gx, gy)` lies inside the level-`level` quad whose south-west cell is `(qx, qy)`.
+fn quad_holds_cell((level, qx, qy): (i32, i32, i32), (gx, gy): (i32, i32)) -> bool {
+    gx >= qx && gx < qx + level && gy >= qy && gy < qy + level
+}
+
+/// The resident full-detail cells inside a quad, sorted: the cells the quad is built without. A list rather
+/// than the `.btt` / `.bto` rings' `u16` mask because most `.dtl` files are level 8, 64 cells.
+fn resident_cells_in_quad(quad: (i32, i32, i32), resident: &HashSet<(i32, i32)>) -> Vec<(i32, i32)> {
+    let mut cells: Vec<(i32, i32)> =
+        resident.iter().copied().filter(|&cell| quad_holds_cell(quad, cell)).collect();
+    cells.sort_unstable();
+    cells
+}
+
+/// DLOD-TREE-007 / -008 — the trees of a `.dtl` file that stand outside `holes` (sorted). The full trees own a
+/// resident cell's ground; every other tree in the file is drawn. A tree belongs to the cell its position
+/// falls in, as in the `.btt` ring.
+pub(crate) fn drop_dtl_trees_in_cells(trees: &[DtlTree], holes: &[(i32, i32)]) -> Vec<DtlTree> {
+    trees
         .iter()
-        .any(|&(gx, gy)| gx >= qx && gx < qx + level && gy >= qy && gy < qy + level)
+        .filter(|tree| {
+            // `.dtl` positions are Z-up; the grid lookup takes engine Y-up world x and z, where z = -y.
+            let cell = crate::streaming::world_pos_to_grid(tree.position[0], -tree.position[1]);
+            holes.binary_search(&cell).is_err()
+        })
+        .copied()
+        .collect()
+}
+
+/// The `.dtl` quads the ring wants, each with the cells it must be built without: every quad within `range` of
+/// the player that is not wholly resident (DLOD-TREE-008).
+///
+/// DLOD-BAND-007 — a reach that ends inside the full-detail radius wants nothing. This has to be said: a
+/// level-8 quad within reach can extend past the resident cells, so drawing its non-resident part would put
+/// trees beyond the reach. Dropping every file that touched a resident cell used to hide that.
+fn wanted_dtl_quads(
+    files: &[(i32, i32, i32, String)],
+    player: (i32, i32),
+    range: i32,
+    full_detail_radius: i32,
+    resident: &HashSet<(i32, i32)>,
+) -> HashMap<(i32, i32, i32), Vec<(i32, i32)>> {
+    if range <= full_detail_radius {
+        return HashMap::new();
+    }
+    files
+        .iter()
+        .filter(|&&(level, qx, qy, _)| quad_min_chebyshev(qx, qy, level, player) <= range)
+        .filter_map(|&(level, qx, qy, _)| {
+            let holes = resident_cells_in_quad((level, qx, qy), resident);
+            let wholly_resident = holes.len() as i64 == i64::from(level) * i64::from(level);
+            (!wholly_resident).then_some(((level, qx, qy), holes))
+        })
+        .collect()
 }
 
 // ── The ring ───────────────────────────────────────────────────────────────────────────────────────
@@ -313,9 +363,17 @@ impl LegacyTreeBlock {
         }
     }
 
+    /// The cells a legacy unit left out live in its [`LegacyTreeUnit`], so the inner mask stays 0.
     fn sentinel() -> Self {
-        Self::Cards(ObjectLodBlock::empty())
+        Self::Cards(ObjectLodBlock::empty(0))
     }
+}
+
+/// One resident unit and the resident cells it was built without: empty for an Oblivion cell, which is only
+/// wanted while it is not resident.
+pub(crate) struct LegacyTreeUnit {
+    block: LegacyTreeBlock,
+    holes: Vec<(i32, i32)>,
 }
 
 /// Free one resident unit's meshes, textures and entities.
@@ -331,8 +389,8 @@ pub(crate) fn unload_legacy_tree_block(world: &mut World, ctx: &mut VulkanContex
 pub(crate) struct LegacyTreeRing {
     /// Resident units by `(level, x, y)`: an Oblivion `.lod` cell is `(1, cx, cy)`, a Fallout 3 `.dtl` quad
     /// its authored level and south-west cell. An empty block is a sentinel for a unit that held no drawable
-    /// tree, so it is not re-read every reconcile.
-    pub(crate) blocks: HashMap<(i32, i32, i32), LegacyTreeBlock>,
+    /// tree, so it is not re-read every reconcile until the cells it was built without change.
+    blocks: HashMap<(i32, i32, i32), LegacyTreeUnit>,
     /// Oblivion's packed billboard atlas; the outer `None` means "not built yet", the inner `None` "this
     /// worldspace has no usable billboard" (nothing draws). Fallout 3 builds none.
     atlas: Option<Option<LegacyAtlas>>,
@@ -343,7 +401,53 @@ pub(crate) struct LegacyTreeRing {
 impl LegacyTreeRing {
     /// The resident units that drew something, as `(level, x, y)` footprint keys.
     pub(crate) fn resident_keys(&self) -> Vec<(i32, i32, i32)> {
-        self.blocks.iter().filter(|(_, block)| block.drew()).map(|(&key, _)| key).collect()
+        self.blocks.iter().filter(|(_, unit)| unit.block.drew()).map(|(&key, _)| key).collect()
+    }
+
+    /// DLOD-GATE-003 — resident full-detail cells inside a drawn unit that the unit was not built without.
+    /// Each is ground where LOD trees and full trees can both stand. It reads nonzero while a unit still waits
+    /// to be rebuilt for the current residency.
+    pub(crate) fn full_detail_overlaps(&self, full_cells: &[(i32, i32)]) -> u32 {
+        self.blocks
+            .iter()
+            .filter(|(_, unit)| unit.block.drew())
+            .map(|(&quad, unit)| {
+                full_cells
+                    .iter()
+                    .filter(|&&cell| quad_holds_cell(quad, cell) && unit.holes.binary_search(&cell).is_err())
+                    .count() as u32
+            })
+            .sum()
+    }
+
+    /// DLOD-GATE-005 — this ring's moat cells ([`count_moat_cells`]). A resolved unit covers its footprint,
+    /// drawn or not, as in the `.btt` ring. On Fallout 3 a cell outside every authored `.dtl` quad is not a gap,
+    /// and a ring that wants nothing (DLOD-BAND-007), or has not scanned its files yet, has none. Every cell an
+    /// Oblivion ring wants has to resolve; one with no `.lod` file resolves to a sentinel.
+    pub(crate) fn moat_cells(
+        &self,
+        game: GameKind,
+        resident: &HashSet<(i32, i32)>,
+        player: (i32, i32),
+        full_detail_radius: i32,
+    ) -> u32 {
+        let (Some(family), Some(range)) = (legacy_tree_family(game), legacy_tree_range_cells(game)) else {
+            return 0;
+        };
+        let covered: Vec<(i32, i32, i32)> = self.blocks.keys().copied().collect();
+        let files = match family {
+            LegacyTreeFamily::OblivionLod => None,
+            LegacyTreeFamily::FalloutDtl if range <= full_detail_radius => return 0,
+            LegacyTreeFamily::FalloutDtl => match &self.dtl_files {
+                Some(files) => Some(files),
+                None => return 0,
+            },
+        };
+        count_moat_cells(resident, &covered, player, range, QUAD_EDGE_CELLS, |cx, cy| {
+            files.is_some_and(|files| {
+                !files.iter().any(|&(level, qx, qy, _)| quad_holds_cell((level, qx, qy), (cx, cy)))
+            })
+        })
     }
 
     /// Forget everything cached and hand back the resident blocks and the atlas handle for the caller to
@@ -351,7 +455,7 @@ impl LegacyTreeRing {
     pub(crate) fn drain(&mut self) -> (Vec<LegacyTreeBlock>, Option<u32>) {
         self.dtl_files = None;
         let atlas = self.atlas.take().flatten().map(|a| a.handle);
-        (self.blocks.drain().map(|(_, block)| block).collect(), atlas)
+        (self.blocks.drain().map(|(_, unit)| unit.block).collect(), atlas)
     }
 }
 
@@ -416,12 +520,12 @@ pub(crate) fn stream_legacy_tree_lod_blocks(
     let player = input.player_grid;
     let resident_full = input.resident_full_cells;
 
-    // The units the ring wants: Oblivion cells beyond the full-detail ring, Fallout 3 quads whose footprint
-    // touches no resident cell.
-    let desired: Vec<(i32, i32, i32)> = match family {
+    // The units the ring wants, each with the cells to build it without: Oblivion cells that are not resident,
+    // Fallout 3 quads that are not wholly resident (DLOD-TREE-008).
+    let wanted: HashMap<(i32, i32, i32), Vec<(i32, i32)>> = match family {
         LegacyTreeFamily::OblivionLod => placement_lod_cells_in_radius(player, resident_full, range)
             .into_iter()
-            .map(|(cx, cy)| (1, cx, cy))
+            .map(|(cx, cy)| ((1, cx, cy), Vec::new()))
             .collect(),
         LegacyTreeFamily::FalloutDtl => {
             let ws = wctx.lod_worldspace_key().to_ascii_lowercase();
@@ -436,22 +540,27 @@ pub(crate) fn stream_legacy_tree_lod_blocks(
                 files.dedup_by(|a, b| (a.0, a.1, a.2) == (b.0, b.1, b.2));
                 files
             });
-            files
-                .iter()
-                .filter(|&&(level, qx, qy, _)| {
-                    quad_min_chebyshev(qx, qy, level, player) <= range
-                        && !footprint_has_resident_cell(qx, qy, level, resident_full)
-                })
-                .map(|&(level, qx, qy, _)| (level, qx, qy))
-                .collect()
+            wanted_dtl_quads(files, player, range, input.full_detail_radius, resident_full)
         }
     };
-    let keep: HashSet<(i32, i32, i32)> = desired.iter().copied().collect();
+    let keep: HashSet<(i32, i32, i32)> = wanted.keys().copied().collect();
 
     let mut unloaded = 0usize;
-    unloaded += retain_resident(&mut ring.blocks, &keep, |block| {
-        if block.drew() {
-            unload_legacy_tree_block(world, ctx, block);
+    // A unit built without a different set of resident cells is dropped and built again, sentinels included.
+    let stale = keys_with_stale_holes(&ring.blocks, |unit| &unit.holes, |key| {
+        wanted.get(key).cloned().unwrap_or_default()
+    });
+    for key in stale {
+        if let Some(unit) = ring.blocks.remove(&key)
+            && unit.block.drew()
+        {
+            unload_legacy_tree_block(world, ctx, &unit.block);
+            unloaded += 1;
+        }
+    }
+    unloaded += retain_resident(&mut ring.blocks, &keep, |unit| {
+        if unit.block.drew() {
+            unload_legacy_tree_block(world, ctx, &unit.block);
             true
         } else {
             false
@@ -459,7 +568,7 @@ pub(crate) fn stream_legacy_tree_lod_blocks(
     });
 
     let mut candidates: Vec<(i32, i32, i32)> =
-        desired.into_iter().filter(|key| !ring.blocks.contains_key(key)).collect();
+        keep.into_iter().filter(|key| !ring.blocks.contains_key(key)).collect();
     candidates.sort_unstable_by_key(|&(level, x, y)| (quad_min_chebyshev(x, y, level, player), level, x, y));
     let mut spawned = 0usize;
     let mut gate = LodLoadGate::new(candidates.len());
@@ -467,7 +576,8 @@ pub(crate) fn stream_legacy_tree_lod_blocks(
         if !gate.admit(budget, ctx.mesh_registry.prop_geometry_admission_open()) {
             break;
         }
-        let block = match spawn_legacy_tree_unit(world, ctx, input, family, key, atlas_handle, &species) {
+        let holes = wanted.get(&key).cloned().unwrap_or_default();
+        let block = match spawn_legacy_tree_unit(world, ctx, input, family, key, &holes, atlas_handle, &species) {
             Some(block) => block,
             // A pool refusal is not a missing unit: no sentinel.
             None if gate.miss(budget, ctx.mesh_registry.prop_geometry_admission_open()) => LegacyTreeBlock::sentinel(),
@@ -476,7 +586,7 @@ pub(crate) fn stream_legacy_tree_lod_blocks(
         if block.drew() {
             spawned += 1;
         }
-        ring.blocks.insert(key, block);
+        ring.blocks.insert(key, LegacyTreeUnit { block, holes });
     }
 
     let complete = gate.complete();
@@ -493,13 +603,15 @@ pub(crate) fn stream_legacy_tree_lod_blocks(
     complete
 }
 
-/// Read one unit's trees and spawn it.
+/// Read one unit's trees and spawn it, leaving out the trees in `holes`.
+#[allow(clippy::too_many_arguments)]
 fn spawn_legacy_tree_unit(
     world: &mut World,
     ctx: &mut VulkanContext,
     input: &LodReconcileInput<'_>,
     family: LegacyTreeFamily,
     (level, x, y): (i32, i32, i32),
+    holes: &[(i32, i32)],
     atlas_handle: u32,
     species: &[TreeLodSpecies],
 ) -> Option<LegacyTreeBlock> {
@@ -555,6 +667,7 @@ fn spawn_legacy_tree_unit(
                 }
             };
             let cells = &wctx.record_index.cells;
+            let trees = drop_dtl_trees_in_cells(&trees, holes);
             let groups = dtl_placement_groups(&trees, |refr| {
                 cells.locate_refr(refr).map(|(_, placed)| placed.base_form_id)
             });

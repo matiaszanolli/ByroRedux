@@ -76,7 +76,7 @@ use crate::components::{IsLodTerrain, TwoSided};
 use super::exterior::ExteriorWorldContext;
 use super::lod_bands::{quad_min_chebyshev, tree_load_cells, LOD_BAND_HYSTERESIS_CELLS};
 use super::lod_support::{
-    release_lod_gpu_resources, retain_resident, LodLoadGate,
+    keys_with_stale_holes, release_lod_gpu_resources, retain_resident, LodLoadGate,
     LodReconcileInput, LodWorkBudget,
 };
 use super::object_lod::{
@@ -560,18 +560,16 @@ pub(crate) fn stream_tree_lod_blocks(
             })
             .collect();
 
-    // A resident quad whose hole mask no longer matches residency is respawned.
-    let stale: Vec<(i32, i32)> = ring
-        .blocks
-        .iter()
-        .filter(|(key, block)| {
-            !block.entities.is_empty() && block.hole_mask != hole_masks.get(key).copied().unwrap_or(0)
-        })
-        .map(|(key, _)| *key)
-        .collect();
+    // A resident quad whose hole mask no longer matches residency is respawned. Empty sentinels too (#7431):
+    // a quad whose only trees stood in resident cells has to come back once one of those cells leaves.
+    let stale = keys_with_stale_holes(&ring.blocks, |block| &block.hole_mask, |key| {
+        hole_masks.get(key).copied().unwrap_or(0)
+    });
     let mut stale_unloaded = 0usize;
     for key in stale {
-        if let Some(block) = ring.blocks.remove(&key) {
+        if let Some(block) = ring.blocks.remove(&key)
+            && !block.entities.is_empty()
+        {
             unload_object_lod_block(world, ctx, &block);
             stale_unloaded += 1;
         }
@@ -604,7 +602,9 @@ pub(crate) fn stream_tree_lod_blocks(
         let block = match spawn_tree_lod_quad(world, ctx, tex_provider, &lod_key, &path, &species, (qx, qy, hole_mask)) {
             Some(block) => block,
             // A pool refusal is not a missing quad: no sentinel.
-            None if gate.miss(budget, ctx.mesh_registry.prop_geometry_admission_open()) => ObjectLodBlock::empty(),
+            None if gate.miss(budget, ctx.mesh_registry.prop_geometry_admission_open()) => {
+                ObjectLodBlock::empty(hole_mask)
+            }
             None => break,
         };
         if !block.entities.is_empty() {

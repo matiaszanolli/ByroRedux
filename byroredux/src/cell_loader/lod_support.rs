@@ -571,6 +571,29 @@ where
     unloaded
 }
 
+/// #7431 — the resident units that were built leaving out a different set of resident full-detail cells than
+/// the ring wants left out now, so each has to be dropped and built again. `built_without` reads what a unit
+/// was built leaving out (a hole mask, or a cell list); `wanted_without` is what it should leave out today.
+///
+/// An empty sentinel counts too. "Nothing left to draw" is true only for the cells the unit was built without:
+/// once one of them leaves the resident set, its trees or objects have to come back. The object and tree rings
+/// used to check drawn units only, so such a sentinel kept the quad empty until it left the ring.
+pub(crate) fn keys_with_stale_holes<K, B, H>(
+    blocks: &std::collections::HashMap<K, B>,
+    built_without: impl Fn(&B) -> &H,
+    wanted_without: impl Fn(&K) -> H,
+) -> Vec<K>
+where
+    K: Copy + std::hash::Hash + Eq,
+    H: PartialEq,
+{
+    blocks
+        .iter()
+        .filter(|(key, block)| *built_without(block) != wanted_without(key))
+        .map(|(key, _)| *key)
+        .collect()
+}
+
 /// Convert an [`ImportedMesh`]'s parallel per-vertex arrays into renderer
 /// [`Vertex`]es, applying the LOD fallback defaults (opaque white colour,
 /// +Y normal, zero UV) for any array shorter than `positions` and copying
@@ -730,6 +753,53 @@ mod tests {
             assert!(
                 !source.contains(".retain(|coord, blk|"),
                 "{ring} re-grew an inline eviction retain loop (#5820)"
+            );
+        }
+    }
+
+    /// #7431 — an empty sentinel built without a resident cell goes stale when that cell leaves, just as a
+    /// drawn unit does. A unit whose holes still match stays, drawn or not.
+    #[test]
+    fn a_sentinel_goes_stale_when_the_cells_it_left_out_change() {
+        // (drew something, built without)
+        let blocks: std::collections::HashMap<(i32, i32), (bool, u16)> = [
+            ((0, 0), (false, 0b0011)), // sentinel, one of its cells left the resident set
+            ((4, 0), (false, 0b0100)), // sentinel, unchanged
+            ((8, 0), (true, 0b0001)),  // drawn, unchanged
+            ((12, 0), (true, 0)),      // drawn whole, now straddles
+            ((16, 0), (false, 0)),     // sentinel for a missing file, nothing resident near it
+        ]
+        .into_iter()
+        .collect();
+        let wanted = |key: &(i32, i32)| match key.0 {
+            0 => 0b0001,
+            4 => 0b0100,
+            8 => 0b0001,
+            12 => 0b1000,
+            _ => 0,
+        };
+        let mut stale = keys_with_stale_holes(&blocks, |block| &block.1, wanted);
+        stale.sort_unstable();
+        assert_eq!(stale, vec![(0, 0), (12, 0)]);
+    }
+
+    /// #7431 — every ring that builds a unit minus its resident cells decides staleness through
+    /// [`keys_with_stale_holes`], and none of them goes back to skipping sentinels.
+    #[test]
+    fn every_holed_lod_ring_routes_staleness_through_keys_with_stale_holes() {
+        for (ring, source) in [
+            ("object_lod", include_str!("object_lod.rs")),
+            ("tree_lod", include_str!("tree_lod.rs")),
+            ("tree_lod_legacy", include_str!("tree_lod_legacy.rs")),
+        ] {
+            assert!(
+                source.contains("keys_with_stale_holes("),
+                "{ring} must find stale units through lod_support::keys_with_stale_holes (#7431)"
+            );
+            assert!(
+                !source.contains("entities.is_empty() && blk.hole_mask")
+                    && !source.contains("entities.is_empty() && block.hole_mask"),
+                "{ring} skips empty sentinels when looking for stale units (#7431)"
             );
         }
     }

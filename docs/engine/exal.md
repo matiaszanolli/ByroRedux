@@ -691,16 +691,25 @@ its use as the `.dtl` ring's reach is also an interpretation. Oblivion's
 only) come from UESP; whether they are radii or diameters has no second source
 (V1).
 
-**Per-tree retirement (DLOD-TREE-008).** At HEAD on 2026-11-27 the three rings
-differ. Skyrim draws a `.btt` quad that straddles the resident boundary minus
-the trees standing in resident cells (a per-cell hole mask,
-`quad_resident_mask`; #6639). Oblivion's unit is one `.lod` cell, and only
-cells outside the resident set are wanted. Fallout 3 still drops a whole `.dtl`
-file whose footprint holds a resident cell (`footprint_has_resident_cell`,
-`tree_lod_legacy.rs`), which leaves a moat of non-resident cells without trees.
-Each record carries a position, so the data does not force this.
-`tree_moat_cells` counts Skyrim's ring only, so it cannot see the FO3 gap
-(#7431).
+**Per-tree retirement (DLOD-TREE-008).** At HEAD on 2026-11-27 all three tree
+rings retire by cell, from each tree's position. Skyrim draws a `.btt` quad
+that straddles the resident boundary minus the trees standing in resident cells
+(a per-cell hole mask, `quad_resident_mask`; #6639). Fallout 3 does the same
+for a `.dtl` file with a cell list, because most files are level 8, more cells
+than the mask holds (`resident_cells_in_quad`, `tree_lod_legacy.rs`; #7431).
+Oblivion's unit is one `.lod` cell, and only cells outside the resident set are
+wanted. `tree_moat_cells` and `full_detail_overlaps` count all three.
+
+A Fallout 3 ring whose reach ends inside the full-detail radius wants nothing
+(DLOD-BAND-007). The rule has to be explicit: a level-8 file within reach can
+extend past the resident cells, and drawing that part would put trees beyond
+the reach.
+
+A unit remembers the cells it was built without, drawn or not, and is rebuilt
+when they change (`keys_with_stale_holes`, shared by the object and both tree
+rings). That includes an empty sentinel: until #7431 the object and Skyrim tree
+rings checked drawn units only, so a straddling quad with nothing left to draw
+could stay empty after its cells left the resident set.
 
 A finer key than the cell exists. A `.btt` record's
 `u32` is the FormID of the placed TREE reference it bakes. Of the

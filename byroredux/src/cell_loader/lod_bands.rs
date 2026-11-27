@@ -332,7 +332,7 @@ pub(crate) struct LodBandSelection<'a> {
     ///   a quad that can draw, and subdividing into a missing asset is the
     ///   *right* answer — it buys a synthesized quad at higher detail.
     /// * **Objects** (`true`): the fallback for a missing quad is
-    ///   `ObjectLodBlock::empty()`, a "nothing here" sentinel. Subdividing
+    ///   `ObjectLodBlock::empty`, a "nothing here" sentinel. Subdividing
     ///   into an absent asset draws nothing at all, so a quad whose subtree
     ///   is entirely unbaked must emit *itself* while it still can.
     ///

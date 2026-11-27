@@ -398,12 +398,14 @@ fn update_lod_coverage(
     // ring's holed finest blocks: only a cell that is both resident and still drawn is an overlap.
     let object_keys_with_holes: Vec<((i32, i32, i32), u16)> =
         state.object_lod_blocks.iter().map(|(key, block)| (*key, block.hole_mask)).collect();
-    let mut tree_keys_with_holes: Vec<((i32, i32, i32), u16)> = state.tree_lod.resident_keys_with_holes();
-    tree_keys_with_holes.extend(state.legacy_tree_lod.resident_keys().into_iter().map(|key| (key, 0)));
+    let tree_keys_with_holes: Vec<((i32, i32, i32), u16)> = state.tree_lod.resident_keys_with_holes();
+    // #7431 — the legacy `.dtl` quads are mostly level 8, past what a `u16` mask holds, so that ring counts
+    // its own overlaps against the cells each unit was built without.
     let full_detail_overlaps =
         cell_loader::find_terrain_full_detail_overlaps(&terrain_keys_with_holes, &full_cells)
             + cell_loader::find_terrain_full_detail_overlaps(&object_keys_with_holes, &full_cells)
-            + cell_loader::find_terrain_full_detail_overlaps(&tree_keys_with_holes, &full_cells);
+            + cell_loader::find_terrain_full_detail_overlaps(&tree_keys_with_holes, &full_cells)
+            + state.legacy_tree_lod.full_detail_overlaps(&full_cells);
 
     // EXAL §5.2's VWD culling rule, checked live rather than only by
     // construction: a resident `VisibleWhenDistant` full REFR's cell must
@@ -455,7 +457,10 @@ fn update_lod_coverage(
         }
         _ => 0,
     };
-    let tree_moat_cells = match (cell_loader::tree_load_cells(game), state.tree_lod.authored_quads()) {
+    // A game has the `.btt` ring or a legacy tree container, never both, so one of these two terms is 0.
+    let legacy_tree_moat_cells =
+        state.legacy_tree_lod.moat_cells(game, &resident_full, player_grid, state.radius_unload);
+    let btt_tree_moat_cells = match (cell_loader::tree_load_cells(game), state.tree_lod.authored_quads()) {
         (Some(ring), Some(quads)) => cell_loader::count_moat_cells(
             &resident_full,
             &state.tree_lod.resolved_keys(),
@@ -489,7 +494,7 @@ fn update_lod_coverage(
         .filter(|block| !block.entities.is_empty())
         .count() as u32;
     coverage.object_moat_cells = object_moat_cells;
-    coverage.tree_moat_cells = tree_moat_cells;
+    coverage.tree_moat_cells = btt_tree_moat_cells + legacy_tree_moat_cells;
 }
 
 /// Refresh [`byroredux_core::ecs::TerrainSeamStats`] from the currently
