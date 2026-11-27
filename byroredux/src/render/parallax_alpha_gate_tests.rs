@@ -8,13 +8,13 @@
 //! `normal_has_alpha` gate.
 //!
 //! Without it, a BC1/BC4/BC5 normal (for which `dds::format_has_alpha` is
-//! false and the sampler returns `A = 1.0` by format) yields a constant
-//! height of 1.0. `parallaxDisplaceUV`'s `currentDepth >= sampledHeight`
-//! guard then never fires, the marcher runs every step, and it returns
-//! `uv - planarSlide` — the FULL slide at every fragment, view-dependent per
-//! frame. `sampleUV` feeds every later fetch, so the whole material swims.
-//! Mixed-block BC1 is worse still: 3-colour blocks decode `A = 0` and
-//! 4-colour blocks `A = 1`, tearing the surface along block boundaries.
+//! false and the sampler returns `A = 1.0` by format) is read as height with
+//! no height data behind it. Height 1.0 is the surface
+//! (`parallaxDepthFromHeight`), so BC4/BC5 march nowhere. Mixed-block BC1 does
+//! not: its 3-colour blocks decode `A = 0`, full depth, where the march
+//! returns the FULL slide, view-dependent per frame, while its 4-colour blocks
+//! decode `A = 1` — tearing the surface along block boundaries. `sampleUV`
+//! feeds every later fetch, so the whole material moves with it.
 //!
 //! The exposed population on vanilla Oblivion is empty today (0 of 1,430
 //! `APPLY_HILIGHT2` properties carry a normal slot), so this is a

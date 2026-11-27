@@ -4644,6 +4644,55 @@ fn parallax_alpha_height_bit_is_honoured_by_both_marchers() {
     );
 }
 
+/// Both material marches walk depth below the surface, while every source of
+/// their samples (authored parallax maps, the Oblivion alpha route, the
+/// generated static-mesh maps) stores height with 1 at the surface. Marching
+/// the raw sample left the lowest points at the surface and drew the highest
+/// deepest. Every sample must go through the one conversion.
+#[test]
+fn parallax_marchers_convert_every_height_sample_to_depth() {
+    let sampling = include_str!("../../../shaders/include/material_sampling.glsl");
+    let hit = include_str!("../../../shaders/include/ray_hit.glsl");
+    // Whitespace-free, so the pin survives a re-wrap.
+    let squash = |source: &str| source.split_whitespace().collect::<String>();
+    let (sampling, hit) = (squash(sampling), squash(hit));
+
+    assert!(
+        hit.contains("floatparallaxDepthFromHeight(floatheight){return1.0-height;}"),
+        "height 1 is the surface (depth 0)"
+    );
+
+    // Entry sample, per-layer sample and secant sample, in each march.
+    let raster_march = sampling
+        .split_once("vec2parallaxDisplaceUV(")
+        .and_then(|(_, rest)| rest.split_once("vec2terrainParallaxDisplaceUV("))
+        .map(|(body, _)| body)
+        .expect("the material march precedes the terrain march");
+    assert_eq!(
+        raster_march.matches("parallaxDepthFromHeight(sampleParallaxHeight(").count(),
+        3
+    );
+    assert_eq!(
+        raster_march.matches("sampleParallaxHeight(").count(),
+        3,
+        "a raster march sample bypasses the height-to-depth conversion"
+    );
+    let ray_march = hit
+        .split_once("vec2resolveRayHitUV(")
+        .and_then(|(_, rest)| rest.split_once("vec4sampleRayHitBase("))
+        .map(|(body, _)| body)
+        .expect("the secondary-ray march precedes the base sample");
+    assert_eq!(ray_march.matches("parallaxDepthFromHeight(").count(), 3);
+    assert_eq!(
+        ray_march.matches("heightInAlpha?").count(),
+        3,
+        "a secondary-ray sample bypasses the height-to-depth conversion"
+    );
+    for march in [raster_march, ray_march] {
+        assert!(march.contains("if(currentDepth>=surfaceDepth){break;}"));
+    }
+}
+
 /// #3622 (REN-2026-08-30-D19-03) — the raster POM march used to sample its
 /// height field with plain `texture()` (implicit derivatives) inside a loop
 /// with a data-dependent `break`, which is undefined per the GLSL/Vulkan

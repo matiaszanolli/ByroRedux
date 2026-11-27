@@ -316,6 +316,18 @@ float parallaxSecantWeight(float afterDepth, float beforeDepth) {
     return afterDepth / span;
 }
 
+// ── Parallax height convention ──────────────────────────────────────
+// Every material height source stores HEIGHT: 1 stands at the surface and lower
+// values are recessed below it. That is the authored convention (Gamebryo's
+// parallax fragment shifts the UV toward the eye as the value rises; the TES4
+// CS wiki says of the Oblivion alpha map "black: the pixel is carved, white: the
+// pixel is popping out") and the one `byroredux-terrain-height` generates. Both
+// material marches walk DEPTH below the surface, so every height sample passes
+// through here. Marching the raw sample drew all relief inside out.
+float parallaxDepthFromHeight(float height) {
+    return 1.0 - height;
+}
+
 // Resolve the material UV visible at a secondary ray hit. The BVH remains
 // the authored triangle surface (POM cannot change silhouettes or the ray
 // intersection), but every material lookup at that hit now follows the same
@@ -376,23 +388,26 @@ vec2 resolveRayHitUV(
     float currentDepth = 0.0;
     vec4 heightTexel =
         textureLod(textures[nonuniformEXT(parallaxIdx)], currentUV, 0.0);
-    float sampledHeight = heightInAlpha ? heightTexel.a : heightTexel.r;
+    float surfaceDepth = parallaxDepthFromHeight(
+        heightInAlpha ? heightTexel.a : heightTexel.r);
     for (int i = 0; i < steps; ++i) {
-        if (currentDepth >= sampledHeight) {
+        if (currentDepth >= surfaceDepth) {
             break;
         }
         currentUV -= deltaUV;
         currentDepth += layerDepth;
         heightTexel =
             textureLod(textures[nonuniformEXT(parallaxIdx)], currentUV, 0.0);
-        sampledHeight = heightInAlpha ? heightTexel.a : heightTexel.r;
+        surfaceDepth = parallaxDepthFromHeight(
+            heightInAlpha ? heightTexel.a : heightTexel.r);
     }
 
     vec2 prevUV = currentUV + deltaUV;
-    float afterDepth = sampledHeight - currentDepth;
+    float afterDepth = surfaceDepth - currentDepth;
     vec4 prevTexel =
         textureLod(textures[nonuniformEXT(parallaxIdx)], prevUV, 0.0);
-    float beforeDepth = (heightInAlpha ? prevTexel.a : prevTexel.r)
+    float beforeDepth =
+        parallaxDepthFromHeight(heightInAlpha ? prevTexel.a : prevTexel.r)
         - (currentDepth - layerDepth);
     float weight = parallaxSecantWeight(afterDepth, beforeDepth);
     return mix(currentUV, prevUV, clamp(weight, 0.0, 1.0));

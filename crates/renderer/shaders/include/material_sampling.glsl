@@ -14,7 +14,8 @@
 // height texture, so `APPLY_HILIGHT2` meshes bind the NORMAL map here and
 // read height out of its alpha, the same trick NORMAL_ALPHA_SPEC_BIT already
 // uses for gloss). The surface is displaced INWARD (along -N) as the view
-// grazes, so the sampled UV slides along -viewTS.xy.
+// grazes, so the sampled UV slides along -viewTS.xy. Values are heights; the
+// march walks `parallaxDepthFromHeight` of them (`ray_hit.glsl`).
 //
 // Returns the displaced UV. When `parallaxMapIdx == 0` the caller
 // short-circuits and this function is never entered.
@@ -124,24 +125,24 @@ vec2 parallaxDisplaceUV(
 
     vec2 currentUV = uv;
     float currentDepth = 0.0;
-    float sampledHeight =
-        sampleParallaxHeight(parallaxMapIdx, currentUV, heightInAlpha, parallaxLod);
+    float surfaceDepth = parallaxDepthFromHeight(
+        sampleParallaxHeight(parallaxMapIdx, currentUV, heightInAlpha, parallaxLod));
     for (int i = 0; i < steps; ++i) {
-        if (currentDepth >= sampledHeight) {
+        if (currentDepth >= surfaceDepth) {
             break;
         }
         currentUV -= deltaUV;
         currentDepth += layerDepth;
-        sampledHeight =
-            sampleParallaxHeight(parallaxMapIdx, currentUV, heightInAlpha, parallaxLod);
+        surfaceDepth = parallaxDepthFromHeight(
+            sampleParallaxHeight(parallaxMapIdx, currentUV, heightInAlpha, parallaxLod));
     }
 
     // Secant-style interpolation between the last two layers removes the
     // visible four-step terrace without paying for a second ray march.
     vec2 prevUV = currentUV + deltaUV;
-    float afterDepth = sampledHeight - currentDepth;
-    float beforeDepth =
-        sampleParallaxHeight(parallaxMapIdx, prevUV, heightInAlpha, parallaxLod)
+    float afterDepth = surfaceDepth - currentDepth;
+    float beforeDepth = parallaxDepthFromHeight(
+            sampleParallaxHeight(parallaxMapIdx, prevUV, heightInAlpha, parallaxLod))
         - (currentDepth - layerDepth);
     float weight = parallaxSecantWeight(afterDepth, beforeDepth);
     return mix(currentUV, prevUV, clamp(weight, 0.0, 1.0));

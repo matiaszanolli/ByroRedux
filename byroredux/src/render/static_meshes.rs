@@ -832,18 +832,18 @@ fn build_static_draw_command(
     // #3562 — and only when that texture actually HAS an alpha
     // channel. `dds::format_has_alpha` is false for every
     // BC1/BC4/BC5 variant, and the sampler returns `A = 1.0` for
-    // them by format. A constant height of 1.0 makes
-    // `parallaxDisplaceUV`'s `currentDepth >= sampledHeight`
-    // guard unreachable, so the marcher runs every step and
-    // returns `uv - planarSlide` — the FULL slide (≈0.8 UV units
-    // at grazing incidence), at every fragment, view-dependent
+    // them by format, so there is no height data behind the bit.
+    // Height 1.0 is the surface (`parallaxDepthFromHeight`), so
+    // a constant 1.0 marches nowhere; height 0.0 is full depth,
+    // where the march runs to the bottom and returns the FULL
+    // slide (≈0.8 UV units at grazing incidence), view-dependent
     // per frame. And `sampleUV` feeds every later fetch (base,
     // normal, detail, glow, gloss, dark, the eight terrain splat
-    // layers), so the whole material swims rather than just the
-    // height read. Mixed-block BC1 is worse than either extreme:
-    // 3-colour blocks decode `A = 0` (instant break) while
-    // 4-colour blocks decode `A = 1` (full slide), tearing the
-    // surface along block boundaries.
+    // layers), so the whole material swims, not just the height
+    // read. Mixed-block BC1 does exactly that: 3-colour blocks
+    // decode `A = 0` (full slide) while 4-colour blocks decode
+    // `A = 1` (no slide), tearing the surface along block
+    // boundaries.
     //
     // This is the same gate `NORMAL_ALPHA_SPEC_BIT` already uses
     // (`normal_alpha_spec_binding_applies`), which #3530's own
