@@ -699,6 +699,67 @@ exit 0, all five views pass.
   the shadow-off capture equals the shadow-on one, when the repeat pair reads zero (noise as large as the value), and
   when the shadow-off region holds no in-scatter.
 
+### Haze floor off at the content views (VLM-SH-011, 2026-11-27)
+
+`BYRO_HAZE_FLOOR=off exterior-shafts-content.sh all` against the shipped-default run above: same engine binary and
+views, 50 captures, exit 0. The engine logs nothing when it accepts `off`; that it took effect shows in Oblivion's
+frame-mean in-scatter (noon 0.0547 default, 0.0411 off; 17:30 0.0251, 0.0111).
+
+**All five views meet the content contrast rule with the floor off too**, so at these views the rule does not
+depend on the floor.
+
+| Fixture, hour | Contrast, floor off → default | Frame mean (of 255), off → default | Mean absolute change | Pixels changed by > 4 | Mean absolute change between floor-on runs |
+|---|---|---|---|---|---|
+| FNV 12:00 | 0.0099 → 0.0102 | 90.45 → 90.44 (−0.01 %) | 0.145 | 0.06 % | 0.001 |
+| FO3 12:00 | 0.0082 → 0.0082 | 94.58 → 94.58 | 0.000 | 0.00 % | 0.000 |
+| Oblivion 12:00 | 0.0001 → 0.0000 | 114.93 → 115.08 (+0.13 %) | 0.479 | 0.28 % | 0.000 |
+| Skyrim 12:00 | −0.0005 → −0.0006 | 108.51 → 107.86 (−0.60 %) | 0.748 | 0.53 % | 0.325 to 0.941 |
+| FO4 12:00 | 0.0000 → 0.0000 | 121.42 → 121.42 | 0.000 | 0.00 % | 0.000 |
+| FNV 07:00 | 0.2585 → 0.2346 | 68.49 → 70.32 (+2.67 %) | 1.929 | 15.31 % | 0.000 to 0.088 |
+| FO3 07:00 | 0.1351 → 0.1351 | 98.54 → 98.54 | 0.000 | 0.00 % | 0.000 |
+| Oblivion 17:30 | 0.1560 → 0.1454 | 118.90 → 118.90 | 0.861 | 0.70 % | 0.000 |
+| Skyrim 07:00 | 0.2269 → 0.2294 | 88.94 → 88.83 (−0.12 %) | 0.197 | 0.13 % | 0.192 to 0.314 |
+| FO4 07:00 | 0.1539 → 0.1539 | 109.42 → 109.42 | 0.000 | 0.00 % | 0.000 |
+
+Frame columns are the finished frame with the froxel sun shadow on. The last column covers the three pairs among
+three floor-on runs (two scouting runs and the script run above).
+
+**Which views the floor reaches.** The in-scatter view moves clearly on FNV 07:00 and on Oblivion at both hours. It
+is identical on FO3 and FO4 at both hours, and on Skyrim at noon against the script's floor-on run (it differs from
+the two scouting runs by 0.010 mean absolute, as that run does). Skyrim at 07:00 differs from the three floor-on runs
+by 0.03 to 0.10 levels (mean absolute), while those differ among themselves by 0.02 to 0.07; one floor-off run
+cannot separate that from run variation. Skyrim's finished-frame changes are within what its floor-on runs differ by.
+FNV noon is not: its finished frame differs from each floor-on run by 0.144 to 0.145, faintly (1.04 % of pixels by more
+than one level) and across much of the frame, 69 % of the summed difference in the left half where the dish stands,
+although its in-scatter view barely moves (1.86 % of pixels, by one level). The cause is not established.
+
+**Contrast falls where the floor strengthens the shaft.** Contrast is a share. In the sample region, the linear
+radiance the shadow removes rises with the floor from 0.0347 to 0.0488 on FNV at 07:00 and from 0.0024 to 0.0055 on
+Oblivion at 17:30, while contrast drops. In the finished frame, the pixels the shadow changes by more than 4 levels
+go from 7.6 % to 16.0 % on FNV and stay at 0.0 % on Oblivion; FO3 (38.5 %) and FO4 (25.8 %) do not move, and
+Skyrim reads 12.8 % off against 13.6 to 13.7 % in floor-on runs.
+
+**Outside any shaft.** The PRD does not define which pixels are in a shaft. The working definition used here: with
+the floor off or on, the froxel sun shadow removes more than a share T of the pixel's linear in-scatter and moves the
+mapped view by more than one level. At noon it marks at most 0.3 % of any frame for T = 0.05, 0.10 and 0.20, so the
+noon rows above are the outside-shaft change whichever T is used. At low sun it marks much of the frame and T
+matters:
+
+| Fixture, hour | Signed mean change outside, off → default, T = 0.05 / 0.10 / 0.20 | Share of frame marked as shaft |
+|---|---|---|
+| FNV 07:00 | +0.333 / +0.431 / +1.574 | 74.7 / 68.5 / 48.3 % |
+| FO3 07:00 | 0.000 at all three | 55.1 / 26.8 / 7.6 % |
+| Oblivion 17:30 | +0.102 / +0.085 / +0.069 | 18.8 / 17.3 / 12.5 % |
+| Skyrim 07:00 | −0.041 / −0.062 / −0.079 (within run variation) | 52.9 / 34.9 / 13.7 % |
+| FO4 07:00 | 0.000 at all three | 64.4 / 46.8 / 30.3 % |
+
+**Against the accepted noon change.** At §10 Q12 the owner accepted the noon change measured at the default spawns
+(Oblivion +3.6 % frame mean, none elsewhere). At these views the noon frame mean moves +0.13 % on Oblivion, −0.01 % on
+FNV (the unexplained difference above), not at all on FO3 and FO4, and within run variation on Skyrim. These are
+different views from the ones reviewed then. The outside-shaft and run-to-run figures come from one-off scripts, not
+from the content script. **Accepted:** later on 2026-11-27 the owner accepted the noon change in this record, and
+VLM-SH-011 is met.
+
 ### Haze floor after the authored fog power (Q12 re-measure, 2026-11-19)
 
 PRD VLM-SH-011 asked for the floor-off / floor-on captures to be redone once the authored fog power entered the

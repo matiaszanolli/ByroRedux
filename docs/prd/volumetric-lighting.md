@@ -6,7 +6,8 @@
 revision 43. Revision 44 records the owner's Q14 decision on content shaft contrast, approved at
 revision 45. Revision 46 records the owner naming the five VLM-SH-012 poses and deciding the content
 pass bar (Q15), approved at revision 47. Revision 48 records the five poses in the content
-script and its first run. The revision history is §12. This document covers
+script and its first run, and revision 49 the haze-floor-off run. Revision 50 records the owner accepting
+the haze floor's noon change at those poses (VLM-SH-011 met). The revision history is §12. This document covers
 the remainder of ROADMAP milestone M55 after the froxel fog slice, the transported
 combustion solver and the interior godray vertical slice shipped. Statements about
 how an original engine, a record format, a paper or another engine behaves cite
@@ -148,7 +149,7 @@ links the measurement table and the per-area acceptance results, and is then fro
 | # | Mechanism | Class | Today |
 |---|---|---|---|
 | 1 | Froxel grid: inject + integrate, temporal history, RT sun and local-light visibility | Shipped | `VolumetricsConfig::DEFAULT` (`crates/renderer/src/vulkan/upscaling.rs`): 8 px per froxel column, 64 Z slices, 128 m far plane, far plane validated to 32–512 m; `volumetrics_inject.comp` traces the sun with `traceShadowBinary` over `VISIBILITY_MASK_ALL_OPAQUE` |
-| 2 | Exterior sun in-scatter in the froxels | Shipped | `volumetric_open_sky_flag` (`context/post_passes.rs`) is 1 for an exterior and for an interior with Show Sky; evidence scripts `exterior-shafts.sh` (lab), `exterior-shafts-content.sh` (content), `interior-godrays.sh`; content shaft contrast is recorded at the five VLM-SH-012 poses (VLM-SH-006); the haze-floor-off comparison is open (VLM-SH-011) |
+| 2 | Exterior sun in-scatter in the froxels | Shipped | `volumetric_open_sky_flag` (`context/post_passes.rs`) is 1 for an exterior and for an interior with Show Sky; evidence scripts `exterior-shafts.sh` (lab), `exterior-shafts-content.sh` (content), `interior-godrays.sh`; content shaft contrast is recorded at the five VLM-SH-012 poses (VLM-SH-006); the owner accepted the haze floor's noon change at those poses (VLM-SH-011, met 2026-11-27) |
 | 3 | Cloud shadow on the froxel sun | Shipped | `volumetric_sun` multiplies the sun by one camera-column value, `camera_cloud_sun_transmittance` (`post_passes.rs`); stays so under §10 Q3 (VLM-SH-004) |
 | 4 | Legacy ramp → `FogMedium` fit (near, far, maximum opacity) | Shipped | `FogMedium::from_legacy_ramp` (`byroredux/src/fog.rs`) |
 | 5 | Authored fog power in the fit | Shipped (VLM-HF-001, -002) | `FogMedium::from_legacy_ramp_with_power`; test `unit_fog_power_keeps_the_linear_fit` |
@@ -169,7 +170,7 @@ links the measurement table and the per-area acceptance results, and is then fro
 | 20 | Fire surface-light reach | Owned elsewhere ([fire plan Phase 5](../engine/fire-volumetrics-plan.md#phase-5-fire-as-a-light-source-in-the-ray-traced-path)) | Range is `sqrt(luma / COMBUSTION_LIGHT_CUTOFF_IRRADIANCE)` clamped to `COMBUSTION_LIGHT_MAX_RANGE_METERS` (`crates/renderer/src/vulkan/volumetrics/combustion.rs`); [Known Issue](../../ROADMAP.md#correctness-and-content) |
 | 21 | Majorant grid / ratio tracking for path-traced media | Non-goal (VLM-NG-002) | No code (`rg -i "majorant\|ratio.track"` is empty) |
 | 22 | Non-RT cascade visibility for the froxels | Non-goal (VLM-NG-006) | No cascade path; [measurement table](../engine/procedural-volumetric-fog.md#measurement-table) row "cascade, 1 tap" is empty |
-| 23 | Exterior haze floor | Shipped | `ExteriorHazeFloor::DEFAULT` and `with_exterior_haze_floor` (`byroredux/src/fog.rs`), applied in `render/mod.rs`; `env.health` prints `haze_floor` (VLM-SH-010, -011; the contrast clause of -011 is open) |
+| 23 | Exterior haze floor | Shipped | `ExteriorHazeFloor::DEFAULT` and `with_exterior_haze_floor` (`byroredux/src/fog.rs`), applied in `render/mod.rs`; `env.health` prints `haze_floor` (VLM-SH-010, -011; -011 met 2026-11-27) |
 | 24 | Interior shaft dust | Shipped | `INTERIOR_SHAFT_DUST_PER_METER`, sun term only, `volumetrics_inject.comp`, never under open sky, which includes Show Sky interiors (§10 Q13); `env.health` prints `shaft_dust` (VLM-INT-007) |
 | 25 | Interior aperture dust floor | Shipped | `FogMedium::with_sky_aperture_dust_floor`, applied in `render/mod.rs`, which records the decision; `env.health` prints `aperture_dust_floor` (VLM-INT-008) |
 
@@ -546,12 +547,18 @@ The RT visibility replaces cascades (VLM-NG-006).
   the capture set, so the floor makes shafts visible without washing out the
   authored look. The floor MUST be adjustable at run time through the existing
   volumetrics settings surface and MUST report its live value on `env.health`.
-  *The default value is decided* (§10 Q12;
-  [record](../engine/procedural-volumetric-fog.md#haze-floor-re-measure-and-decision-vlm-sh-011)). **Open:** the
-  shaft-contrast clause has not been measured (#6773). The shipped-floor captures at
-  the VLM-SH-012 poses are [recorded](../engine/procedural-volumetric-fog.md#content-shaft-contrast-from-the-checked-in-script-vlm-sh-006--012-2026-11-27);
-  the floor-off captures there are not yet taken, and the content script does not compute
-  the luminance change outside a shaft.
+  *Met 2026-11-27:* the default value is decided (§10 Q12;
+  [record](../engine/procedural-volumetric-fog.md#haze-floor-re-measure-and-decision-vlm-sh-011)), `fog.haze`
+  adjusts the floor at run time and `env.health` prints its live value. Captures at the VLM-SH-012 poses with the
+  shipped floor ([record](../engine/procedural-volumetric-fog.md#content-shaft-contrast-from-the-checked-in-script-vlm-sh-006--012-2026-11-27)) and
+  with it off ([record](../engine/procedural-volumetric-fog.md#haze-floor-off-at-the-content-views-vlm-sh-011-2026-11-27)) are
+  published (#6773), and the default meets the content contrast rule at all five. The owner accepted the noon change
+  measured at these poses. In the finished frame's mean, floor off to default, it is +0.13 % on Oblivion; −0.01 % on
+  FNV, where one floor-off run differs from all three floor-on runs and the cause is not established; none on FO3 or
+  FO4; and −0.60 % on Skyrim, whose finished-frame change is within what its floor-on runs differ by. All five poses
+  also meet the content contrast rule with the floor off, so a pass does not show that the floor is working. This
+  PRD does not define the pixels outside any shaft. At noon the record's figures hold at every cut-off it tried; the
+  low-sun figures depend on the cut-off, are published at three, and have no bar.
 
 - **VLM-SH-012.** Each exterior fixture of §7.2 MUST have one depth-matched pose, a far surface behind a named occluder, with its sample region (§2), checked into `docs/smoke-tests/exterior-shafts-content.sh`. VLM-SH-006's shaft contrast is recorded on it at one of the script's low-sun hours (07:00 or 17:30), and the same pose is also captured at noon, where no shaft is required (§10 Q14). The owner names the poses and occluders (decided 2026-11-19). **Named 2026-11-27:** all five poses of the [scouting record](../engine/procedural-volumetric-fog.md#content-shaft-pose-scouting-vlm-sh-012-2026-11-26), each with its camera, sample region, occluder and the low-sun hour measured there (07:00; Oblivion 17:30). The Oblivion pose is temporary: its occluder is the SpeedTree placeholder billboard, so it MUST be measured again when real tree geometry replaces that billboard, and its shaft does not show in the finished frame. *Met 2026-11-27:* the script holds all five poses, computes the contrast and applies the content contrast rule, and all five passed ([record](../engine/procedural-volumetric-fog.md#content-shaft-contrast-from-the-checked-in-script-vlm-sh-006--012-2026-11-27)). The Oblivion re-measure is still owed when that billboard is replaced.
 
@@ -1070,3 +1077,5 @@ as VLM-NG-006 instead of being reopened.
 | 46 | 2026-11-27 | Owner decisions: all five scouted poses named for VLM-SH-012, Oblivion's as temporary, and Q15, the content pass bar. §2 gains the content contrast rule; VLM-SH-011 and A8 require it; VLM-SH-011's open note and VLM-SH-012 follow. The poses are not yet in the content script, so both requirements stay open. No code change. The reworded text awaits the owner's approval | claude: revise |
 | 47 | 2026-11-27 | Owner approved revision 46: the five named poses, Q15, and the reworded §2, VLM-SH-011, VLM-SH-012 and A8, including that A8 requires the content contrast rule | owner: approved |
 | 48 | 2026-11-27 | `exterior-shafts-content.sh` now holds the five VLM-SH-012 poses, computes the shaft contrast and fails when a pose misses the content contrast rule; all five passed. Status notes follow: VLM-SH-006 and -012 met, VLM-SH-011 still open for its floor-off captures and its luminance change outside a shaft; §2 and §3 row 2 follow. No requirement or promise changed | — |
+| 49 | 2026-11-27 | Haze-floor-off run at the five VLM-SH-012 poses recorded. All five meet the content contrast rule with the floor off as well as at the shipped default. Where the floor clearly acts (FNV 07:00, Oblivion) contrast falls slightly while the light the shadow removes rises. VLM-SH-011 stays open for the owner's review of the noon change; §3 row 2 follows. No requirement or promise changed | — |
+| 50 | 2026-11-27 | Owner accepted the haze floor's noon change at the five VLM-SH-012 poses, from the revision 49 record, and directed that VLM-SH-011 be marked met. §3 rows 2 and 23 follow. No requirement or promise changed | — |
