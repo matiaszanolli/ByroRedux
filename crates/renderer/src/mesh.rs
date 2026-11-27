@@ -163,6 +163,9 @@ pub struct GpuMesh {
     /// UI overlays (uploaded via plain [`MeshRegistry::upload`]) are
     /// `false`; scene meshes (terrain, NIF, clutter) are `true`.
     pub is_scene_mesh: bool,
+    /// Tier this mesh was admitted as, so dropping it releases that tier's
+    /// [`TierUse`] (#7433). Meaningful for scene meshes only.
+    admission_class: GeometryAdmissionClass,
     /// Mirrors the `rt_enabled` argument this mesh was uploaded with —
     /// i.e. whether its per-mesh vertex/index buffers carry
     /// `SHADER_DEVICE_ADDRESS | ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR`.
@@ -211,6 +214,7 @@ struct GlobalGeometryMark {
     vertices: usize,
     indices: usize,
     dirty: bool,
+    tier_use: TierUse,
 }
 
 /// Where the scene-geometry pools and the mesh slot table stood when a group of related uploads
@@ -314,6 +318,9 @@ pub struct MeshRegistry {
     actor_admission_closed: bool,
     /// Class the next uploads are admitted as; see [`Self::with_admission_class`].
     admission_class: GeometryAdmissionClass,
+    /// Live use of the reserved tiers; sets how much of each reserve lower
+    /// tiers are still held off (#7433).
+    tier_use: TierUse,
     /// Pool ceilings this registry enforces.
     pool_limits: PoolLimits,
     /// Scene uploads refused because the global geometry pool is at its limit
@@ -466,6 +473,7 @@ impl MeshRegistry {
             prop_admission_closed: false,
             actor_admission_closed: false,
             admission_class: GeometryAdmissionClass::Essential,
+            tier_use: TierUse::default(),
             pool_limits: PoolLimits::DEFAULT,
             scene_geometry_admission_rejections: 0,
             geometry_has_holes: false,
@@ -611,6 +619,7 @@ impl MeshRegistry {
             global_index_offset: 0,
             vertex_count: vertices.len() as u32,
             is_scene_mesh: false,
+            admission_class: self.admission_class,
             rt_capable: rt_enabled,
             world_per_uv: None,
             local_bound: None,
@@ -687,7 +696,7 @@ impl MeshRegistry {
                 "scene geometry admission is closed after reaching the resident pool limit"
             );
         }
-        let (vertex_hard, index_hard) = self.pool_limits.for_class(class);
+        let (vertex_hard, index_hard) = self.pool_limits.for_class(class, self.tier_use);
         // A refusal latches the tier that was refused. A prop turned away at
         // its reserve-reduced ceiling must leave the essential tier open.
         let latch_refusal = |this: &mut Self| match class {
@@ -783,6 +792,7 @@ impl MeshRegistry {
         // so any index reaching here is already in-range for `vertices`.
         self.pending_vertices.extend_from_slice(vertices);
         self.pending_indices.extend_from_slice(indices);
+        self.tier_use.add(class, vertices.len(), indices.len());
 
         // If the SSBO has already been built, mark dirty so the frame
         // loop knows to call rebuild_geometry_ssbo. See #258.
@@ -802,6 +812,7 @@ impl MeshRegistry {
             vertices: self.pending_vertices.len(),
             indices: self.pending_indices.len(),
             dirty: self.geometry_dirty,
+            tier_use: self.tier_use,
         }
     }
 
@@ -813,6 +824,7 @@ impl MeshRegistry {
         self.pending_vertices.truncate(mark.vertices);
         self.pending_indices.truncate(mark.indices);
         self.geometry_dirty = mark.dirty;
+        self.tier_use = mark.tier_use;
     }
 
     /// Mark the start of a group of global-only scene uploads that must stand or fall together (a
@@ -852,12 +864,23 @@ impl MeshRegistry {
         {
             return false;
         }
+        // Per slot, not from the mark: a drop of an older mesh inside the
+        // group's window has released its own tier use and must stay released.
+        let mut tier_use = self.tier_use;
+        for mesh in self.meshes[group.mesh_slots..].iter().flatten() {
+            tier_use.release(
+                mesh.admission_class,
+                mesh.vertex_count as usize,
+                mesh.index_count as usize,
+            );
+        }
         for idx in group.mesh_slots..self.meshes.len() {
             self.meshes[idx] = None;
             self.mesh_ref_counts[idx] = 0;
             self.mesh_provenance.remove(&(idx as u32));
         }
         self.rollback_global_geometry(group.pools);
+        self.tier_use = tier_use;
         true
     }
 
@@ -1017,6 +1040,7 @@ impl MeshRegistry {
             global_index_offset: i_offset,
             vertex_count: vertices.len() as u32,
             is_scene_mesh: true,
+            admission_class: self.admission_class,
             // No dedicated buffers: the ordinary per-mesh BLAS path must skip
             // this handle. The bounded LOD path uses the shared pool instead.
             rt_capable: false,
@@ -1171,6 +1195,7 @@ impl MeshRegistry {
                 global_index_offset,
                 vertex_count: upload.vertices.len() as u32,
                 is_scene_mesh: true,
+                admission_class: self.admission_class,
                 rt_capable: upload.rt_enabled,
                 world_per_uv: uv_texel_density(upload.vertices, indices),
                 local_bound: bounding_sphere(upload.vertices),
@@ -1324,6 +1349,11 @@ impl MeshRegistry {
                     // it no longer counts against admission.
                     self.dead_vertices += mesh.vertex_count as usize;
                     self.dead_indices += mesh.index_count as usize;
+                    self.tier_use.release(
+                        mesh.admission_class,
+                        mesh.vertex_count as usize,
+                        mesh.index_count as usize,
+                    );
                 }
                 self.deferred_destroy
                     .push((mesh.vertex_buffer, mesh.index_buffer), DEFAULT_COUNTDOWN);
@@ -1736,7 +1766,7 @@ mod refcount_tests {
     fn a_refused_prop_leaves_the_essential_tier_open_and_using_the_reserve() {
         use GeometryAdmissionClass::{Essential, Prop};
         let mut reg = small_pool_registry(1000, 4000);
-        assert_eq!(PoolLimits::with_default_reserve(1000, 4000).for_class(Prop), (950, 3800));
+        assert_eq!(PoolLimits::with_default_reserve(1000, 4000).for_class(Prop, TierUse::default()), (950, 3800));
 
         upload_as(&mut reg, Prop, 930).expect("a prop under its ceiling is admitted");
         assert!(reg.prop_geometry_admission_open());
@@ -1847,9 +1877,9 @@ mod refcount_tests {
         let mut reg = small_pool_registry(1000, 4000);
         // Default reserve: ground 3% (30), actors 2% (20) -> 1000 / 970 / 950.
         let limits = reg.pool_limits;
-        assert_eq!(limits.for_class(Essential), (1000, 4000));
-        assert_eq!(limits.for_class(Actor), (970, 3880));
-        assert_eq!(limits.for_class(Prop), (950, 3800));
+        assert_eq!(limits.for_class(Essential, TierUse::default()), (1000, 4000));
+        assert_eq!(limits.for_class(Actor, TierUse::default()), (970, 3880));
+        assert_eq!(limits.for_class(Prop, TierUse::default()), (950, 3800));
 
         upload_as(&mut reg, Prop, 945).unwrap();
         assert!(upload_as(&mut reg, Prop, 9).is_err(), "props stop at 950");
@@ -1880,8 +1910,8 @@ mod refcount_tests {
             actor_indices: 400,
         });
         let limits = reg.pool_limits;
-        assert_eq!(limits.for_class(Actor), (800, 3200));
-        assert_eq!(limits.for_class(Prop), (700, 2800));
+        assert_eq!(limits.for_class(Actor, TierUse::default()), (800, 3200));
+        assert_eq!(limits.for_class(Prop, TierUse::default()), (700, 2800));
 
         // An absurd demand cannot take more than half of the pool.
         reg.set_pool_reserve(PoolReserve {
@@ -1892,7 +1922,96 @@ mod refcount_tests {
         });
         let r = reg.pool_reserve();
         assert_eq!((r.ground_vertices, r.actor_vertices), (500, 0));
-        assert_eq!(reg.pool_limits.for_class(Prop), (500, 2000));
+        assert_eq!(reg.pool_limits.for_class(Prop, TierUse::default()), (500, 2000));
+    }
+
+    /// A 1000-vertex pool reserving 200 for the ground and 100 for actors.
+    fn reserved_registry() -> MeshRegistry {
+        let mut reg = small_pool_registry(1000, 4000);
+        reg.set_pool_reserve(PoolReserve {
+            ground_vertices: 200,
+            ground_indices: 800,
+            actor_vertices: 100,
+            actor_indices: 400,
+        });
+        reg
+    }
+
+    /// The most a `class` upload could still add, in whole triangles, found
+    /// from the ceiling the next upload would meet.
+    fn room_for(reg: &MeshRegistry, class: GeometryAdmissionClass) -> usize {
+        let (ceiling, _) = reg.pool_limits.for_class(class, reg.tier_use);
+        ceiling - (reg.pending_vertices.len() - reg.dead_vertices)
+    }
+
+    /// #7433 — a reserved tier's own geometry fills its reserve. It is already
+    /// part of the live pool, so holding the whole reserve back on top of it
+    /// charged it twice.
+    #[test]
+    fn a_tier_that_uses_its_reserve_is_not_charged_for_it_twice() {
+        use GeometryAdmissionClass::{Actor, Essential, Prop};
+        let mut reg = reserved_registry();
+        assert_eq!(room_for(&reg, Prop), 700);
+
+        // Ground and actors arriving inside their reserves cost props nothing.
+        upload_as(&mut reg, Essential, 150).unwrap();
+        upload_as(&mut reg, Actor, 60).unwrap();
+        assert_eq!(room_for(&reg, Prop), 700);
+
+        upload_as(&mut reg, Prop, 699).unwrap();
+        // Both guarantees hold with the props at their ceiling.
+        upload_as(&mut reg, Actor, 39).expect("the actors' unused reserve is theirs");
+        upload_as(&mut reg, Essential, 51).expect("the ground's unused reserve is its own");
+    }
+
+    /// #7433 — a tier past its reserve takes the rest from the shared room,
+    /// never from the other tier's unused reserve.
+    #[test]
+    fn use_past_a_reserve_comes_out_of_the_shared_room_only() {
+        use GeometryAdmissionClass::{Actor, Essential, Prop};
+        let mut reg = reserved_registry();
+        upload_as(&mut reg, Essential, 300).unwrap();
+        assert_eq!(room_for(&reg, Prop), 600);
+        assert_eq!(room_for(&reg, Actor), 700);
+    }
+
+    /// #7433 — a dropped mesh releases its tier's use at the drop, as its span
+    /// leaves the admission count (#6106), and compaction does not release it
+    /// a second time.
+    #[test]
+    fn a_dropped_mesh_hands_its_reserve_back() {
+        use GeometryAdmissionClass::{Essential, Prop};
+        let mut reg = reserved_registry();
+        let ground = upload_as(&mut reg, Essential, 150).unwrap();
+        upload_as(&mut reg, Essential, 30).unwrap();
+        reg.drop_meshes(&[ground]);
+        assert_eq!(reg.tier_use.ground_vertices, 30);
+        assert_eq!(room_for(&reg, Prop), 1000 - 100 - 200);
+        reg.compact_pending_geometry();
+        assert_eq!(reg.tier_use.ground_vertices, 30);
+        assert_eq!(room_for(&reg, Prop), 1000 - 100 - 200);
+    }
+
+    /// #7433 — geometry taken back out of the pools leaves its tier's use too:
+    /// an abandoned group (#6332), including when an older mesh was dropped
+    /// inside the group's window, and a rolled-back append (#4891).
+    #[test]
+    fn unwound_geometry_leaves_its_tiers_use() {
+        use GeometryAdmissionClass::{Actor, Essential};
+        let mut reg = reserved_registry();
+        let older = upload_as(&mut reg, Essential, 60).unwrap();
+        let group = reg.begin_scene_geometry_group();
+        upload_as(&mut reg, Essential, 90).unwrap();
+        upload_as(&mut reg, Actor, 30).unwrap();
+        reg.drop_meshes(&[older]);
+        assert!(reg.abandon_scene_geometry_group(group));
+        assert_eq!(reg.tier_use, TierUse::default());
+
+        let mark = reg.global_geometry_mark();
+        let tri = [Vertex::new([0.0; 3], [1.0; 3], [0.0, 1.0, 0.0], [0.0; 2]); 3];
+        reg.accumulate_global_geometry(&tri, &[0, 1, 2]).unwrap();
+        reg.rollback_global_geometry(mark);
+        assert_eq!(reg.tier_use, TierUse::default());
     }
 
     /// #4891 — a failed scene-mesh upload must take back the geometry it fed
@@ -2292,6 +2411,9 @@ mod memory_budget_doc_pin_tests {
         let coarse_indices = 6 * coarse_quads.pow(2);
         let vertices = slots * (TERRAIN_PATCH_VERTEX_COUNT + TERRAIN_PATCH_COARSE_VERTEX_COUNT) as usize;
         let indices = slots * (fine_indices + coarse_indices);
+        // The exterior pool reserve counts the pool through these (#7433).
+        assert_eq!(crate::vulkan::terrain_patch::TERRAIN_PATCH_POOL_VERTICES, vertices);
+        assert_eq!(crate::vulkan::terrain_patch::TERRAIN_PATCH_POOL_INDICES, indices);
         let vertex_bytes = vertices * std::mem::size_of::<Vertex>();
         let index_bytes = indices * std::mem::size_of::<u32>();
         let pool = BUDGET_MD

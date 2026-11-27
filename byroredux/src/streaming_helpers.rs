@@ -687,17 +687,26 @@ const ACTOR_INDICES: usize = 2_600_000;
 
 /// The geometry-pool reserve an exterior session streaming out to
 /// `radius_unload` needs: the ground (terrain + water for every cell the
-/// hysteresis ring can hold, plus the terrain LOD ring) must always fit, then
-/// actors, before props take what is left. A fixed percentage starved terrain at
+/// hysteresis ring can hold, the terrain LOD ring, and the renderer's
+/// terrain-patch pool) must always fit, then actors, before props take what is
+/// left. The renderer holds each reserve back only until its own tier fills it
+/// (#7433), so everything admitted as ground has to be counted here. A fixed percentage starved terrain at
 /// FO4's default radius 12 (625 cells = ~680 k terrain vertices against a 350 k
 /// reserve): 178 terrain cells, the water planes and the whole LOD terrain ring
 /// were refused, which drew as a void.
 pub(crate) fn exterior_pool_reserve(radius_unload: i32) -> byroredux_renderer::PoolReserve {
     let side = 2 * radius_unload.max(0) as usize + 1;
     let cells = side * side;
+    use byroredux_renderer::vulkan::terrain_patch::{
+        TERRAIN_PATCH_POOL_INDICES, TERRAIN_PATCH_POOL_VERTICES,
+    };
     byroredux_renderer::PoolReserve {
-        ground_vertices: cells * GROUND_VERTICES_PER_CELL + TERRAIN_LOD_VERTICES,
-        ground_indices: cells * GROUND_INDICES_PER_CELL + TERRAIN_LOD_INDICES,
+        ground_vertices: cells * GROUND_VERTICES_PER_CELL
+            + TERRAIN_LOD_VERTICES
+            + TERRAIN_PATCH_POOL_VERTICES,
+        ground_indices: cells * GROUND_INDICES_PER_CELL
+            + TERRAIN_LOD_INDICES
+            + TERRAIN_PATCH_POOL_INDICES,
         actor_vertices: ACTOR_VERTICES,
         actor_indices: ACTOR_INDICES,
     }
@@ -1936,8 +1945,9 @@ mod tests {
     fn the_exterior_pool_reserve_scales_with_the_radius() {
         let r4 = exterior_pool_reserve(5); // radius 4, unload ring 5
         let r12 = exterior_pool_reserve(13); // default radius 12
-        assert_eq!(r4.ground_vertices, 121 * 1425 + 300_000);
-        assert_eq!(r12.ground_vertices, 729 * 1425 + 300_000);
+        // 127 536: the terrain-patch pool, ground like the rest (#7433).
+        assert_eq!(r4.ground_vertices, 121 * 1425 + 300_000 + 127_536);
+        assert_eq!(r12.ground_vertices, 729 * 1425 + 300_000 + 127_536);
         assert!(r12.ground_vertices > 1_300_000, "radius 12's terrain alone is ~800 k");
         assert!(r12.ground_indices > r4.ground_indices);
         assert_eq!((r4.actor_vertices, r12.actor_vertices), (600_000, 600_000));

@@ -65,16 +65,61 @@ pub enum GeometryAdmissionClass {
     Prop,
 }
 
-/// Pool space kept back for the higher tiers, in vertices and indices.
-/// `ground_*` is what terrain, water and terrain LOD may count on beyond what
-/// actors and props can touch; `actor_*` is the extra room actors have over
-/// props.
+/// Pool space guaranteed to the higher tiers, in vertices and indices.
+/// `ground_*` is what terrain, water and terrain LOD can count on whatever
+/// actors and props hold; `actor_*` is the same guarantee for actors against
+/// props. A tier's own live geometry fills its reserve ([`TierUse`]): lower
+/// tiers are held off only the part still unused (#7433).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PoolReserve {
     pub ground_vertices: usize,
     pub ground_indices: usize,
     pub actor_vertices: usize,
     pub actor_indices: usize,
+}
+
+/// Live geometry of the two tiers that have a reserve. Dropped spans leave it
+/// at the drop, as they leave the admission count (#6106). Props have no
+/// reserve, so they are not counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TierUse {
+    pub(crate) ground_vertices: usize,
+    pub(crate) ground_indices: usize,
+    pub(crate) actor_vertices: usize,
+    pub(crate) actor_indices: usize,
+}
+
+impl TierUse {
+    fn slot(&mut self, class: GeometryAdmissionClass) -> Option<(&mut usize, &mut usize)> {
+        match class {
+            GeometryAdmissionClass::Essential => {
+                Some((&mut self.ground_vertices, &mut self.ground_indices))
+            }
+            GeometryAdmissionClass::Actor => {
+                Some((&mut self.actor_vertices, &mut self.actor_indices))
+            }
+            GeometryAdmissionClass::Prop => None,
+        }
+    }
+
+    pub(crate) fn add(&mut self, class: GeometryAdmissionClass, vertices: usize, indices: usize) {
+        if let Some((v, i)) = self.slot(class) {
+            *v += vertices;
+            *i += indices;
+        }
+    }
+
+    pub(crate) fn release(
+        &mut self,
+        class: GeometryAdmissionClass,
+        vertices: usize,
+        indices: usize,
+    ) {
+        if let Some((v, i)) = self.slot(class) {
+            *v = v.saturating_sub(vertices);
+            *i = i.saturating_sub(indices);
+        }
+    }
 }
 
 /// The pool ceilings a registry enforces. A field (defaulting to the
@@ -121,11 +166,18 @@ impl PoolLimits {
     pub(crate) const DEFAULT: Self =
         Self::with_default_reserve(VERTEX_POOL_HARD_CAP, INDEX_POOL_HARD_CAP);
 
-    /// Hard ceilings for `class`: each tier below the ground stops short by the
-    /// reserves of the tiers above it.
-    pub(crate) fn for_class(self, class: GeometryAdmissionClass) -> (usize, usize) {
-        let (ground, actor) = (self.reserve.ground_vertices, self.reserve.actor_vertices);
-        let (ground_i, actor_i) = (self.reserve.ground_indices, self.reserve.actor_indices);
+    /// Ceilings the whole live pool must stay under for a `class` upload: each
+    /// tier below the ground stops short by what the tiers above it have not
+    /// yet used of their reserves. `used` is already inside the live pool, so
+    /// holding a full reserve back as well charged it twice: at FO3's default
+    /// radius the ground was resident and 1.34 M vertices were still held for
+    /// it, while 60 distant-LOD quads were refused (#7433).
+    pub(crate) fn for_class(self, class: GeometryAdmissionClass, used: TierUse) -> (usize, usize) {
+        let unused = |reserve: usize, used: usize| reserve.saturating_sub(used);
+        let ground = unused(self.reserve.ground_vertices, used.ground_vertices);
+        let ground_i = unused(self.reserve.ground_indices, used.ground_indices);
+        let actor = unused(self.reserve.actor_vertices, used.actor_vertices);
+        let actor_i = unused(self.reserve.actor_indices, used.actor_indices);
         match class {
             GeometryAdmissionClass::Essential => (self.vertex_hard, self.index_hard),
             GeometryAdmissionClass::Actor => (
@@ -184,8 +236,8 @@ pub(crate) fn check_pool_growth(
     if new_len > hard_cap {
         bail!(
             "{label} pool hard cap exceeded: would grow from {current_len} to {new_len} \
-             (cap {hard_cap}). Likely a leaked cell unload — placements were uploaded \
-             without a matching `drop_mesh`. See REN-D2-005 / #1016.",
+             (cap {hard_cap}). The resident scene is larger than this ceiling, or \
+             placements were uploaded without a matching `drop_mesh`. See REN-D2-005 / #1016.",
         );
     }
     let crossed_soft = current_len <= soft_cap && new_len > soft_cap;

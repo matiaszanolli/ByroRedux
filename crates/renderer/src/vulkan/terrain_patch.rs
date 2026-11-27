@@ -28,9 +28,10 @@ use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::mesh::MeshRegistry;
 use crate::shader_constants::{
-    TERRAIN_PATCH_COARSE_MASK_SHIFT, TERRAIN_PATCH_COARSE_STEP, TERRAIN_PATCH_EDGE_SAMPLES,
-    TERRAIN_PATCH_LATTICE_STEP, TERRAIN_PATCH_QUADS, TERRAIN_PATCH_READBACK_WORDS,
-    TERRAIN_PATCH_SLOTS, TERRAIN_PATCH_VERTS, TERRAIN_PATCH_WORKGROUP,
+    TERRAIN_PATCH_COARSE_MASK_SHIFT, TERRAIN_PATCH_COARSE_QUADS, TERRAIN_PATCH_COARSE_STEP,
+    TERRAIN_PATCH_COARSE_VERTEX_COUNT, TERRAIN_PATCH_EDGE_SAMPLES, TERRAIN_PATCH_LATTICE_STEP,
+    TERRAIN_PATCH_QUADS, TERRAIN_PATCH_READBACK_WORDS, TERRAIN_PATCH_SLOTS,
+    TERRAIN_PATCH_VERTEX_COUNT, TERRAIN_PATCH_VERTS, TERRAIN_PATCH_WORKGROUP,
 };
 use crate::vertex::Vertex;
 use anyhow::{Context, Result};
@@ -339,6 +340,17 @@ pub fn patch_square_key(slot: &TerrainPatchSlot) -> u64 {
     (slot.patch_col, slot.patch_row, slot.base_mesh, slot.coarse).hash(&mut hasher);
     hasher.finish()
 }
+
+/// Global-pool vertices [`TerrainPatchPass::reserve_meshes`] holds for the
+/// registry's lifetime: every slot at both lattice levels. Admitted as ground,
+/// so an exterior pool reserve has to count it (#7433).
+pub const TERRAIN_PATCH_POOL_VERTICES: usize = TERRAIN_PATCH_SLOTS as usize
+    * (TERRAIN_PATCH_VERTEX_COUNT + TERRAIN_PATCH_COARSE_VERTEX_COUNT) as usize;
+/// The indices that go with [`TERRAIN_PATCH_POOL_VERTICES`].
+pub const TERRAIN_PATCH_POOL_INDICES: usize = TERRAIN_PATCH_SLOTS as usize
+    * 6
+    * ((TERRAIN_PATCH_QUADS * TERRAIN_PATCH_QUADS) as usize
+        + (TERRAIN_PATCH_COARSE_QUADS * TERRAIN_PATCH_COARSE_QUADS) as usize);
 
 /// A `quads`×`quads` patch lattice's triangles, the winding
 /// `cell_loader/terrain.rs`'s `land_tile_indices` gives the base cell: per quad

@@ -972,13 +972,15 @@ water 12, LOD 192) — so FO4 beyond radius ~3 exceeded even 5 M / 20 M, and the
 
 **Admission tiers** (`GeometryAdmissionClass`, `PoolReserve`): the caps are
 not shared equally. There are three tiers, in priority order ground > actors >
-props, and each stops short of the cap by the reserves of the tiers above it:
+props, and each stops short of the cap by what the tiers above it have **not yet
+used** of their reserves. The ceiling is tested against the whole live pool,
+which already holds those tiers' geometry:
 
 | Tier (`GeometryAdmissionClass`) | Who | Ceiling | Refusal latch |
 |---|---|---|---|
-| `Essential` | terrain, water, terrain LOD | the full cap | global (`scene_geometry_admission_open`) |
-| `Actor` | the player and NPC bodies | cap less the ground reserve | actor (`actor_geometry_admission_open`) |
-| `Prop` | placed statics, object / tree / placement LOD | cap less the ground *and* actor reserves | prop (`prop_geometry_admission_open`) |
+| `Essential` | terrain, water, terrain LOD, the terrain-patch pool | the full cap | global (`scene_geometry_admission_open`) |
+| `Actor` | the player and NPC bodies | cap less the unused ground reserve | actor (`actor_geometry_admission_open`) |
+| `Prop` | placed statics, object / tree / placement LOD | cap less the unused ground *and* actor reserves | prop (`prop_geometry_admission_open`) |
 
 A prop refused at its ceiling can therefore never close admission for the
 ground. Every latch reopens with the compaction a cell unload triggers.
@@ -988,13 +990,33 @@ The reserve (`PoolReserve`: ground and actor, vertices and indices) defaults to
 of each cap (props get 95 %, as the first version of the reserve did) until the
 host sizes it for the real exterior radius with `MeshRegistry::set_pool_reserve`
 (`streaming_helpers::exterior_pool_reserve`: the ground's need grows with the
-radius, plus a bounded terrain-LOD ring and room for actors). The host's request
+radius, plus a bounded terrain-LOD ring, the terrain-patch pool and room for
+actors). The reserve is the ground's whole guarantee against props, so it has to
+count everything admitted as `Essential`. The host's request
 is clamped so props and actors keep at least half of each pool. Measured at FO4
 radius 4 around the river fixture before the split: the pool reached its cap,
 the player's head and hair were refused, and terrain could be; after it, only
 two distant Object-LOD meshes were refused and every terrain, water and actor
 upload succeeded. The reserve is carved out of the existing caps, so it adds no
 memory.
+
+Until #7433 each reserve was held back in full even after its own tier had
+loaded into it, which charged the ground twice. At FO3 Wasteland's default
+radius that refused props at 5 061 175 live vertices and held back 60
+distant-LOD quads, about 1.9 M below the cap. Measured on 2026-11-27 after the
+fix, at the default radius (`--grid 0,0`, FO4 `-21,21`, Skyrim `5,-3`), each
+run `held_back=0 verdict=PASS` with no refused upload, against a ground reserve
+of 1 466 361 vertices / 6 783 672 indices:
+
+| Game | Live vertices | Ground vertices / indices | Actor vertices |
+|---|---|---|---|
+| FO3 `Wasteland` | 5 319 100 | 1 211 939 / 6 309 234 | 177 042 |
+| FNV `WastelandNV` | 5 587 796 | 1 079 608 / 6 110 787 | 460 865 |
+| Skyrim SE `Tamriel` | 3 371 431 | 1 049 687 / 5 447 670 | 221 734 |
+| FO4 `Commonwealth` | 6 364 702 | 1 042 516 / 5 306 061 | 411 664 |
+
+The `geometry-census-tiers:` line (`BYROREDUX_GEOMETRY_CENSUS=1`) prints these
+figures and the two reduced ceilings at each geometry SSBO build.
 
 **Registry overflow guard** (`667d1a28`): `NifImportRegistry` now defaults
 to a 2 048-entry LRU cap (configurable via `BYRO_NIF_CACHE_MAX=N`; `=0`

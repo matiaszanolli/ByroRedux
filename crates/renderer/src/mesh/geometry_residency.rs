@@ -11,7 +11,9 @@
 //! per-mesh buffers vs global-SSBO-only). Duplicate groups are reported
 //! largest-first with member labels so a run names the assets responsible.
 
-use super::{MeshRegistry, MeshUploadSource, index_slice_bytes, vertex_slice_bytes};
+use super::{
+    GeometryAdmissionClass, MeshRegistry, MeshUploadSource, index_slice_bytes, vertex_slice_bytes,
+};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -176,7 +178,8 @@ impl MeshRegistry {
                 });
                 entry.meshes += 1;
                 entry.vertices += member.vertex_count as usize;
-                entry.indices += member.indices.len();
+                // `member.indices` is the byte view, not the index list.
+                entry.indices += member.indices.len() / std::mem::size_of::<u32>();
                 if rank > 0 {
                     entry.duplicates += 1;
                     entry.duplicate_bytes += member.bytes;
@@ -249,6 +252,33 @@ impl MeshRegistry {
                     c.dedicated_vertex_bytes,
                     c.dedicated_index_bytes,
                     self.scene_geometry_admission_closed,
+                );
+                // The ceilings admission tests live geometry against, and the
+                // reserved tiers' use that sets them (#7433).
+                let limits = self.pool_limits;
+                let (actor_ceiling, actor_ceiling_indices) =
+                    limits.for_class(GeometryAdmissionClass::Actor, self.tier_use);
+                let (prop_ceiling, prop_ceiling_indices) =
+                    limits.for_class(GeometryAdmissionClass::Prop, self.tier_use);
+                log::warn!(
+                    "geometry-census-tiers: live_vertices={} live_indices={} \
+                     ground_vertices={} ground_indices={} ground_reserve_vertices={} \
+                     ground_reserve_indices={} actor_vertices={} actor_indices={} \
+                     actor_reserve_vertices={} actor_reserve_indices={} \
+                     actor_ceiling_vertices={actor_ceiling} \
+                     actor_ceiling_indices={actor_ceiling_indices} \
+                     prop_ceiling_vertices={prop_ceiling} \
+                     prop_ceiling_indices={prop_ceiling_indices}",
+                    self.pending_vertices.len() - self.dead_vertices,
+                    self.pending_indices.len() - self.dead_indices,
+                    self.tier_use.ground_vertices,
+                    self.tier_use.ground_indices,
+                    limits.reserve.ground_vertices,
+                    limits.reserve.ground_indices,
+                    self.tier_use.actor_vertices,
+                    self.tier_use.actor_indices,
+                    limits.reserve.actor_vertices,
+                    limits.reserve.actor_indices,
                 );
                 for category in &c.categories {
                     log::warn!(
@@ -420,6 +450,8 @@ mod tests {
             .find(|c| c.source == MeshUploadSource::CellLoader)
             .expect("cell-loader category present");
         assert!(!rigid_row.skinned);
+        // Counts, not bytes (#7433).
+        assert_eq!((rigid_row.vertices, rigid_row.indices), (6, 6));
         assert_eq!(rigid_row.meshes, 2);
         assert_eq!(rigid_row.duplicates, 1);
 
