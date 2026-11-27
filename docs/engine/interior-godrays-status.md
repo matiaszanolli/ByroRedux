@@ -132,9 +132,11 @@ visible at that position.
   vertical, so the sun slab is about 0.7 m thick) and the canonical portal sun is about 1.0 where the lab uses 6:
   the shaft is real and faint, not missing. A visible one needs more density in the slab or a shaft gain, which is
   an engine choice like the exterior haze floor (VLM-HF-008).
-- **Interior shaft dust (VLM-INT-007): the shaft is now visible.** Where the sun's ray is proven to pass through an
-  authored aperture, the sun term scatters off an extra 0.04 / m (`INTERIOR_SHAFT_DUST_PER_METER`), sun term only,
-  so nothing changes in a dark room, for the local lights, or at night. On `NellisHangar1` the shaft region (6.6%
+- **Interior shaft dust (VLM-INT-007): the shaft is now visible.** In an interior closed to the sky, where the sun's
+  ray is proven to pass through an authored aperture, the sun term scatters off an extra 0.04 / m
+  (`INTERIOR_SHAFT_DUST_PER_METER`), sun term only, so nothing changes in a dark room, for the local lights, or at
+  night. A Show Sky interior is open sky to the froxel pass, which tests no aperture there, so it gets none of this
+  dust ([Volumetric Lighting PRD](../prd/volumetric-lighting.md) §10 Q13). On `NellisHangar1` the shaft region (6.6%
   of the frame) reads 28.3 at noon against 21.6 at midnight in the radiance view and 46.4 against 42.1 in the
   finished frame, against repeat noise of 0.16 and 1.06. `interior-godrays.sh` (45.5) and `exterior-shafts.sh`
   still pass. The shaft is faint in the finished frame (about 9 % over its surroundings), and **dust density is not the

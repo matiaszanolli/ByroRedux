@@ -1,8 +1,9 @@
 # Volumetric Lighting — Product Requirements
 
 **Status**: ACTIVE (2026-11-26). The owner approved revision 38, which folds in review round 3
-(revision 39); revision 40 records the tracking repairs, and revision 41 the `env.health` lines and
-the 90 m shaft gate. The revision history is §12. This document covers
+(revision 39); revision 40 records the tracking repairs, revision 41 the `env.health` lines and the
+90 m shaft gate, and revision 42 the owner's Q13 decision with the reworded VLM-INT-007, approved at
+revision 43. The revision history is §12. This document covers
 the remainder of ROADMAP milestone M55 after the froxel fog slice, the transported
 combustion solver and the interior godray vertical slice shipped. Statements about
 how an original engine, a record format, a paper or another engine behaves cite
@@ -166,7 +167,7 @@ links the measurement table and the per-area acceptance results, and is then fro
 | 21 | Majorant grid / ratio tracking for path-traced media | Non-goal (VLM-NG-002) | No code (`rg -i "majorant\|ratio.track"` is empty) |
 | 22 | Non-RT cascade visibility for the froxels | Non-goal (VLM-NG-006) | No cascade path; [measurement table](../engine/procedural-volumetric-fog.md#measurement-table) row "cascade, 1 tap" is empty |
 | 23 | Exterior haze floor | Shipped | `ExteriorHazeFloor::DEFAULT` and `with_exterior_haze_floor` (`byroredux/src/fog.rs`), applied in `render/mod.rs`; `env.health` prints `haze_floor` (VLM-SH-010, -011; the contrast clause of -011 is open) |
-| 24 | Interior shaft dust | Shipped | `INTERIOR_SHAFT_DUST_PER_METER`, sun term only, `volumetrics_inject.comp`, never under open sky; `env.health` prints `shaft_dust` (VLM-INT-007) |
+| 24 | Interior shaft dust | Shipped | `INTERIOR_SHAFT_DUST_PER_METER`, sun term only, `volumetrics_inject.comp`, never under open sky, which includes Show Sky interiors (§10 Q13); `env.health` prints `shaft_dust` (VLM-INT-007) |
 | 25 | Interior aperture dust floor | Shipped | `FogMedium::with_sky_aperture_dust_floor`, applied in `render/mod.rs`, which records the decision; `env.health` prints `aperture_dust_floor` (VLM-INT-008) |
 
 ---
@@ -530,8 +531,8 @@ The RT visibility replaces cascades (VLM-NG-006).
   extinction is below it, so it never thins authored haze; it MUST be a smooth
   function of the sun's elevation that rises toward the horizon, where the
   slanted path through air and dust is longer; and it MUST be zero in an
-  interior, which the interior aperture dust floor (VLM-INT-008) and the
-  shaft dust (VLM-INT-007) cover, and below the
+  interior, where the interior aperture dust floor (VLM-INT-008) and, with the
+  sky closed, the shaft dust (VLM-INT-007) apply instead, and below the
   horizon at night.
 - **VLM-SH-011.** The floor's default MUST be chosen from captures and
   published: on each exterior fixture of §7.2 a noon and a low-sun capture with
@@ -588,15 +589,15 @@ The RT visibility replaces cascades (VLM-NG-006).
   not from the unit tests: a converter that no loader path reaches measures 0 ÷ N however well its tests pass.
   [Record](../engine/procedural-volumetric-fog.md#live-beam-converter-coverage-vlm-int-006). The ROADMAP does not publish the ratio yet (§8).
 
-- **VLM-INT-007.** Where the sun's ray has been proven to pass through an authored aperture (a marked
-  `SkyAperture` plane or a `LightShaft` cone), the sun term MUST scatter off an engine-supplied shaft dust
-  (`INTERIOR_SHAFT_DUST_PER_METER`, an engine choice recorded under VLM-HF-008, the interior counterpart of
-  VLM-SH-010). It MUST ride the sun term only, so the dark room, the local lights and the night gain nothing from
-  it, and it MUST NOT apply to open sky, glass or rim-probe visibility.
-  [Record](../engine/procedural-volumetric-fog.md#interior-shaft-dust-measurement-vlm-int-007). `env.health` MUST print its live value, as
-  VLM-HF-008 requires. *Shipped:* the `shaft_dust` line reads 0 in an exterior and under open sky, and the
-  per-metre value where the froxel pass tests authored apertures. A Show Sky interior counts as open sky: the
-  shader tests no aperture there, so its light-shaft cones get no shaft dust.
+- **VLM-INT-007.** In an interior closed to the sky (its cell does not set Show Sky), where the sun's ray
+  has been proven to pass through an authored aperture (a marked `SkyAperture` plane or a `LightShaft` cone),
+  the sun term MUST scatter off an engine-supplied shaft dust (`INTERIOR_SHAFT_DUST_PER_METER`, an engine
+  choice recorded under VLM-HF-008, the interior counterpart of VLM-SH-010). It MUST ride the sun term only,
+  so the dark room, the local lights and the night gain nothing from it. It MUST NOT apply to glass or
+  rim-probe visibility, or under open sky: an exterior, or a Show Sky interior, where the froxel pass tests
+  no authored aperture (§10 Q13). [Record](../engine/procedural-volumetric-fog.md#interior-shaft-dust-measurement-vlm-int-007). `env.health`
+  MUST print its live value, as VLM-HF-008 requires. *Shipped:* the `shaft_dust` line reads 0 in an exterior
+  and under open sky, and the per-metre value where the froxel pass tests authored apertures.
 - **VLM-INT-008.** In an interior whose cell shows the sky (Show Sky), holds a `LightShaft` fog volume or
   shows architectural window glass, the engine MUST raise the global medium's extinction to at least
   0.005 / m, an engine choice recorded under VLM-HF-008. A stronger authored medium keeps its value, and a
@@ -646,7 +647,7 @@ opaque geometry as a post process, 32 × 32 over the screen by default
 | 6 | An interior shows the sky of its region (Skyrim / FO4 `XCCM`) | Same (VLM-REG-009, shipped) | — | Interiors whose `XCCM` region has no Weather section keep the worldspace palette → VLM-REG-009 |
 | 7 | Fog power shapes the authored ramp (GECK *Weather*: "Fog effects are calculated as a curve") | The power enters the one fit (VLM-HF-001) | — | Clear-weather exteriors about 4.6x thicker on FNV and Skyrim than before Phase 1 (rev 20), above the haze floor → VLM-HF-002, VLM-SH-011, #6776 |
 | 8 | The CK / GECK / CS region pages do not state which non-override region wins | An engine merge rule (VLM-REG-002) | — | Different weather in overlapping regions if the original differs → §10 Q9, #6772 |
-| 9 | — (engine-supplied; no original counterpart is cited) | The sun term scatters off an engine-supplied interior shaft dust (VLM-INT-007) | — | A shaft where the original drew none → VLM-INT-007, VLM-HF-008 |
+| 9 | — (engine-supplied; no original counterpart is cited) | The sun term scatters off an engine-supplied interior shaft dust (VLM-INT-007) | — | A shaft where the original drew none; Show Sky interiors get none of this dust, so their shafts rest on the medium they already have → VLM-INT-007, VLM-INT-002, VLM-HF-008, §10 Q13 |
 | 10 | The FNV vertex shader measures fog distance as the length of the clip-space xyz before the divide (VLM-HF-001) | The fog power is fitted against view-space distance ([EXAL §3.3](../engine/exal.md#33-engine-choice-fog-distance-metric-vlm-hf-001)) | — | Fog onset can differ from the authored look; the difference is unmeasured → VLM-HF-001, VLM-HF-008 |
 | 11 | — (engine-supplied; no original counterpart is cited) | Qualifying interiors get a minimum medium extinction | — | Haze in a room the content authored clear, at night too → VLM-INT-008, VLM-HF-008 |
 | 12 | — (engine limit; no original counterpart is cited) | The froxel sun takes one cloud-shadow value from the camera column | — | Beyond one 125 m texel, shafts can disagree with the cloud shadow on the ground; unmeasured → VLM-SH-004 |
@@ -942,6 +943,17 @@ as VLM-NG-006 instead of being reopened.
     Alternative B: withdraw VLM-SH-010 and -011, which reverses Q7 and returns Oblivion
     to its authored 0.00043 / m (the floor-off captures show that look).
     **Decided** (2026-11-19): the recommendation — the floor and its default stand.
+13. **Q13 — Does a Show Sky interior get the interior shaft dust (VLM-INT-007)?**
+    Recommended: no. Keep the shipped behaviour and say that the dust applies only in
+    interiors closed to the sky. The froxel pass treats a Show Sky interior as open
+    sky and tests no authored aperture there. FO4's six `shaft` cells are Show Sky
+    cells (rev 26), and rev 30 records all six passing on 2026-11-18 on a build,
+    `9bbc76bc88a1`, that already skipped that test under open sky, so those passes
+    did not depend on the dust.
+    Alternative: test authored apertures in Show Sky interiors too and give those rays
+    the dust. That is a shader change that adds an engine-supplied medium to those
+    cells' shafts, and their day / night results would need measuring again.
+    **Decided** (2026-11-26): the recommendation — the behaviour stands.
 
 ---
 
@@ -1016,3 +1028,5 @@ as VLM-NG-006 instead of being reopened.
 | 39 | 2026-11-26 | Owner approved revision 38, covering VLM-INT-007 (added at rev 6), VLM-SH-012 (rev 34), VLM-INT-008, the rewording listed in rev 38 (with A9's one-commit and frozen-capture rules and §7.1's FO76 statement) and the Q8 amendment | owner: approved |
 | 40 | 2026-11-26 | Tracking repairs after approval: #6728 reopened (its exit is unmet); VLM-SH-011's contrast clause added to #6773; verify items filed as #7425 (CK load-order rule), #7426 (`XCCM` against regions), #7427 (mods made redundant) and #7428 (fog shader roles). #6776 stays open: rev 36's "answered" covered the haze floor default only, and its power-term verdict and `BYRO_SUN_DUST` re-measure are not recorded. Corrected VLM-HF-001's verify method, which said Pow captures alone would settle all three roles. No requirement or promise changed | — |
 | 41 | 2026-11-26 | `env.health` now prints the cell-climate-over-region order and both interior dust values (closes the open notes on VLM-HF-008, VLM-INT-007 and -008), with the frame builder recording the aperture-floor decision. A lock-order inversion in the same command is fixed. `exterior-shafts.sh` runs VLM-SH-005's 90 m case, which passes; §2 gains the 90 m crop, the same wall area projected into that camera, because the 55 m crop reads sky and open haze there. VLM-INT-007 now records that Show Sky interiors get no shaft dust. No requirement or promise changed | — |
+| 42 | 2026-11-26 | Owner decision Q13: Show Sky interiors get no shaft dust, and the shipped behaviour stands. VLM-INT-007 reworded to apply only in interiors closed to the sky and to name Show Sky interiors as open sky; the VLM-SH-010 cross-reference, §3 row 24 and §6 row 9 follow. No code change. The reworded text awaits the owner's approval | claude: revise |
+| 43 | 2026-11-26 | Owner approved revision 42: VLM-INT-007 as reworded, with Q13 | owner: approved |
