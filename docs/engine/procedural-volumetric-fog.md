@@ -13,8 +13,9 @@ the froxel injector before radiative coefficients are derived. Conservative
 TLAS-backed solid blocking prevents RK2 backtraces from pulling chemistry
 through opaque geometry. A fixed-point GPU moment grid now reduces the
 transported emissive field into delayed canonical surface lights without a
-source-primitive proxy. Slip/pressure boundary response and real-content
-visual calibration remain open follow-ups.
+source-primitive proxy. Calibration of the solid boundary and real-content
+visual calibration remain open follow-ups
+([follow-up boundary](#follow-up-boundary)).
 
 **Location:** `crates/core/src/ecs/components/fog_volume.rs`,
 `byroredux/src/{fog,render/{fog_volumes,lights}}.rs`,
@@ -39,6 +40,11 @@ of them one physical and temporal contract.
   Atmospheric Scattering](https://bartwronski.com/wp-content/uploads/2014/08/bwronski_volumetric_fog_siggraph2014.pdf)
 - Sébastien Hillaire, [A Scalable and Production Ready Sky and Atmosphere
   Rendering Technique](https://sebh.github.io/publications/egsr2020.pdf)
+- Sébastien Hillaire, [Physically Based and Unified Volumetric Rendering in
+  Frostbite](https://advances.realtimerendering.com/s2015/Frostbite%20PB%20and%20unified%20volumetrics.pptx)
+  (SIGGRAPH 2015, Advances in Real-Time Rendering course slides). The M55
+  parity reference; its feature checklist is
+  [PRD §8.1](../prd/volumetric-lighting.md#81-modern-parity-checklist).
 
 ## Runtime contract
 
@@ -672,9 +678,10 @@ fixture's, which now resolves to Black Mountain through the region table; the tw
   Its 72-byte FNAM retains all 18
   [xEdit-defined fields](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsFO4.pas#L15106-L15125),
   including the ten form-version 119/120 near/far height and high-density
-  values. The current homogeneous fit consumes distance and maximum opacity;
-  power and height are preserved for the authored height-profile slice rather
-  than guessed into the wrong curve.
+  values. The fit consumes distance, maximum opacity, power and the near
+  height range; the
+  [field disposition table](#fog-and-god-ray-field-disposition-vlm-hf-009)
+  lists every other field.
 - A raw recursive survey found zero `VOLI` records in `Fallout4.esm` and all
   six official Fallout 4 DLC masters (`DLCRobot`, `DLCCoast`, `DLCNukaWorld`,
   and the three workshop masters). VOLI therefore cannot calibrate Fallout 4
@@ -718,6 +725,44 @@ fixture's, which now resolves to Black Mountain through the region table; the tw
   `SuperSpray01-Emitter` hosts. Both become `FogVolume` entities in the live
   ECS; the old sprite texture is no longer uploaded for them.
 
+### Fog and god-ray field disposition (VLM-HF-009)
+
+State at HEAD on 2026-11-26, traced from the parser structs to
+`byroredux/src/env_translate/sky_weather.rs`, `components/environment.rs`
+(`CellLightingRes::from_cell_lighting`, the interior cell path),
+`fog.rs` and `render/mod.rs`. **Medium**: reaches `FogMedium`. **Tint**:
+reaches the renderer as the fog colour, outside `FogMedium`. **Excluded**:
+not consumed, with a recorded reason. **Not ruled**: not consumed, and no
+requirement, decision or verify item covers it yet.
+
+| Source and field | Disposition | Reason or path |
+|---|---|---|
+| `WTHR` fog day / night near and far | Medium | `FogMedium::from_authored_fog` |
+| `WTHR` fog day / night power | Medium | Same (VLM-HF-001) |
+| `WTHR` fog day / night maximum opacity | Medium | Same |
+| `WTHR` FO4 / FO76 / Starfield `FNAM` day / night near height range (`WeatherHeightFog`) | Medium | `with_authored_height_range`, through the same function |
+| `WTHR` fog colour (`NAM0` fog group) | Tint | `fog_colour_radiance` in `render/mod.rs` |
+| `WeatherHeightFog` day / night near height mid | Excluded | The shader anchors the profile to the measured ground near the camera (`with_authored_height_range` doc comment, #3956) |
+| `WeatherHeightFog` day / night far height mid and range | Excluded until #6771 | Semantics unverified (VLM-HF-003) |
+| `WeatherHeightFog` day / night high density scale | Excluded until #6771 | Semantics unverified (VLM-HF-003) |
+| Skyrim `NAM0` "fog far" colour group (in `skyrim_extra_colors`) | Not ruled | — |
+| `XCLL` / `LGTM` fog near and far, power, maximum opacity (interior cells) | Medium | `CellLightingRes::from_cell_lighting` |
+| `XCLL` / `LGTM` fog colour (interior cells) | Tint | `fog_colour_radiance` |
+| `XCLL` / `LGTM` fog far colour | Not ruled | Carried on `CellLightingRes`; read by diagnostics only |
+| `XCLL` / `LGTM` fog clip | Excluded | Part of the legacy cubic-fog curve, which the physical path does not evaluate (`render/mod.rs` comment; VLM-NG-003) |
+| FO4 / FO76 / Starfield cell height tail: near height range | Medium | `height_fog_tail()` into `from_authored_fog` (VLM-HF-005) |
+| Cell height tail: near height mid | Not ruled | The weather field's reason above has not been recorded for the cell field |
+| Cell height tail: far height mid and range, high density scale | Excluded until #6771 | Semantics unverified (`HeightFogTail` doc comment, VLM-HF-003) |
+| Cell height tail: two high-altitude fog colours | Not ruled | — |
+| Cell height tail: fog near, far, high near and high far scales | Not ruled | — |
+| `VOLI`: all decoded fields (intensity, custom colour and contribution, four density fields, two phase fields, sampling range factor) | Excluded | No source settles their meaning (VLM PRD §10 Q8) |
+| `GDRY`: all decoded fields (back, forward and air colour, intensity, three scales, two phases) | Excluded | Same (§10 Q8) |
+| Links: `WTHR` `HNAM` and `WGDR`, `CELL` `XGDR`, `LGTM` `WGDR`, `LIGH` `WGDR` and god-ray near clip | Excluded | Same (§10 Q8) |
+
+The "Not ruled" rows keep VLM-G-002 open. The PRD's profile field coverage
+ratio is unpublished: its definition counts fields reaching `FogMedium` and
+does not say how to count the **Tint** rows.
+
 ## Follow-up boundary
 
 1. calibrate source, decay, boundary-slip, and field-light reduction against
@@ -727,7 +772,46 @@ fixture's, which now resolves to Black Mountain through the region table; the tw
    it has no game or authoring-provenance branch;
 2. extend authored-mesh replacement to the loose-NIF route and add the optional
    tri-planar 2D-mask density path for silhouettes that need texture fidelity;
-3. map the verified Starfield height-fog block without guessing its curve;
-4. add the 32³ aerial-perspective LUT and a non-RT cascade visibility variant;
+3. consume more of the Starfield height-fog block than its near height range
+   (shipped, VLM-HF-005) without guessing its curve
+   ([field disposition](#fog-and-god-ray-field-disposition-vlm-hf-009));
+4. add the 32³ aerial-perspective LUT only if VLM-AP-001 fails with the
+   analytic tail (VLM PRD §10 Q4). A non-RT cascade visibility variant is a
+   non-goal (VLM-NG-006);
 5. extend the existing glass transmittance hook with ratio tracking and a
    majorant grid for path-traced heterogeneous media.
+
+## M55 requirement records
+
+Measurement history moved here word for word from the
+[Volumetric Lighting PRD](../prd/volumetric-lighting.md) on 2026-11-26 (its revision 38), so that its
+requirements state only what must hold. Each record is dated by its own text; where a record states a
+gate or a status, the PRD's requirement is the current one.
+
+### Far height layer census and capture pairs (VLM-HF-003)
+
+**Census, 2026-11-07** (`fog_godray_census`): 63 of 71 `Fallout4.esm` weathers carry the layer, in 16 distinct day tuples; the commonest (24 weathers, e.g. `FXNukeWeather`) is the neutral default (near mid 0 / range 10,000, density scale 1.00, far mid 0 / range 10,000); the authored spread is near mid 0 to 1004, near range 1,000 to 25,000, density scale 0.90 to 1.00, far mid -6,400 to 12,000, far range 10,000 to 15,000 (two values). The semantics are still unverified and need the matched captures (filed as #6771). Those captures have to be of the original engine: the fields are unread here, so captures from this engine cannot differ. The census finds the pairs to observe, same distance ramp, power and maximum opacity and a different height tuple: `CommonwealthClear` (`0002B52A`) against `CommonwealthClearestSkies` (`001D670E`), which differ only in high density scale 0.95 against 0.90, and `CommonwealthGSFoggy` (`001BD481`) against `CommonwealthGSRadstorm` (`001C3D5E`), which differ only in far height mid 12,000 against 64 (their colours and clouds also differ).
+
+### Grid seam cause, re-measurement and baseline (VLM-HF-007)
+
+The cause was two disagreements between the grid and the tail, both fixed: the grid multiplies the medium by a noise factor (`proceduralDensityScale`, `mix(0.2, 1.35, density)`) whose mean at the default coverage is below 1 while the tail integrated the unmodulated coefficient (the host now passes the tail `fog_mean_density_scale(coverage)`, computed from the noise volumes' histograms), and the tail's height term did not clamp at the reference height as the grid's does (`heightFogOpticalDepth` now integrates the clamped profile piecewise). Re-measured with `fog-grid-seam.sh` (128 m against 512 m, repeat noise ~0): noon FNV hills right -14.2 to -1.8 (earlier build: -5.6 to -1.8), Skyrim terrain haze -4.2 to -0.1, sky +3.7 to +0.3, and at night FNV hills left +5.3 to +0.6, sky band +5.5 to +0.04; every region now moves at most about 2 levels. The literal bar (no more than the repeat's noise, which is zero in `renderer-stepped`) cannot hold where the grid resolves real shadows beyond 128 m, so the gate is a tolerance of 2.5 levels (`SEAM_TOLERANCE`), decided at §10 Q11. **Baseline at HEAD before Phase 4, 2026-11-07 (`docs/smoke-tests/fog-grid-seam.sh`): the requirement did not hold.** In `renderer-stepped` mode a repeat capture differs by at most 0.004 levels per region, and moving the grid from 128 m to 512 m shifts the distant regions by: FNV Goodsprings, hills right -5.56, hills left +0.18, sky band -0.63, whole frame -0.54; Skyrim Whiterun elevated pose, terrain haze -4.18, far ridge +6.02, forest +0.02, sky +4.83, whole frame +0.42. The regions are windows over distant content (no depth view exists), not a depth mask.
+
+### Shaft range sweep (VLM-SH-005)
+
+**Measured 2026-11-07** (`--shaft-lab-distance`, default 128 m grid, the gate's 0.05 bar, open minus solid contrast): 25 m 0.233, 40 m 0.237, 55 m 0.154, 70 m 0.131, 90 m 0.071, 110 m 0.031, 128 m 0.004, 150 m 0.001. The shaft passes out to somewhere between 90 and 110 m and is gone at the grid's far plane, so the observable range is about 90 to 100 m of the 128 m grid. The owner accepted this range at §10 Q10 (2026-11-19).
+
+### Cutout card measurement (VLM-SH-009)
+
+**Phase 0, measured 2026-11-07:** cutout 116.36, geometry 129.16, solid 93.40, a 9.9 % gap, so it failed with the opaque traversal, as predicted. **Met the same day** by the alpha-aware sun trace (§3 row 17): cutout 129.18, geometry 129.16, solid 93.40, a gap of 0.0 %. The criterion this requirement first carried, shaft contrast behind cutout texels against behind opaque texels, is withdrawn: it reads 0.106 on an opaque trace, because a view ray through a cutout also sees the lit haze beyond the panel and a ray that ends at an opaque texel does not. Only a see-through reference that is real geometry removes that difference.
+
+### Haze floor re-measure and decision (VLM-SH-011)
+
+**Re-measured 2026-11-19** ([fog design](procedural-volumetric-fog.md#haze-floor-after-the-authored-fog-power-q12-re-measure-2026-11-19)): the floor binds on 0 of 13 sampled hours on FO3 and Skyrim, 2 on FO4, 3 on FNV and 11 on Oblivion, whose records carry no fog power. Where it binds the frame moves (Oblivion 07:00 +30.5 % frame mean, noon +3.6 %; FNV 07:00 +8.7 %); where it does not, floor-off and shipped frames are identical. The owner reviewed those captures and decided at §10 Q12 (2026-11-19) to keep the floor and its default; the noon non-shaft change they accepted is the measured one (Oblivion +3.6 % frame mean, FNV, FO3 and the other fixtures none).
+
+### Live beam-converter coverage (VLM-INT-006)
+
+Found on 2026-11-07: the `fxlight` early return in `synth_child.rs` kept every FNV `FXLightBeam*` placement from loading its NIF, so all FNV beam converters measured 0 live until the return was narrowed (`Vault11a` 14 ÷ 14, `SLAbandonedShack03INT` 5 ÷ 5 afterwards). **Denominators, 2026-11-07:** placed beam references for every official master and DLC are in [interior-shaft-openings](interior-shaft-openings.md#placed-beam-census-every-title-and-official-dlc-vlm-int-006-denominators-measured-2026-11-07); Fallout 4 is the one title with many beams in Show Sky cells (657 of 1,604 interior placements), and, from #6774 (2026-11-08), every title has one: FO4 about 100 % (all 9 placed models), Oblivion 92.9 % (the #6731 gate now includes it; 66 volumes live in a 52-placement cell), Skyrim 0 of 1, Starfield 0 of 1 ([interior-shaft-openings](interior-shaft-openings.md)).
+
+### Interior shaft dust measurement (VLM-INT-007)
+
+Measured on FNV `NellisHangar1` (#6727): the converted planes are thin ribbons (about 8 m x 1.4 m), and without the dust the noon-minus-midnight radiance difference is about 0 over six cameras; with 0.04 / m it is 3.6 to 7.3 % of pixels above 3 levels (max 19), and in the shaft region noon reads 28.3 against 21.6 at midnight (repeat noise 0.16).

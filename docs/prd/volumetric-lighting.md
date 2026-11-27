@@ -1,6 +1,8 @@
 # Volumetric Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-19). Revision 37 cross-links the [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md) (it owns the world-space radiance cache; froxel in-scatter may consume it later, which this PRD does not promise); revision 36 records the owner's Q12 decision on the haze floor; revision 35 recorded its re-measure and revision 34 folded in review round 2. The revision history is §12. This document covers
+**Status**: ACTIVE (2026-11-26). The owner approved revision 38, which folds in review round 3
+(revision 39); revision 40 records the tracking repairs and corrects one verify method. The revision
+history is §12. This document covers
 the remainder of ROADMAP milestone M55 after the froxel fog slice, the transported
 combustion solver and the interior godray vertical slice shipped. Statements about
 how an original engine, a record format, a paper or another engine behaves cite
@@ -42,6 +44,8 @@ writes the missing design.
 | Climate / weather translation boundary, base-fog strength choice | [EXAL](../engine/exal.md) |
 | Region weather resolution (`RDWT` tables, Override / Priority, `XCCM` sky-from-region) | Shipped in Phase 1 (2026-11-08): [EXAL §3.2](../engine/exal.md#32-region-weather-resolution-vlm-reg-phase-0-census-2026-11-07) records the census and the rules; the resolver is `env_translate/region_weather.rs` |
 | Authored god-ray records (Skyrim SE `VOLI`, FO4 `GDRY`) | Census recorded in the fog design's [corpus findings](../engine/procedural-volumetric-fog.md#corpus-findings); decode shipped in Phase 1 (VLM-HF-010, -011); what they feed is §10 Q8 |
+| Which decoded fog and god-ray fields are consumed, and why the rest are not | [Field disposition table](../engine/procedural-volumetric-fog.md#fog-and-god-ray-field-disposition-vlm-hf-009) |
+| Measurement records behind the requirements | [M55 requirement records](../engine/procedural-volumetric-fog.md#m55-requirement-records) |
 | Units, emitters, visibility masks, adaptive ray budget | [Physical Lighting Backbone](../engine/physical-lighting-backbone.md) |
 | Per-game engine tiers | [Game Compatibility](../engine/game-compatibility.md) |
 | Path-traced media (majorant, ratio tracking) | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) |
@@ -92,8 +96,9 @@ legacy fog, weather and region field is translated once at the EXAL boundary
 into the canonical `FogMedium`; nothing past that boundary branches on game,
 record or provenance. The engine will not reproduce the legacy distance-ramp
 look, will not reintroduce painted beam cards, and will not invent a medium
-the content did not author without recording it as an engine choice; it supplies two,
-the exterior haze floor (VLM-SH-010) and the interior shaft dust (VLM-INT-007).
+the content did not author without recording it as an engine choice; it supplies three,
+the exterior haze floor (VLM-SH-010), the interior shaft dust (VLM-INT-007) and the
+interior aperture dust floor (VLM-INT-008).
 
 ---
 
@@ -111,7 +116,8 @@ the exterior haze floor (VLM-SH-010) and the interior shaft dust (VLM-INT-007).
 | **Weather source** | Which authored record chose the weather in effect: a forced weather, a region weather table, a cell `XCCM`, or the climate. |
 | **Override lock** | The optional second argument of ObScript `ForceWeather` that keeps a forced weather until `ReleaseWeatherOverride` (`ForcedWeather::locked`). |
 | **Shaft** | A visible difference in in-scattered radiance between lit and occluded parts of the medium along the view, produced by the froxel sun or local-light term and RT visibility. |
-| **Shaft contrast** | The mean linear radiance in a shaft region minus that in an adjacent occluded region of the same frame, in a `render.debug composite_term` capture. |
+| **Shaft contrast** | On content: the mean linear radiance in a shaft region minus that in an adjacent occluded region of the same frame, in a `render.debug composite_term` capture. No script computes it yet (VLM-SH-012). |
+| **Lab shaft contrast** | What `exterior-shafts.sh` computes: (lit − shadow) / (lit + shadow) over the wall body (rows 335–519, columns 375–904) of an 8-bit grayscale `render.debug volumetric_term` capture, which shows `max(1 − exp(−radiance), opacity)` and is not linear radiance. Lit columns are the gaps and shadow columns the slats, found from a finished frame of the open lab. |
 | **Sky aperture** | A proved source plane, `FogProfile::SkyAperture` ([handoff](../engine/interior-godrays-status.md#what-is-implemented)). |
 | **Portal sun** | The outdoor sun an interior's medium sees through an opening ([SKYAL interior lane](../engine/skyal.md#the-interior-outdoor-sky-lane-4927-2026-10-01)). |
 | **Combustion field** | The transported fire / smoke state; owned by the fire plan, named here only to scope it out. |
@@ -130,7 +136,7 @@ reader finds who answers for a mechanism, and how the ROADMAP row reports it.
 | **Owned elsewhere** | Promised by another document with its own tracking; listed so it is not lost. | the owning document's tracking issue |
 | **Non-goal** | Deliberately out (§4.2). | not listed |
 
-The inventory below states what holds at HEAD on 2026-11-19. Each row names the
+The inventory below states what holds at HEAD on 2026-11-26. Each row names the
 requirement that owns it and the symbol or test that proves it (R4); line numbers
 are not cited because they drift. It stays hand-written until the ROADMAP M55 row
 links the measurement table and the per-area acceptance results, and is then frozen.
@@ -150,15 +156,18 @@ links the measurement table and the per-area acceptance results, and is then fro
 | 11 | Weather choice | Shipped | `resolve_cell_weather` takes the cell's `XCCM` climate, else the region tables' weather, else `resolve_default_weather`'s highest-chance climate row (the one rule EXAL fixes, #5424); `apply_cell_weather` (`scene/world_setup.rs`) re-resolves per cell crossing and applies the same 8-second `WeatherTransitionRes` cross-fade a worldspace change uses ([EXAL](../engine/exal.md) §3.2) |
 | 12 | Skyrim / FO4 interior `XCCM` sky-from-region | Shipped (VLM-REG-009) | `CellData::sky_region` is read in `env_translate/region_weather.rs` and `scene/world_setup.rs`; test `an_interior_region_takes_its_own_table_and_its_worldspaces_climate` |
 | 13 | Forced weather | Shipped (VLM-REG-006, -014) | `forced_or` (`scene/world_setup.rs`) outranks the climate default; `ForcedWeather::locked` is read by `release_unlocked_forced_weather`, so an unlocked force yields at the next crossing |
-| 14 | Interior shafts and sky apertures | Shipped, coverage open (VLM-INT) | `--godray-lab` + `docs/smoke-tests/interior-godrays.sh`; its gate is green again (#6730: the lab states the two values the engine stopped supplying a cell-less harness, `db28aa9b2`); its 25-level bar is calibrated to the lab's radiance, not to weather; aperture upload keeps the nearest apertures and counts the dropped ones (VLM-INT-005, `context/sky_apertures.rs`) |
+| 14 | Interior shafts and sky apertures | Shipped | Coverage is open (VLM-INT); `--godray-lab` + `docs/smoke-tests/interior-godrays.sh`; its gate is green again (#6730: the lab states the two values the engine stopped supplying a cell-less harness, `db28aa9b2`); its 25-level bar is calibrated to the lab's radiance, not to weather; aperture upload keeps the nearest apertures and counts the dropped ones (VLM-INT-005, `context/sky_apertures.rs`) |
 | 15 | Analytic tail for distant geometry | Shipped (VLM-HF-007, VLM-AP-002) | `composite.frag` continues the grid boundary radiance, clamped to four times the authored fog luminance, and fades exterior surfaces through `sky_air_terms` (`shaders/include/sky.glsl`); the monotonic ridge sweep (VLM-AP-001) is unmeasured |
 | 16 | Aerial-perspective volume (Hillaire 2020) | Open (VLM-AP-003, conditional on §10 Q4) | No aerial LUT in `crates/renderer` (`rg -i "aerial.*lut"` is empty); [measurement table](../engine/procedural-volumetric-fog.md#measurement-table) row "Aerial LUT on" is empty |
 | 17 | Alpha-tested cutouts in the froxel sun trace | Shipped (VLM-SH-009) | `sunRayBlockedAlphaAware` (`volumetrics_inject.comp`) re-walks a sun ray the binary trace calls blocked, open sky only; `traceShadowBinary` itself stays opaque, so interiors and the local-light traces are unchanged |
-| 18 | Authored god-ray profiles (Skyrim SE `VOLI`, FO4 `GDRY`) | Shipped decode (VLM-HF-010, -011); feeding the medium is §10 Q8 | `parse_voli`, `parse_gdry` (`crates/plugin/src/esm/records/god_rays.rs`); census in the fog design's [corpus findings](../engine/procedural-volumetric-fog.md#corpus-findings); no field feeds `FogMedium` |
-| 19 | Combustion solid boundary: no-through, inward-normal removal, tangential slip, wall friction, transported overpressure | Owned elsewhere (fire plan, fog design follow-up 1) | `include/combustion_transport.glsl` removes the inward normal component and applies `COMBUSTION_WALL_FRICTION_PER_SECOND` (since `715b9230b`); overpressure transport since `2155cc917`; ROADMAP's "boundary-normal slip/pressure response" open item is stale (§11 follow-ups) |
+| 18 | Authored god-ray profiles (Skyrim SE `VOLI`, FO4 `GDRY`) | Shipped | Decode only (VLM-HF-010, -011), and feeding the medium is §10 Q8; `parse_voli`, `parse_gdry` (`crates/plugin/src/esm/records/god_rays.rs`); census in the fog design's [corpus findings](../engine/procedural-volumetric-fog.md#corpus-findings); no field feeds `FogMedium` |
+| 19 | Combustion solid boundary: no-through, inward-normal removal, tangential slip, wall friction, transported overpressure | Owned elsewhere (fire plan, fog design follow-up 1) | `include/combustion_transport.glsl` removes the inward normal component and applies `COMBUSTION_WALL_FRICTION_PER_SECOND` (since `715b9230b`); overpressure transport since `2155cc917`; calibration is open ([follow-up boundary](../engine/procedural-volumetric-fog.md#follow-up-boundary) item 1) |
 | 20 | Fire surface-light reach | Owned elsewhere ([fire plan Phase 5](../engine/fire-volumetrics-plan.md#phase-5-fire-as-a-light-source-in-the-ray-traced-path)) | Range is `sqrt(luma / COMBUSTION_LIGHT_CUTOFF_IRRADIANCE)` clamped to `COMBUSTION_LIGHT_MAX_RANGE_METERS` (`crates/renderer/src/vulkan/volumetrics/combustion.rs`); [Known Issue](../../ROADMAP.md#correctness-and-content) |
 | 21 | Majorant grid / ratio tracking for path-traced media | Non-goal (VLM-NG-002) | No code (`rg -i "majorant\|ratio.track"` is empty) |
 | 22 | Non-RT cascade visibility for the froxels | Non-goal (VLM-NG-006) | No cascade path; [measurement table](../engine/procedural-volumetric-fog.md#measurement-table) row "cascade, 1 tap" is empty |
+| 23 | Exterior haze floor | Shipped | `ExteriorHazeFloor::DEFAULT` and `with_exterior_haze_floor` (`byroredux/src/fog.rs`), applied in `render/mod.rs`; `env.health` prints `haze_floor` (VLM-SH-010, -011; the contrast clause of -011 is open) |
+| 24 | Interior shaft dust | Shipped | `INTERIOR_SHAFT_DUST_PER_METER`, sun term only, `volumetrics_inject.comp`; no `env.health` line (VLM-INT-007) |
+| 25 | Interior aperture dust floor | Shipped | `FogMedium::with_sky_aperture_dust_floor`, applied in `render/mod.rs`; no `env.health` line (VLM-INT-008) |
 
 ---
 
@@ -247,6 +256,13 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
 - **VLM-REG-001.** For an exterior cell, the weather table in effect MUST be
   the Weather section with the highest Priority among the cell's regions
   whose section has the Override flag set. *Shipped in Phase 1* (`resolve_cell_weather`, `env_translate/region_weather.rs`). Test: `region_weather_override_priority_wins`.
+  **Phase 0: verify** (#7425) the CK *Region* page's other rule,
+  under *Region Data*: "Note that a region added by a mod will always override
+  regions from earlier plugins in the load order"
+  (`ck-uesp-wiki/(main)/Region.wiki`). Neither this requirement nor
+  VLM-REG-012 states how it interacts with Priority, a Priority tie or
+  non-override sections, and the resolver applies no load-order rule. A
+  two-plugin observation in the original would settle it.
 - **VLM-REG-002.** When no region of the cell sets Override on a Weather section, the rows of every covering non-override section MUST form one table and the highest-chance row MUST win (§10 Q2's rule across the merged table), ties going to the higher section Priority, then the lower region FormID, then the authored row order. *Ratified by the owner at §10 Q9 (2026-11-19); shipped in Phase 1 as an engine choice recorded under VLM-HF-008 until #6772 observes the original engine.* Tests: `non_override_regions_merge_and_the_highest_chance_wins`, `a_merged_tie_goes_to_priority_then_the_lower_region_form`, `an_override_section_outranks_the_merged_table`. **Phase 0, census:** none of the three wiki pages
   states which non-override region wins when several overlap. **Census,
   2026-11-07** (`crates/plugin/examples/region_weather_census.rs`, one master at a
@@ -265,7 +281,8 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
 - **VLM-REG-005.** A row whose global is set MUST take its chance from that
   global's value at resolution time (CK *Weather Tab*: "you may optionally
   choose a global variable that will represent the chance"). Oblivion's
-  rows carry no global (xEdit TES4 L4310 above), so the rule is a no-op there by data, not by branch. The FO3 rows carry the global too (xEdit, local copy `/mnt/data/tmp/wbDefinitionsFO3.pas` L7187: weather, chance, global). Test: `a_rows_global_replaces_its_authored_chance`.
+  rows carry no global (xEdit TES4 L4310 above), so the rule is a no-op there by data, not by branch. The FO3 rows carry the global too: weather, chance, global
+  ([wbDefinitionsFO3.pas L8960](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO3.pas#L8960)). Test: `a_rows_global_replaces_its_authored_chance`.
 - **VLM-REG-006.** A forced weather set with the override lock
   (`ForcedWeather { locked: true }`, set by ObScript `ForceWeather <w> 1` and
   `weather.force <w> lock`) MUST outrank the region and climate choices until
@@ -274,11 +291,10 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
   ReleaseWeatherOverride is called"). `forced_or` (`scene/world_setup.rs`) outranks the climate default. Test: `forced_weather_outranks_region_weather`.
 - **VLM-REG-007.** Crossing from one exterior cell into another whose
   resolved weather differs MUST start the existing `WeatherTransitionRes`
-  cross-fade instead of replacing `WeatherDataRes` directly. Today the
-  cross-fade runs on worldspace changes and on per-cell `XCCM` climate
-  changes through `apply_cell_climate_override` → `apply_environment`
-  (`scene/world_setup.rs`); the region path MUST reuse that call,
-  not a second install path. Test: `only_a_seen_weather_cross_fades` (`scene/world_setup.rs`).
+  cross-fade instead of replacing `WeatherDataRes` directly. The region path
+  MUST install through `apply_environment`, the call a worldspace change
+  uses, not a second install path. *Shipped:* `apply_cell_weather` calls it
+  (`scene/world_setup.rs`). Test: `only_a_seen_weather_cross_fades` (`scene/world_setup.rs`).
 - **VLM-REG-008.** Region membership MUST be the region's `RPLD` polygon overlapping the cell's square, within the region's own `WNAM` worldspace (`RegnRecord::covers_cell`); the cell's `XCLR` list (`CellData::regions`) MUST NOT be consulted for weather. Test: `only_regions_covering_the_cell_in_its_worldspace_count`. *Shipped in Phase 1.* **Phase 0, settled:** the CK page says "it is
   the exact shape of the region as drawn in the Region Preview Window that
   will decide its actual area of effect", not the per-cell list. **Census,
@@ -300,7 +316,7 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
   [TES5 L6544](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsTES5.pas#L6544),
   [FO4 L9052](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO4.pas#L9052))
   MUST take its portal palette and portal sun from that region's weather
-  table. *Shipped in Phase 1* (`CellData::sky_region` is read in `env_translate/region_weather.rs`); test `an_interior_region_takes_its_own_table_and_its_worldspaces_climate`. Census, 2026-11-07 (`region_weather_census`): Skyrim.esm has 214 such interiors, all naming a region present in the master, 213 of them with a Weather section and none with more than one overriding section; Fallout4.esm has 79, 77 with a Weather section. On Oblivion / FO3 / FNV the same tag is a climate (`XCCM` is `wbFormIDCk(XCCM, 'Climate', [CLMT])` in `wbDefinitionsTES4.pas` L1801 and `wbDefinitionsFO3.pas` L3702, local copies under `/mnt/data/tmp/`; and
+  table. *Shipped in Phase 1* (`CellData::sky_region` is read in `env_translate/region_weather.rs`); test `an_interior_region_takes_its_own_table_and_its_worldspaces_climate`. Census, 2026-11-07 (`region_weather_census`): Skyrim.esm has 214 such interiors, all naming a region present in the master, 213 of them with a Weather section and none with more than one overriding section; Fallout4.esm has 79, 77 with a Weather section. On Oblivion / FO3 / FNV the same tag is a climate (`XCCM` is `wbFormIDCk(XCCM, 'Climate', [CLMT])` in [wbDefinitionsTES4.pas L2354](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsTES4.pas#L2354) and [wbDefinitionsFO3.pas L4868](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO3.pas#L4868); and
   [FNV L5236](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFNV.pas#L5236));
   the parser already splits the two readings, so no per-game branch is added
   downstream.
@@ -330,7 +346,7 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
   `region_weather_priority_tie_falls_through` should cover with real data; FO4
   has 0.
 - **VLM-REG-013.** On Oblivion / FO3 / FNV, the order between a cell's
-  `XCCM` climate override and its regions' Weather sections MUST be the shipped one: the cell's `XCCM` climate outranks its regions' Weather sections (test `a_cell_climate_override_outranks_the_regions`), an engine choice recorded under VLM-HF-008 because no cited page states the original's order. **Phase 0: verify** the original's order if a mod or DLC master ever exercises it.
+  `XCCM` climate override and its regions' Weather sections MUST be the shipped one: the cell's `XCCM` climate outranks its regions' Weather sections (test `a_cell_climate_override_outranks_the_regions`), an engine choice recorded under VLM-HF-008 because no cited page states the original's order. **Phase 0: verify** (#7426) the original's order if a mod or DLC master ever exercises it.
   **Census, 2026-11-07: moot.** No exterior cell of `Oblivion.esm`,
   `Fallout3.esm` or `FalloutNV.esm` carries an `XCCM` (0 of 33,540, 41,958 and
   30,096 cells); the tag appears on interiors only (Oblivion 55 of 1,855, FO3 1
@@ -341,8 +357,8 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
   resolution (the cell crossing of VLM-REG-010). This is the deterministic
   reading, under §10 Q2's recommendation, of the GECK page's "Otherwise, the
   weather will change back in the normal fashion according to the weather
-  system", and is the use `ForcedWeather::locked` was kept for
-  (`obscript_state.rs:100-103`). Test:
+  system", and `ForcedWeather::locked` carries it
+  (its doc comment, `crates/scripting/src/obscript_state.rs`). Test:
   `unlocked_forced_weather_yields_at_next_crossing`.
 
 ### 5.2 Authored fog profile (`VLM-HF`)
@@ -352,18 +368,21 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
   `FNAM`; `XCLL` on FO3 / FNV and later). The GECK *Weather* page defines
   it: "Fog effects are calculated as a curve. A value of 1 is linear, less
   that one pushes the curve toward the near value, and a value above 1
-  pushes the curve toward the far value" (sic). Today `from_legacy_ramp`
-  takes near, far and maximum opacity only. **Phase 0, settled 2026-11-07 by disassembly** (`scripts/sdp-fog-term.py` over
+  pushes the curve toward the far value" (sic). *Shipped in Phase 1:* authored
+  fog reaches `FogMedium::from_legacy_ramp_with_power` through
+  `from_authored_fog`. **Phase 0, settled 2026-11-07 by disassembly** (`scripts/sdp-fog-term.py` over
   Fallout: New Vegas's `Data/Shaders/shaderpackage010.sdp`): 121 of its 198 fog-reading shaders are `vs_2_0`
   vertex shaders with one identical sequence, in which `FogParam` is read as `c14.xyz` and the result is
   written to the vertex colour's alpha: `d = length(clip.xyz)`; `t = clamp((FogParam.x - d) * (1 / FogParam.y), 0, 1)`;
   `fog = exp(log(1 - t) * FogParam.z)`, that is `fog = (1 - t)^power`, with the fog colour passed through
   unchanged. Read with `x` as the far distance, `y` as far minus near and `z` as the power (the component
-  assignment is the uploader's, inferred from the arithmetic, not read from the shader), `fog = saturate((d - near) / (far - near))^power`:
+  assignment is the uploader's, inferred from the arithmetic, not read from the shader. **Phase 0: verify**
+  (#7428) the three roles with original-engine captures that vary one value at a time: Pow tests the power's
+  role, and the other two need captures that vary the far and the near distance), `fog = saturate((d - near) / (far - near))^power`:
   a power of 1 is linear, below 1 raises the fog sooner (toward the near value), above 1 later (toward the far
   value), which is the GECK page's direction. The distance `d` the shader uses is the length of the three clip-space
-  coordinates before the perspective divide, not a view-space distance; whether the engine reproduces that or uses
-  view distance is an engine choice to record under VLM-HF-008. The pixel-shader fog (34 `ps_2_x` shaders with `pow`)
+  coordinates before the perspective divide, not a view-space distance. The engine uses view-space distance, an
+  engine choice (§6 row 10, VLM-HF-008). The pixel-shader fog (34 `ps_2_x` shaders with `pow`)
   is not read here.
 - **VLM-HF-002.** *Shipped in Phase 1 (`FogMedium::from_legacy_ramp_with_power`, `unit_fog_power_keeps_the_linear_fit`; the power-1 fit is bit-identical).* A power of 1 MUST reproduce today's fitted extinction exactly, so that every Oblivion record (its `WTHR` `FNAM` is day / night
   near and far only,
@@ -373,10 +392,16 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
 - **VLM-HF-003.** The FO4 / FO76 `WTHR` far height layer (Far Height Mid,
   Far Height Range) and High Density Scale (`WeatherHeightFog`) MUST be decoded and carried (shipped, Phase 1) and MUST reach `FogMedium` once #6771 settles their semantics (open). xEdit names the fields
   ([wbDefinitionsFO4.pas L15730-L15748](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO4.pas#L15730-L15748))
-  but documents no semantics. **Phase 0: verify** what the near / far
+  but documents no semantics. **Phase 0: verify** (#6771) what the near / far
   layers and the density scale mean (two stacked exponentials, a near-to-far
-  distance blend, or a density multiplier above the mid height); settled by a corpus census of the authored values per weather together with matched in-game captures of two weathers that differ only in those fields. **Census, 2026-11-07** (`fog_godray_census`): 63 of 71 `Fallout4.esm` weathers carry the layer, in 16 distinct day tuples; the commonest (24 weathers, e.g. `FXNukeWeather`) is the neutral default (near mid 0 / range 10,000, density scale 1.00, far mid 0 / range 10,000); the authored spread is near mid 0 to 1004, near range 1,000 to 25,000, density scale 0.90 to 1.00, far mid -6,400 to 12,000, far range 10,000 to 15,000 (two values). The semantics are still unverified and need the matched captures (filed as #6771). Those captures have to be of the original engine: the fields are unread here, so captures from this engine cannot differ. The census finds the pairs to observe, same distance ramp, power and maximum opacity and a different height tuple: `CommonwealthClear` (`0002B52A`) against `CommonwealthClearestSkies` (`001D670E`), which differ only in high density scale 0.95 against 0.90, and `CommonwealthGSFoggy` (`001BD481`) against `CommonwealthGSRadstorm` (`001C3D5E`), which differ only in far height mid 12,000 against 64 (their colours and clouds also differ). Until
-  then the fields stay unread, as `height_mid` is today.
+  distance blend, or a density multiplier above the mid height); settled by a
+  corpus census of the authored values per weather together with matched
+  captures from the original engine of two weathers that differ only in those
+  fields. The census and the pairs it found are
+  [recorded](../engine/procedural-volumetric-fog.md#far-height-layer-census-and-capture-pairs-vlm-hf-003). Until
+  then the fields stay unread. `height_mid` also stays unread, for a
+  different reason: the shader anchors the profile to the measured ground
+  (`with_authored_height_range`).
 - **VLM-HF-004.** The FO4 and FO76 height-fog tail MUST be decoded from
   both `CELL` `XCLL` and `LGTM` `DATA`. xEdit defines it after the
   Skyrim-shaped body: Near Height Mid, Near Height Range, Fog Color High
@@ -385,29 +410,38 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
   ([XCLL, wbDefinitionsFO4.pas L9003-L9013](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO4.pas#L9003-L9013);
   [LGTM, L11667-L11677](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO4.pas#L11667-L11677)).
   *Shipped in Phase 1: `CellLighting::height_fog` / `LgtmRecord::height_fog` hold the `HeightFogTail` (FO4 / FO76, bytes 92..; `CellLighting::height_fog_tail()` maps Starfield's onto the same type).* Before Phase 1 the parser accepted the FO4 128 / 136-byte `XCLL` sizes (`fo4_xcll_sizes_pinned`) but decoded the tail of either record only for Starfield. Tests: `parse_cell_fo4_xcll_decodes_height_fog_tail`, `parse_lgtm_fo4_decodes_height_fog_tail`.
-- **VLM-HF-005.** Cell height fog from VLM-HF-004 and from Starfield's `StarfieldLighting` MUST be translated by one shared function into the same `FogMedium` fields the weather path fills, with the Phase 0 semantics of VLM-HF-003. *Shipped in Phase 1: `FogMedium::from_authored_fog` is the one translation (ramp, power, maximum opacity and near height range) the weather day / night media, the day snapshot and `CellLightingRes::from_cell_lighting` all use; only the near height range is consumed, per VLM-HF-003.* Before Phase 1 `CellLightingRes.starfield` was forwarded and unread.
+- **VLM-HF-005.** Cell height fog from VLM-HF-004 and from Starfield's `StarfieldLighting` MUST be translated by one shared function into the same `FogMedium` fields the weather path fills, consuming the near height range only until VLM-HF-003's semantics are settled (#6771). *Shipped in Phase 1: `FogMedium::from_authored_fog` is the one translation (ramp, power, maximum opacity and near height range) the weather day / night media, the day snapshot and `CellLightingRes::from_cell_lighting` all use; only the near height range is consumed, per VLM-HF-003.* Open: no test covers the Starfield tail's path into `FogMedium`; `parse_cell_starfield_xcll_decodes_volumetric_height_fog_tail` covers the parser (A12). Before Phase 1 `CellLightingRes.starfield` was forwarded and unread.
 - **VLM-HF-006.** Every new `FogMedium` field MUST interpolate in
   `FogMedium::lerp` so weather and time-of-day cross-fades carry it, as the
   scale height does today (`lerp_interpolates_the_scale_height`).
 - **VLM-HF-007.** The froxel grid and the analytic tail MUST evaluate the
   same height profile: with a pinned camera on an exterior fixture,
   changing `--fog-grid-far-m` from its default to its maximum MUST NOT move
-  the mean luminance of pixels beyond the larger far plane by more than `SEAM_TOLERANCE`, 2.5 levels of 255 (§10 Q11; the repeat noise is zero in `renderer-stepped`) (the regression `composite.frag` records as "the mountains changing appearance when the grid's reach changes"). **Shipped in Phase 4 (2026-11-08).** The cause was two disagreements between the grid and the tail, both fixed: the grid multiplies the medium by a noise factor (`proceduralDensityScale`, `mix(0.2, 1.35, density)`) whose mean at the default coverage is below 1 while the tail integrated the unmodulated coefficient (the host now passes the tail `fog_mean_density_scale(coverage)`, computed from the noise volumes' histograms), and the tail's height term did not clamp at the reference height as the grid's does (`heightFogOpticalDepth` now integrates the clamped profile piecewise). Re-measured with `fog-grid-seam.sh` (128 m against 512 m, repeat noise ~0): noon FNV hills right -14.2 to -1.8 (earlier build: -5.6 to -1.8), Skyrim terrain haze -4.2 to -0.1, sky +3.7 to +0.3, and at night FNV hills left +5.3 to +0.6, sky band +5.5 to +0.04; every region now moves at most about 2 levels. The literal bar (no more than the repeat's noise, which is zero in `renderer-stepped`) cannot hold where the grid resolves real shadows beyond 128 m, so the gate is a tolerance of 2.5 levels (`SEAM_TOLERANCE`), decided at §10 Q11. **Baseline at HEAD before Phase 4, 2026-11-07 (`docs/smoke-tests/fog-grid-seam.sh`): the requirement did not hold.** In `renderer-stepped` mode a repeat capture differs by at most 0.004 levels per region, and moving the grid from 128 m to 512 m shifts the distant regions by: FNV Goodsprings, hills right -5.56, hills left +0.18, sky band -0.63, whole frame -0.54; Skyrim Whiterun elevated pose, terrain haze -4.18, far ridge +6.02, forest +0.02, sky +4.83, whole frame +0.42. The regions are windows over distant content (no depth view exists), not a depth mask.
+  the mean luminance of pixels beyond the larger far plane by more than `SEAM_TOLERANCE`, 2.5 levels of 255 (§10 Q11; the repeat noise is zero in `renderer-stepped`) (the regression `composite.frag` records as "the mountains changing appearance when the grid's reach changes"). *Shipped in Phase 4 (2026-11-08); the gate is `fog-grid-seam.sh`.* The [record](../engine/procedural-volumetric-fog.md#grid-seam-cause-re-measurement-and-baseline-vlm-hf-007) holds the cause, the re-measurement and the earlier baseline.
 - **VLM-HF-008.** Any fog-profile value the engine supplies that the
   content did not author (a default scale height, a curve chosen because
   VLM-HF-001 could not be verified, an exterior dust floor from §10 Q7)
   MUST be recorded as an engine choice in the style of
   [EXAL §3.1](../engine/exal.md#31-engine-choice-base-fog-strength-ext-d1-2026-09-29-02)
   and printed by `env.health`. `BASE_FOG_STRENGTH` is one such choice and is
-  not reopened here; it MUST scale the new fields' extinction identically.
+  not reopened here; it MUST scale the new fields' extinction identically. At
+  HEAD on 2026-11-26 `env.health` prints `fog_distance=view-space`,
+  `region_non_override=merged-highest-chance`, `haze_floor` and the scaled
+  extinction on its fog line. **Open:** it prints neither interior dust value
+  (VLM-INT-007, -008) nor the cell-climate-over-region order
+  (VLM-REG-013). Written records: EXAL §3.1 (base fog), §3.2 (region rules)
+  and §3.3 (fog distance).
 - **VLM-HF-009.** A decoded fog or god-ray field that Phase 0 rules out of
   the medium MUST be listed with its reason in the design's
-  [corpus findings](../engine/procedural-volumetric-fog.md#corpus-findings).
+  [corpus findings](../engine/procedural-volumetric-fog.md#corpus-findings). The
+  [disposition table](../engine/procedural-volumetric-fog.md#fog-and-god-ray-field-disposition-vlm-hf-009)
+  (2026-11-26) lists every decoded field. **Open:** its *Not ruled* rows have
+  no reason yet, so VLM-G-002 is not met for them.
 - **VLM-HF-010.** Skyrim SE's per-time-of-day `WTHR` `HNAM` "Volumetric
   Lighting" references and the `VOLI` records they name MUST be decoded
   (xEdit:
   [WTHR HNAM L13145-L13150, VOLI L13164-L13178](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsTES5.pas#L13145-L13178),
-  both under `IsSSE`). Today neither is parsed. *Shipped in Phase 1: `parse_voli`, `WeatherRecord::volumetric_lighting`, `EsmIndex::volumetric_lighting`.* Test: `parse_wthr_sse_hnam_and_voli`. **Starfield:** `Starfield.esm` also has 42 `VOLI` records (and `ShatteredSpace.esm` 2), but they are 1,832-byte `BETH` reflection blobs (`REFL`, `BGSVolumetricLighting`: `VLFog_Weather_Clear`, `VLFogHeightUniqueRedmile`, …), not Skyrim's thirteen floats; Phase 1 walks and does not store them, and they need the reflection decoder (the one `WTHS` uses). **Census, 2026-11-07:** the records are in `Update.esm` (36 `VOLI`, 69 weathers with a 16-byte `HNAM`), `Dawnguard.esm` (1 and 15) and `Dragonborn.esm` (5 and 9), not in `Skyrim.esm`, so the decode must run over the merged load order (Dawnguard names 9 distinct `VOLI`, 1 in its own file). Of the nine float fields, six are the same in all 42 records (Custom Color - Contribution 0, Density - Contribution 0.3, Size 10, Wind Speed 15, Falling Speed 0.3, Range Factor 40); only `Intensity` (1.0 to 4.0) and the two phase fields (0.70 to 0.85) vary. Whether any decoded field reaches
+  both under `IsSSE`). *Shipped in Phase 1: `parse_voli`, `WeatherRecord::volumetric_lighting`, `EsmIndex::volumetric_lighting`.* Test: `parse_wthr_sse_hnam_and_voli`. **Starfield:** `Starfield.esm` also has 42 `VOLI` records (and `ShatteredSpace.esm` 2), but they are 1,832-byte `BETH` reflection blobs (`REFL`, `BGSVolumetricLighting`: `VLFog_Weather_Clear`, `VLFogHeightUniqueRedmile`, …), not Skyrim's thirteen floats; Phase 1 walks and does not store them, and they need the reflection decoder (the one `WTHS` uses). **Census, 2026-11-07:** the records are in `Update.esm` (36 `VOLI`, 69 weathers with a 16-byte `HNAM`), `Dawnguard.esm` (1 and 15) and `Dragonborn.esm` (5 and 9), not in `Skyrim.esm`, so the decode must run over the merged load order (Dawnguard names 9 distinct `VOLI`, 1 in its own file). Of the nine float fields, six are the same in all 42 records (Custom Color - Contribution 0, Density - Contribution 0.3, Size 10, Wind Speed 15, Falling Speed 0.3, Range Factor 40); only `Intensity` (1.0 to 4.0) and the two phase fields (0.70 to 0.85) vary. Whether any decoded field reaches
   `FogMedium` is §10 Q8; until then each is listed under VLM-HF-009.
 - **VLM-HF-011.** FO4's `GDRY` god-ray records and the four links to them —
   `WTHR` `WGDR` per time of day, `CELL` `XGDR`, `LGTM` `WGDR`, `LIGH` `WGDR`
@@ -441,20 +475,29 @@ The RT visibility replaces cascades (VLM-NG-006).
   in open sky with an authored homogeneous medium, in an open and a solid
   variant.
 - **VLM-SH-002.** The script `docs/smoke-tests/exterior-shafts.sh` MUST
-  capture both lab variants and fail unless the open variant's shaft
-  contrast exceeds the solid variant's by more than twice the run-to-run
-  noise of a repeated open capture.
+  capture the open and solid lab variants, plus a repeat of the open one, and
+  fail unless all three of these hold for lab shaft contrast (§2): the open
+  value exceeds the solid value by more than twice the repeat noise
+  (|open − open repeat|); the open value is at least 0.05; and the solid
+  value is at most 0.02.
 - **VLM-SH-003.** The lab MUST be pinned by a golden frame,
   `shaft_lab_golden_frame` (`byroredux/tests/golden_frames.rs`), in the
   pattern of `combustion_lab_golden_frame`.
-- **VLM-SH-004.** The froxel sun term MUST take its cloud shadow per froxel
-  from the SKYAL cloud-shadow map when the shaft range decided in §10 Q3
-  exceeds one cloud-shadow texel; while it does not, the camera-column value
-  (`volumetric_sun`) MAY remain.
-- **VLM-SH-005.** The lab's shaft MUST still pass the gate's 0.05 open-minus-solid contrast bar with the occluder 90 m from the camera at the default 128 m grid (`--shaft-lab-distance 90`, the range §10 Q10 accepts); the range is observable as the farthest occluder distance that still passes. **Measured 2026-11-07** (`--shaft-lab-distance`, default 128 m grid, the
-  gate's 0.05 bar, open minus solid contrast): 25 m 0.233, 40 m 0.237, 55 m 0.154, 70 m 0.131, 90 m 0.071,
-  110 m 0.031, 128 m 0.004, 150 m 0.001. The shaft passes out to somewhere between 90 and 110 m and is gone at
-  the grid's far plane, so the observable range is about 90 to 100 m of the 128 m grid. The owner accepted this range at §10 Q10 (2026-11-19).
+- **VLM-SH-004.** The froxel sun term MAY take its cloud shadow from the
+  single camera-column value (`volumetric_sun`; §10 Q3). Per-froxel sampling
+  of the SKYAL cloud-shadow map is not promised. A map texel is 125 m
+  (`CLOUD_SHADOW_MAP_EXTENT` 64,000 m over `CLOUD_SHADOW_MAP_SIZE` 512).
+  VLM-SH-005's 90 m is shorter than one texel; the default grid and its
+  maximum reach further than one, and the error that causes is unmeasured
+  (§6 row 12).
+- **VLM-SH-005.** The lab MUST pass VLM-SH-002's three conditions with the
+  occluder 90 m from the camera at the default 128 m grid
+  (`--shaft-lab-distance 90`, the range §10 Q10 accepts); the range is
+  observable as the farthest occluder distance that still passes. **Open:**
+  `exterior-shafts.sh` does not pass `--shaft-lab-distance`, so no gate runs
+  this. The [2026-11-07 sweep](../engine/procedural-volumetric-fog.md#shaft-range-sweep-vlm-sh-005) recorded open
+  minus solid only (0.071 at 90 m) and does not show the two absolute
+  conditions.
 - **VLM-SH-006.** On each exterior fixture of §7.2, a noon and a low-sun
   capture under the fixture's vanilla weather MUST be recorded with the
   shaft contrast across a named occluder. Phase 0 measured clear-weather extinction (rev 3: 0.000349 /m at FNV Goodsprings, about 4.5 % optical depth over the froxel range) and §10 Q7 decided the haze floor (VLM-SH-010) on that evidence. **Content measurement, 2026-11-08** (`docs/smoke-tests/exterior-shafts-content.sh`, #6773): the in-scatter term at noon, 07:00 and 17:30 on the five fixtures is recorded in the fog design (the sun response is large on every fixture), but a contrast across a named occluder is not measurable at the default poses: the froxel view samples at pixel depth, so an occluder's column reads darker from nearness, not shadow. The restated need is VLM-SH-012.
@@ -478,12 +521,8 @@ The RT visibility replaces cascades (VLM-NG-006).
   term over the hole columns differs only where the froxel sun trace stops at a cutout. The cutout panel MUST
   come within 2 % of the geometry holes (`exterior-shafts.sh`), the backbone's "Cutouts use alpha coverage"
   rule ([runtime contract](../engine/physical-lighting-backbone.md#runtime-contract)) observed in the froxels.
-  **Phase 0, measured 2026-11-07:** cutout 116.36, geometry 129.16, solid 93.40, a 9.9 % gap, so it failed
-  with the opaque traversal, as predicted. **Met the same day** by the alpha-aware sun trace (§3 row 17):
-  cutout 129.18, geometry 129.16, solid 93.40, a gap of 0.0 %. The criterion this requirement first carried, shaft
-  contrast behind cutout texels against behind opaque texels, is withdrawn: it reads 0.106 on an opaque trace,
-  because a view ray through a cutout also sees the lit haze beyond the panel and a ray that ends at an opaque
-  texel does not. Only a see-through reference that is real geometry removes that difference.
+  *Met 2026-11-07* by the alpha-aware sun trace (§3 row 17). The measurement and the withdrawn first criterion
+  are [recorded](../engine/procedural-volumetric-fog.md#cutout-card-measurement-vlm-sh-009).
 
 - **VLM-SH-010.** The engine MUST supply an exterior haze floor, a minimum
   outdoor extinction recorded as an engine choice under VLM-HF-008 (§10 Q7).
@@ -491,7 +530,8 @@ The RT visibility replaces cascades (VLM-NG-006).
   extinction is below it, so it never thins authored haze; it MUST be a smooth
   function of the sun's elevation that rises toward the horizon, where the
   slanted path through air and dust is longer; and it MUST be zero in an
-  interior, where the interior dust floor already applies, and below the
+  interior, which the interior aperture dust floor (VLM-INT-008) and the
+  shaft dust (VLM-INT-007) cover, and below the
   horizon at night.
 - **VLM-SH-011.** The floor's default MUST be chosen from captures and
   published: on each exterior fixture of §7.2 a noon and a low-sun capture with
@@ -501,24 +541,41 @@ The RT visibility replaces cascades (VLM-NG-006).
   noon non-shaft luminance change inside the tolerance the owner reviews in
   the capture set, so the floor makes shafts visible without washing out the
   authored look. The floor MUST be adjustable at run time through the existing
-  volumetrics settings surface and MUST report its live value on `env.health`. **Re-measured 2026-11-19** ([fog design](../engine/procedural-volumetric-fog.md#haze-floor-after-the-authored-fog-power-q12-re-measure-2026-11-19)): the floor binds on 0 of 13 sampled hours on FO3 and Skyrim, 2 on FO4, 3 on FNV and 11 on Oblivion, whose records carry no fog power. Where it binds the frame moves (Oblivion 07:00 +30.5 % frame mean, noon +3.6 %; FNV 07:00 +8.7 %); where it does not, floor-off and shipped frames are identical. The owner reviewed those captures and decided at §10 Q12 (2026-11-19) to keep the floor and its default; the noon non-shaft change they accepted is the measured one (Oblivion +3.6 % frame mean, FNV, FO3 and the other fixtures none).
+  volumetrics settings surface and MUST report its live value on `env.health`.
+  *The default value is decided* (§10 Q12;
+  [record](../engine/procedural-volumetric-fog.md#haze-floor-re-measure-and-decision-vlm-sh-011)). **Open:** the
+  shaft-contrast clause has not been measured (#6773). It waits on VLM-SH-012's poses,
+  which must also define how VLM-SH-002's open-against-solid rule applies to a
+  content pose.
 
 - **VLM-SH-012.** Each exterior fixture of §7.2 MUST have one depth-matched pose, a far surface behind a named occluder, checked into `docs/smoke-tests/exterior-shafts-content.sh`, on which VLM-SH-006's shaft contrast is recorded at noon and at low sun. The owner names the poses and occluders (decided 2026-11-19); until they are named this requirement is open and A8's contrast cell is not met.
 
 ### 5.4 Interior coverage (`VLM-INT`)
 
 - **VLM-INT-001.** An opening inventory MUST be checked in for the cells of
-  §7.2's interior list: per cell, each sky aperture or shaft medium, the
+  A9's list (§7.2): per cell, each sky aperture or shaft medium, the
   geometry evidence that it borders outdoors, and its converter, as the
   handoff's open item 1 asks
   ([open work](../engine/interior-godrays-status.md#open-work-and-next-experiments)).
-- **VLM-INT-002.** Each listed cell MUST pass a day / night pair through
-  `--bench-hold` + `byro-dbg` (`time.set 12`, `screenshot`, `time.set 0`,
-  `screenshot`): the shaft region's luminance at noon exceeds midnight by
-  more than twice the noise of a repeated noon capture.
-- **VLM-INT-003.** A sealed interior with no opening in the list MUST show
-  no shaft in the same procedure (noon and midnight within noise), the
-  property `interior-godrays.sh` proves on the lab.
+- **VLM-INT-002.** Each listed `shaft` cell MUST pass the day / night
+  procedure below through `--bench-hold` + `byro-dbg`, as
+  `interior-shafts-content.sh` runs it. A cell with no fog volume or sky
+  aperture fails.
+
+  | Step | Rule |
+  |---|---|
+  | Setup | Free camera (`--fly`); at least 150 entities and a stable count; game clock paused; exposure fixed at 1.0; `render.debug volumetric_radiance`; 1280×720 |
+  | Frames per pose | Camera unmoved: noon, midnight, noon again, each after the harness's 12 s time settle |
+  | Counted pixel | Rec. 709 luma of the 8-bit capture; the mean of the two noon frames exceeds midnight by more than max(3 levels, 2 × the 99th percentile of \|noon − noon repeat\|) |
+  | First poses | `cam.tp` onto up to 4 volumes spread evenly through the first non-empty set: marked sky apertures, else light-shaft volumes, else any volume |
+  | Pass | At the best pose, counted pixels cover at least 0.1 % of the frame (921 pixels) |
+  | Extension | If the first poses do not pass, every remaining volume of that set is measured too |
+  | Invalid, never a pass | A frozen frame (all three identical and not black), a moved or unreadable camera, or an unloaded cell |
+- **VLM-INT-003.** A `sealed` control, a listed interior with no sun path,
+  MUST pass the same procedure with no sampled pose reaching 0.1 % of the
+  frame. A control samples only the first poses (no extension, §6 row 13);
+  one with no volume uses up to 4 entities spread through those near its
+  spawn. This is the property `interior-godrays.sh` proves on the lab.
 - **VLM-INT-004.** Each listed cell MUST pass VLM-INT-002 on both a direct
   `--cell` boot and an exterior-to-interior door transition.
 - **VLM-INT-005.** When marked sky apertures exceed `MAX_SKY_APERTURES`,
@@ -529,18 +586,23 @@ The RT visibility replaces cascades (VLM-NG-006).
   `crates/plugin/examples/baked_beam_census.rs`, extended to the DLC masters
   and to FO4 and Starfield, which the handoff says are unsurveyed. The ratio MUST be read from a live cell,
   not from the unit tests: a converter that no loader path reaches measures 0 ÷ N however well its tests pass.
-  Found on 2026-11-07: the `fxlight` early return in `synth_child.rs` kept every FNV `FXLightBeam*` placement from
-  loading its NIF, so all FNV beam converters measured 0 live until the return was narrowed
-  (`Vault11a` 14 ÷ 14, `SLAbandonedShack03INT` 5 ÷ 5 afterwards). **Denominators, 2026-11-07:** placed beam references for every official master and DLC are in [interior-shaft-openings](../engine/interior-shaft-openings.md#placed-beam-census-every-title-and-official-dlc-vlm-int-006-denominators-measured-2026-11-07); Fallout 4 is the one title with many beams in Show Sky cells (657 of 1,604 interior placements), and, from #6774 (2026-11-08), every title has one: FO4 about 100 % (all 9 placed models), Oblivion 92.9 % (the #6731 gate now includes it; 66 volumes live in a 52-placement cell), Skyrim 0 of 1, Starfield 0 of 1 ([interior-shaft-openings](../engine/interior-shaft-openings.md)).
+  [Record](../engine/procedural-volumetric-fog.md#live-beam-converter-coverage-vlm-int-006). The ROADMAP does not publish the ratio yet (§8).
 
 - **VLM-INT-007.** Where the sun's ray has been proven to pass through an authored aperture (a marked
   `SkyAperture` plane or a `LightShaft` cone), the sun term MUST scatter off an engine-supplied shaft dust
   (`INTERIOR_SHAFT_DUST_PER_METER`, an engine choice recorded under VLM-HF-008, the interior counterpart of
   VLM-SH-010). It MUST ride the sun term only, so the dark room, the local lights and the night gain nothing from
-  it, and it MUST NOT apply to open sky, glass or rim-probe visibility. Measured on FNV `NellisHangar1` (#6727): the
-  converted planes are thin ribbons (about 8 m x 1.4 m), and without the dust the noon-minus-midnight radiance
-  difference is about 0 over six cameras; with 0.04 / m it is 3.6 to 7.3 % of pixels above 3 levels (max 19), and
-  in the shaft region noon reads 28.3 against 21.6 at midnight (repeat noise 0.16). `env.health` MUST print its live value, as VLM-HF-008 requires; open: at HEAD on 2026-11-19 it prints `haze_floor` (`commands/env_health.rs`) and no dust line.
+  it, and it MUST NOT apply to open sky, glass or rim-probe visibility.
+  [Record](../engine/procedural-volumetric-fog.md#interior-shaft-dust-measurement-vlm-int-007). `env.health` MUST print its live value, as
+  VLM-HF-008 requires; open: at HEAD on 2026-11-26 it prints no dust line (`commands/env_health.rs`).
+- **VLM-INT-008.** In an interior whose cell shows the sky (Show Sky), holds a `LightShaft` fog volume or
+  shows architectural window glass, the engine MUST raise the global medium's extinction to at least
+  0.005 / m, an engine choice recorded under VLM-HF-008. A stronger authored medium keeps its value, and a
+  diagnostic fog override disables the floor. It applies before `BASE_FOG_STRENGTH`, so the GPU integrates at
+  least 0.004 / m. Unlike VLM-INT-007 it thickens the whole room's medium, at every hour. *Shipped*
+  (`FogMedium::with_sky_aperture_dust_floor`, applied in `render/mod.rs`); the test
+  `sky_aperture_adds_clear_air_dust_without_overriding_stronger_fog` covers the floor function, not the three
+  conditions. `env.health` MUST print its live value; open: at HEAD on 2026-11-26 it does not.
 
 ### 5.5 Aerial perspective for distant geometry (`VLM-AP`)
 
@@ -556,9 +618,9 @@ opaque geometry as a post process, 32 × 32 over the screen by default
   luminance difference between ridge pixels and the adjacent sky pixels
   MUST decrease monotonically with ridge distance across the distant-LOD
   band ([distant-LOD completion PRD](distant-lod-completion.md) owns the
-  geometry). Before Phase 4 the analytic tail's source was the grid boundary radiance clamped to the authored fog luminance, not the sky. *Phase 4 shipped the air fade: every exterior surface now fades through `sky_air_terms` toward `sky_clear_radiance` (the clouds' own haze colour).* The monotonic ridge sweep is not measured: it needs a fixture with a far ridge at controlled distances under distant LOD (the distant-LOD PRD owns the geometry), and moving this repo's fixtures' cameras km back leaves the loaded area and the frame stops being the same scene.
+  geometry). Before Phase 4 the analytic tail's source was the grid boundary radiance clamped to the authored fog luminance, not the sky. *Phase 4 shipped the air fade: every exterior surface now fades through `sky_air_terms` toward `sky_clear_radiance` (the clouds' own haze colour).* The monotonic ridge sweep is not measured: it needs a fixture with a far ridge at controlled distances under distant LOD (the distant-LOD PRD owns the geometry), and moving this repo's fixtures' cameras km back leaves the loaded area and the frame stops being the same scene. A11 (§7.2) holds the open acceptance scenario.
 - **VLM-AP-002.** The tail's air term MUST be the same function SKYAL uses
-  for cloud layers (`sky_air_terms`, `shaders/include/sky.glsl:270`), so the
+  for cloud layers (`sky_air_terms`, `shaders/include/sky.glsl`), so the
   haze in front of a mountain and in front of a cloud at the same distance
   match; a pinned shader-source test (`analytic_tail_uses_the_sky_air_terms`) keeps them shared. *Shipped in Phase 4.*
 - **VLM-AP-003.** If §10 Q4 chooses the aerial-perspective volume, its GPU
@@ -580,8 +642,12 @@ opaque geometry as a post process, 32 × 32 over the screen by default
 | 7 | Fog power shapes the authored ramp (GECK *Weather*: "Fog effects are calculated as a curve") | The power enters the one fit (VLM-HF-001) | — | Clear-weather exteriors about 4.6x thicker on FNV and Skyrim than before Phase 1 (rev 20), above the haze floor → VLM-HF-002, VLM-SH-011, #6776 |
 | 8 | The CK / GECK / CS region pages do not state which non-override region wins | An engine merge rule (VLM-REG-002) | — | Different weather in overlapping regions if the original differs → §10 Q9, #6772 |
 | 9 | — (engine-supplied; no original counterpart is cited) | The sun term scatters off an engine-supplied interior shaft dust (VLM-INT-007) | — | A shaft where the original drew none → VLM-INT-007, VLM-HF-008 |
+| 10 | The FNV vertex shader measures fog distance as the length of the clip-space xyz before the divide (VLM-HF-001) | The fog power is fitted against view-space distance ([EXAL §3.3](../engine/exal.md#33-engine-choice-fog-distance-metric-vlm-hf-001)) | — | Fog onset can differ from the authored look; the difference is unmeasured → VLM-HF-001, VLM-HF-008 |
+| 11 | — (engine-supplied; no original counterpart is cited) | Qualifying interiors get a minimum medium extinction | — | Haze in a room the content authored clear, at night too → VLM-INT-008, VLM-HF-008 |
+| 12 | — (engine limit; no original counterpart is cited) | The froxel sun takes one cloud-shadow value from the camera column | — | Beyond one 125 m texel, shafts can disagree with the cloud shadow on the ground; unmeasured → VLM-SH-004 |
+| 13 | — (verification limit) | A failing `shaft` cell is searched at more poses than a `sealed` control | — | A control can pass because a leaking pose was never sampled → VLM-INT-002, -003 |
 
-The *Becomes redundant* column names only what this PRD can cite. Which community mods a deviation makes redundant (fog-distance, godray-texture and screen-space godray mods) is a **Phase 0: verify** item against LOOT and Nexus listings, not a claim.
+The *Becomes redundant* column names only what this PRD can cite. Which community mods a deviation makes redundant (fog-distance, godray-texture and screen-space godray mods) is a **Phase 0: verify** item against LOOT and Nexus listings (#7427), not a claim.
 
 ---
 
@@ -597,11 +663,11 @@ whose records carry it; the acceptance captures need a loading cell route.
 | Game | In scope | Why / wave |
 |---|---|---|
 | Oblivion | yes | Wave 1. Region weather tables with the weather-and-chance row (VLM-REG); no fog power (VLM-HF-002 keeps it unchanged); exterior fixtures already run in `m-exteriors.sh` |
-| Fallout 3 | yes | Wave 1. Region weather with globals (xEdit `wbDefinitionsFO3.pas` L7187); fog power; MegatonWorld exterior and the painted-fan interiors the handoff lists |
+| Fallout 3 | yes | Wave 1. Region weather with globals (xEdit [wbDefinitionsFO3.pas L8960](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO3.pas#L8960)); fog power; MegatonWorld exterior and the painted-fan interiors the handoff lists |
 | Fallout: New Vegas | yes | Wave 1, reference title. WastelandNV exteriors; Repcon / Helios / Nellis interiors |
 | Skyrim (LE / SE / AE) | yes | Wave 1. Region weather; interior `XCCM` sky-from-region (VLM-REG-009); Tamriel exteriors. SE / AE also carry `VOLI` (VLM-HF-010); LE does not (xEdit gates it on `IsSSE`) |
 | Fallout 4 | yes | Wave 2. `WTHR` far height layer, the `XCLL` / `LGTM` tail and `GDRY` (VLM-HF-003, -004, -011), gated on their Phase 0 semantics; Commonwealth exteriors |
-| Fallout 76 | translation only | The `WTHR`, `XCLL` and `LGTM` translation is shared with FO4 and lands with it; no acceptance capture, because FO76 exteriors are a named policy skip in `m-exteriors.sh` (#4507) |
+| Fallout 76 | translation only | The `WTHR`, `XCLL` and `LGTM` translation is shared with FO4 and lands with it; no acceptance capture, because FO76 exteriors are a named policy skip in `m-exteriors.sh` (#4507). The region resolver is shared and takes no per-game branch, but no census covers FO76 `REGN`, so VLM-REG is not promised for it |
 | Starfield | interiors only | Wave 2. `XCLL` / `LGTM` height fog for walkable interiors (VLM-HF-005); Starfield exteriors are a named policy skip in `m-exteriors.sh`, so VLM-REG and VLM-SH do not apply |
 
 No requirement adds a per-game branch past `env_translate`: the `RDWT`
@@ -620,15 +686,17 @@ adds them.
 | # | Scenario | Drives | Data | Passes when |
 |---|---|---|---|---|
 | A1 | Region weather resolution | `cargo test` names in VLM-REG-001, -003, -006, -012, -014 | none (synthetic records) | all pass |
-| A2 | Region weather census | `crates/plugin/examples/region_weather_census.rs` (rules and counts) and the ignored `region_weather_coverage_census` test in `env_translate/region_weather.rs` (the resolver over every exterior cell: `BYROREDUX_REGION_CENSUS_ESM=<master> cargo test -p byroredux --bin byroredux -- --ignored --nocapture region_weather_coverage_census`) | Oblivion, FO3, FNV, Skyrim masters | every exterior cell with a Weather-bearing region reports a region source; tie and `XCCM`-plus-region counts recorded (VLM-REG-012, -013); counts published (§8). **Coverage at Phase 1, cells a Weather-bearing region polygon covers that resolve to a region:** Oblivion 8,476 of 8,533, FO3 3,068 of 3,068, FNV 1,595 of 1,595, Skyrim 7,756 of 7,760, FO4 3,911 of 3,920 |
-| A3 | Live region weather | `--bench-hold` + `byro-dbg`: `env.health` at two fixture cells in different regions, named by A2's census | FNV `WastelandNV`, Skyrim `Tamriel` | the two `weather.source=` lines name different regions, and a cross-fade runs between them (VLM-REG-007, -011) |
-| A4 | Sky-from-region interior | `--bench-hold` + `byro-dbg`: `env.health` in one `XCCM` interior | Skyrim (an interior from Phase 0's `XCCM` census) | the `weather.source=` line names the `XCCM` region, not the worldspace climate (VLM-REG-009, -011) |
+| A2 | Region weather census | `crates/plugin/examples/region_weather_census.rs` (rules and counts) and the ignored `region_weather_coverage_census` test in `env_translate/region_weather.rs` (the resolver over every exterior cell: `BYROREDUX_REGION_CENSUS_ESM=<master> cargo test -p byroredux --bin byroredux -- --ignored --nocapture region_weather_coverage_census`) | Oblivion, FO3, FNV, Skyrim, FO4 masters | every exterior cell with a Weather-bearing region reports a region source; tie and `XCCM`-plus-region counts recorded (VLM-REG-012, -013); coverage published in the ROADMAP M55 row (§8) |
+| A3 | Live region weather | `--bench-hold` + `byro-dbg`: `env.health` at two fixture cells in different regions | FNV `WastelandNV`: Goodsprings and Black Mountain (run 2026-11-08, #6725). Skyrim `Tamriel`: the pair is not yet named | the two `weather.source=` lines name different regions, and a cross-fade runs between them (VLM-REG-007, -011); open for Skyrim until its pair is named |
+| A4 | Sky-from-region interior | `--bench-hold` + `byro-dbg`: `env.health` in one `XCCM` interior | Skyrim `WhiterunJorrvaskr` (region `WeatherWhiterun`, run 2026-11-08, #6725) | the `weather.source=` line names the `XCCM` region, not the worldspace climate (VLM-REG-009, -011) |
 | A5 | Fog profile translation | `cargo test` names in VLM-HF-002, -004, -010, -011 plus the Phase 1 translate tests | none | all pass |
 | A6 | Grid seam | `docs/smoke-tests/fog-grid-seam.sh`: pinned `--camera-pos` / `--camera-forward`, `renderer-stepped`, captures at two `--fog-grid-far-m` values (a gate since Phase 4, tolerance 2.5 levels) | FNV and Skyrim exterior fixtures | VLM-HF-007 holds |
-| A7 | Exterior shaft lab | `docs/smoke-tests/exterior-shafts.sh`, `shaft_lab_golden_frame` | none | VLM-SH-002, VLM-SH-003 and VLM-SH-009 pass |
+| A7 | Exterior shaft lab | `docs/smoke-tests/exterior-shafts.sh`, `shaft_lab_golden_frame` | none | VLM-SH-002, -003, -005 and -009 pass; open until the script runs VLM-SH-005's 90 m case |
 | A8 | Exterior shafts on content | `--bench-hold` + `byro-dbg`: `time.set 12`, `render.debug composite_term`, `screenshot`, then a low-sun hour | the `m-exteriors.sh` fixture cells for Oblivion, FO3, FNV, Skyrim, FO4 | per-pass ms recorded (VLM-SH-008); contrast recorded on the VLM-SH-012 poses (VLM-SH-006) |
-| A9 | Interior day / night | `--bench-hold` + `byro-dbg` per VLM-INT-002, `docs/smoke-tests/interior-shafts-content.sh` | the sun-path census list in [interior-shaft-openings](../engine/interior-shaft-openings.md#sun-path-census-vlm-int-001-measured-2026-11-09-6727): the cells with a marked aperture or `LightShaft` volumes in a Show Sky cell (FNV Nellis hangars, six FO4 cells), the controls with no such path, and the gap cells (the handoff's candidates, first list, mostly had none) | each listed `shaft` cell passes VLM-INT-002, each control VLM-INT-003, and VLM-INT-004 on both routes (all nine shaft cells passed both routes in the 2026-11-18 measurements) |
+| A9 | Interior day / night | `--bench-hold` + `byro-dbg` per VLM-INT-002, `docs/smoke-tests/interior-shafts-content.sh` | the sun-path census list in [interior-shaft-openings](../engine/interior-shaft-openings.md#sun-path-census-vlm-int-001-measured-2026-11-09-6727): the cells with a marked aperture or `LightShaft` volumes in a Show Sky cell (FNV Nellis hangars, six FO4 cells), the controls with no such path, and the gap cells (the handoff's candidates, first list, mostly had none) | each listed `shaft` cell passes VLM-INT-002, each control VLM-INT-003, and VLM-INT-004 on both routes (all nine shaft cells passed both routes in the 2026-11-18 measurements). The whole list is recorded on one commit from a clean tree. `BYRO_BENCH_HOLD_FREEZE_SIM=1` MAY be used only for a direct-route sealed control whose live failure is traced to moving geometry, with a live-sun positive control under the same setting, and the result is recorded as frozen. **Not yet met:** the 2026-11-18 and -19 runs include uncommitted builds, and the 12-control batch passed 11 live; the twelfth, NCR Prison Block B, passed its four poses frozen |
 | A10 | Interior lab regression | `docs/smoke-tests/interior-godrays.sh` (existing) | none | unchanged pass |
+| A11 | Distant-ridge fade | Pinned-camera captures at increasing ridge distance; no script yet | FNV and Skyrim far-ridge fixtures under distant LOD, not yet named | VLM-AP-001: the ridge-to-sky linear luminance difference falls monotonically with distance, on the same tracked terrain point. Open |
+| A12 | Starfield interior height fog | A translation `cargo test`, not yet written | a synthetic Starfield `XCLL` height block | the authored near height range reaches `FogMedium::scale_height_meters` (VLM-HF-005). Open |
 
 A scenario passes when every row it names passes on the same commit and the
 captures are retained under the run's output directory.
@@ -641,7 +709,9 @@ One home for the numbers: the ROADMAP M55 row
 ([Tier 8](../../ROADMAP.md#tier-8--visual-fidelity-stretch-post-tier-4-horizon))
 holds the coverage and pass counts and links the design's
 [measurement table](../engine/procedural-volumetric-fog.md#measurement-table)
-for per-pass milliseconds.
+for per-pass milliseconds. At 2026-11-26 the row does not yet publish profile
+field coverage as the ratio below, converter coverage, a full interior pass
+count, exterior shaft contrast, shaft range or the parity score.
 
 | Metric | Definition | Granularity |
 |---|---|---|
@@ -652,7 +722,40 @@ for per-pass milliseconds.
 | Interior pass count | listed cells passing VLM-INT-002 to -004 ÷ listed cells | per game |
 | Converter coverage | VLM-INT-006 | per game, base and DLC |
 | Volumetric cost | inject ms and integrate ms, separately | per fixture, per grid configuration, per bench record |
-| Modern parity | items of the reference's feature list met ÷ items not declared non-goals | per revision |
+| Modern parity | items of the §8.1 checklist met ÷ items not declared non-goals | per revision |
+
+### 8.1 Modern-parity checklist
+
+The features Sébastien Hillaire's talk presents as part of Frostbite's system,
+read from the
+[course slides](https://advances.realtimerendering.com/s2015/Frostbite%20PB%20and%20unified%20volumetrics.pptx)
+("Physically Based and Unified Volumetric Rendering in Frostbite", SIGGRAPH
+2015; slide text and speaker notes read 2026-11-26; file SHA-256
+`c37d2105787f76329b14db98006abb92c71616823f3206de2df3f476aa527a41`). Slide
+numbers are the file's slide numbers. Its future-work slide and performance
+figures are left out. **No item is scored yet, so the metric is unmeasured.**
+Listing an item neither promises it nor declares it a non-goal; a new non-goal
+is the owner's call.
+
+| # | Feature in the talk | Slides | Existing non-goal that bears on it |
+|---|---|---|---|
+| 1 | Frustum-aligned froxel volumes (the talk's default: 8×8-pixel tiles, 64 depth slices) | 12 | — |
+| 2 | Separate stages for material properties, froxel light scattering and final integration | 13 | — |
+| 3 | Physical medium parameters: scattering and absorption (or albedo and extinction), emission and a single-lobe Henyey-Greenstein phase | 15, 16 | — |
+| 4 | Depth fog, height fog and local fog volumes, with or without density textures, summed per froxel with an averaged phase | 16 | — |
+| 5 | Ambient lighting from a diffuse SH probe, weighted by the phase function | 19 | — |
+| 6 | Sun scattering shadowed by opaque geometry (the talk uses cascaded shadow maps) | 19 | VLM-NG-006 covers the cascade technique, not the shadowing |
+| 7 | Local-light scattering from culled light lists | 20 | — |
+| 8 | Shadowed local lights in the medium | 20 | — |
+| 9 | Temporal integration: a jitter offset shared along each view ray and by material and lighting samples, reprojection, exponential blending, no history outside the previous frustum | 23 | — |
+| 10 | Energy-conserving integration of each slice against its own transmittance | 28–30 | — |
+| 11 | The result applied to opaque surfaces per pixel | 31 | — |
+| 12 | The result applied to transparent surfaces (the talk evaluates per vertex) | 31 | — |
+| 13 | Results validated against a single-scattering path tracer (the talk uses Mitsuba) | 32–34 | — |
+| 14 | Volumetric shadow maps from extinction volumes, received by opaque surfaces, particles and media | 38, 39, 51 | — |
+| 15 | Particles voxelized so they cast volumetric shadows | 40, 52–56 | VLM-NG-001 bears on fire and smoke only |
+| 16 | High-quality sun scattering and self-shadowing for particles (Fourier opacity maps) | 43 | VLM-NG-001 bears on fire and smoke only |
+| 17 | Physically based sky and atmosphere | 44 | — (SKYAL owns the sky) |
 
 ---
 
@@ -694,12 +797,12 @@ HEAD, `fog-grid-seam.sh`) and A8's per-pass milliseconds (revision 14).
 and A5 pass; region weather coverage and profile field coverage are
 published in the ROADMAP M55 row; `m-exteriors.sh all cycle` stays green.
 
-**Phase 2 — Exterior shafts.** VLM-SH-001 to -009, with the range and the
+**Phase 2 — Exterior shafts.** VLM-SH-001 to -012, with the range and the
 cloud-shadow sampling Q3 decides and any haze floor Q7 decides. Exit: A7
 passes; A8's contrast (on the VLM-SH-012 poses) and inject / integrate milliseconds are published against the Phase 0 baseline on the same machine; the owner has reviewed
 the VLM-SH-007 sequences.
 
-**Phase 3 — Interior coverage.** VLM-INT-001 to -006. Exit: A9's interior
+**Phase 3 — Interior coverage.** VLM-INT-001 to -008. Exit: A9's interior
 pass count is published per game with every listed cell passing, and A10
 still passes.
 
@@ -707,7 +810,9 @@ still passes.
 decides. Exit: A6 and the VLM-AP-001 ridge sweep pass on the FNV and Skyrim
 fixtures, and the modern-parity metric is published.
 
-*Status, 2026-11-19.* The air fade, the shared air term (VLM-AP-002) and A6 are met; the exit is not: the VLM-AP-001 ridge sweep and the modern-parity metric are unmeasured, and the ROADMAP M55 row must say so.
+*Status, 2026-11-19.* The air fade, the shared air term (VLM-AP-002) and A6 are met; the exit is not: the VLM-AP-001 ridge sweep and the modern-parity metric are unmeasured, and the ROADMAP M55 row must say so. A11 holds the sweep and
+§8.1 the unscored parity checklist. The phase issue #6728 was closed on
+2026-11-08 with this exit unmet and reopened on 2026-11-26.
 
 ---
 
@@ -765,7 +870,8 @@ as VLM-NG-006 instead of being reopened.
 
 6. **Q6 — Which modern reference sets the parity checklist?** Recommended:
    keep the one ROADMAP's M55 row names, Hillaire's Frostbite volumetrics
-   (SIGGRAPH 2015), which is also the design's reference, so the PRD and the
+   (SIGGRAPH 2015), which the design's references
+   list from 2026-11-26 (rev 38 corrects the earlier claim that they already did), so the PRD and the
    design measure against one source and nothing already decided is
    reopened. Alternative A: UE5 Volumetric Fog with Exponential Height Fog,
    publicly documented and current (§5.3); the consequence is a ROADMAP row
@@ -783,7 +889,7 @@ as VLM-NG-006 instead of being reopened.
    **Decided** (2026-11-07): the alternative, not the recommendation — the engine supplies a minimum outdoor extinction recorded as an engine choice under VLM-HF-008. It exists so exterior shafts are visible on clear weather, which the owner's goal requires; its form is bounded by VLM-SH-010 so it never thins authored haze and is sun-angle aware, and VLM-SH-011 owns its measurement. The consequence the alternative names (a thicker clear exterior than the authored look) is accepted, and VLM-SH-011 caps it.
 8. **Q8 — What do the authored god-ray records feed?** Recommended: decode
    and census them (VLM-HF-010, -011) and feed nothing into `FogMedium`
-   until Phase 0 settles each field's meaning from a source; fields that
+   until a cited source settles each field's meaning; fields that
    tune the original screen-space effect rather than describe the medium
    are listed under VLM-HF-009, consistent with VLM-NG-003. Alternative A:
    map them now onto the medium (density and phase-function fields onto
@@ -792,7 +898,8 @@ as VLM-NG-006 instead of being reopened.
    documents. Alternative B: declare them a non-goal and skip the decode,
    which saves parser work but leaves VLM-G-002's "whole authored profile"
    short by two record types on two titles.
-   **Decided** (2026-11-07): the recommendation — decode and census the authored god-ray records (VLM-HF-010, -011); feed nothing into `FogMedium` until Phase 0 settles each field's meaning from a source.
+   **Decided** (2026-11-07): the recommendation — decode and census the authored god-ray records (VLM-HF-010, -011); feed nothing into `FogMedium` until a cited source settles each field's meaning.
+   *Amended 2026-11-26 with the owner's agreement:* both sentences first named Phase 0, which has since closed.
 
 9. **Q9 — Does the owner ratify the non-override region merge (VLM-REG-002)?**
    Recommended: ratify it as an engine choice recorded under VLM-HF-008: with
@@ -854,6 +961,7 @@ as VLM-NG-006 instead of being reopened.
 | Weather-driven surface wetness | [Wet-Surface Accumulation PRD](wet-surface-accumulation.md) |
 | Sun-path census, placed-beam census, opening evidence | [Interior Shaft Openings](../engine/interior-shaft-openings.md) |
 | Gate measurements and rechecks (A6 to A10 evidence) | [M55 lighting gates](../audits/M55_LIGHTING_GATES_2026-11-15.md) |
+| Requirement measurement records and decoded-field dispositions | [M55 requirement records](../engine/procedural-volumetric-fog.md#m55-requirement-records), [field disposition](../engine/procedural-volumetric-fog.md#fog-and-god-ray-field-disposition-vlm-hf-009) |
 | Live milestone state and published metrics | [ROADMAP.md](../../ROADMAP.md) |
 
 ---
@@ -899,3 +1007,6 @@ as VLM-NG-006 instead of being reopened.
 | 35 | 2026-11-19 | Q12 haze-floor re-measure recorded (VLM-SH-011, #6776): authored extinction against the floor at thirteen hours on five fixtures, and floor-off against shipped frames on Oblivion, FNV and FO3; the default is still the owner's to decide | claude: revise |
 | 36 | 2026-11-19 | Q12 decided by the owner: the exterior haze floor and its default stand (VLM-SH-010, -011); VLM-SH-011's noon tolerance is the measured change; #6776 is answered | — |
 | 37 | 2026-11-19 | Scope table cross-links the [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md): the world-space radiance cache is owned there, and froxel in-scatter querying it is a possible later consumer, not a requirement of M55. No requirement changed. | — |
+| 38 | 2026-11-26 | Review round 3 (20 findings) folded in. Corrected claims: cross-fade path, fog fit and `VOLI` state, EXAL §3.2, parity reference, §3 inventory (re-checked 2026-11-26, rows 23–25 added). New: VLM-INT-008 (the shipped aperture dust floor), §8.1 parity checklist, CK load-order verify item, §6 rows 10–13, A11, A12. Reworded: VLM-SH-002 and -005 (the script's lab metric and bars), VLM-SH-004 (matches Q3), VLM-INT-002 and -003 (the harness's pass rule), VLM-HF-005, A7, A9 (one-commit run, frozen-capture rule), Q8; Q6 wording corrected. Open items marked on VLM-HF-005, -008, -009, VLM-SH-005, -011 and the INT dust lines. Measurement logs moved to the fog design. The owner accepted the review's five recommendations on 2026-11-26; **approval of the revised text is pending** for VLM-INT-007 (added at rev 6), VLM-SH-012 (rev 34), VLM-INT-008, the rewording listed here and Q8. Tracking repairs (#6728, #6776, unfiled verify items) are not done in this revision | claude: revise |
+| 39 | 2026-11-26 | Owner approved revision 38, covering VLM-INT-007 (added at rev 6), VLM-SH-012 (rev 34), VLM-INT-008, the rewording listed in rev 38 (with A9's one-commit and frozen-capture rules and §7.1's FO76 statement) and the Q8 amendment | owner: approved |
+| 40 | 2026-11-26 | Tracking repairs after approval: #6728 reopened (its exit is unmet); VLM-SH-011's contrast clause added to #6773; verify items filed as #7425 (CK load-order rule), #7426 (`XCCM` against regions), #7427 (mods made redundant) and #7428 (fog shader roles). #6776 stays open: rev 36's "answered" covered the haze floor default only, and its power-term verdict and `BYRO_SUN_DUST` re-measure are not recorded. Corrected VLM-HF-001's verify method, which said Pow captures alone would settle all three roles. No requirement or promise changed | — |

@@ -167,8 +167,8 @@ the CS wording ("will use the landscape of its parent") is the only source.
 
 The **per-cell `XCCM` override** (`resolve_cell_climate`,
 #2451 / EXAL-03) re-resolves on each cell-boundary crossing through
-`scene::apply_cell_climate_override`, which re-applies sky + weather through the
-same `apply_environment` path a worldspace change uses — so an override
+`scene::apply_cell_weather` (with the region tables of §3.2), which re-applies
+sky + weather through the same `apply_environment` path a worldspace change uses — so an override
 transition gets the normal 8-second crossfade and the normal sky-texture
 acquire/release, not a snap. An `XCCM` pointing at an unparsed CLMT falls back to
 the worldspace climate (never to the procedural sky), and an override climate
@@ -347,10 +347,30 @@ cases rather than on the wiki pages' prose. Probe:
 `cargo run --release -p byroredux-plugin --example region_weather_census -- <master.esm> [-v]`
 (one master at a time; a DLC's cells name base-game regions the probe cannot resolve).
 
-**Where weather comes from today.** The worldspace's climate (`WRLD CNAM`, or a cell `XCCM` climate on
-the pre-Skyrim titles) supplies the weather list. A region's `RDAT` Weather section (`RDWT`) is decoded into
-`RegnRecord::entries` and read by no non-test code in `byroredux/src`. The resolver is a `WeatherRecord`
-choice at the EXAL boundary (VLM-REG-010) and must not leak region identity downstream.
+**Where weather comes from** (shipped in Phase 1; checked at HEAD on 2026-11-26,
+`byroredux/src/env_translate/region_weather.rs`). Before Phase 1 only the worldspace climate or a cell `XCCM`
+climate supplied weather, and the region tables were decoded and unread. For an exterior cell,
+`resolve_cell_weather` now takes, in order:
+
+1. The cell's own `XCCM` climate, when it resolves a weather (VLM-REG-013).
+2. The Weather sections of the regions that cover the cell: the region's `RPLD` polygon overlaps the cell
+   inside the region's own `WNAM` worldspace (VLM-REG-008). Override sections are walked from the highest
+   Priority down. A Priority shared by two regions applies neither, and the walk continues (VLM-REG-012).
+3. With no usable Override section, one table merged from every covering non-override section (VLM-REG-002,
+   the owner's engine choice at VLM PRD §10 Q9, 2026-11-19, revisited only if the #6772 observation disagrees).
+4. Otherwise the climate's default weather (VLM-REG-003).
+
+Within a table the highest-chance row whose weather exists wins; ties go to the higher section Priority, then
+the lower region FormID, then authored row order. A row that names a readable global takes its chance from it,
+and a chance that is not above zero is never chosen (VLM-REG-005). A forced weather is applied on top: an
+unlocked one yields at the next cell crossing (VLM-REG-014). A Show Sky interior whose `XCCM` names a region
+takes that region's table (VLM-REG-009). The result is a `WeatherRecord` choice at the EXAL boundary
+(VLM-REG-010) and carries no region identity downstream. `env.health` prints `weather.source=` and the
+`region_non_override=merged-highest-chance` engine choice. It does not print the order of steps 1 and 2.
+
+The CK *Region* page also states that "a region added by a mod will always override regions from earlier
+plugins in the load order". The resolver applies no load-order rule. **Phase 0: verify** how that sentence
+interacts with Priority, ties and non-override sections (VLM-REG-001, #7425).
 
 **What the masters contain** (exterior cells; "weather region" = a region with at least one Weather section):
 
@@ -371,8 +391,7 @@ Every region carries at most one Weather section. The `RDAT` flags byte on Weath
   (the 1,258 FO3, 1,860 Skyrim and 222 FO4 overriding overlaps).
 - The non-override overlap (VLM-REG-002) is **not moot** on Oblivion, FNV or FO4, and Oblivion's 527 cases
   all have equal Priority, so Priority cannot be the tie-break there. No wiki page states the original rule
-  and the census cannot, so an in-game observation (with its save and cell) or an owner decision is still
-  required before Phase 1 fixes it.
+  and the census cannot; the owner chose the merge above (§10 Q9).
 - The tie at the highest overriding Priority (VLM-REG-012) never occurs on Oblivion, FO3 or FNV, so
   the question is moot for them; Skyrim has 9 such cells (first: Tamriel (-13,26), regions `000C5852`
   and `000C5858`, Priority 50), where the CK page states the fall-through rule.
@@ -388,8 +407,20 @@ Every region carries at most one Weather section. The `RDAT` flags byte on Weath
   interiors (213 name a region with a Weather section), `Fallout4.esm` 79 (77). On Oblivion and FO3 the tag is
   a climate on 55 of 1,855 and 1 of 421 interiors; FNV has none.
 
-**Still open.** A region's Weather section replacing, not adding to, the climate list; and the non-override
-tie-break above. Both need an observation of the original engine.
+**Still open** (#6772, observations of the original engine). Whether a region's Weather section replaces the
+climate list rather than adding to it, and whether the original picks as the non-override merge does. The
+load-order rule above (#7425) and the cell-climate order across DLC masters (#7426) are open too.
+
+### 3.3 Engine choice: fog distance metric (VLM-HF-001)
+
+The authored fog power is fitted against **view-space distance**
+(`FogMedium::from_legacy_ramp_with_power`, `byroredux/src/fog.rs`).
+
+* **Original:** the fog sequence read from FNV's shipped vertex shaders measures the length of the three
+  clip-space coordinates before the perspective divide
+  ([corpus findings](procedural-volumetric-fog.md#corpus-findings)). Reproducing that is not attempted.
+* **Scope:** every authored ramp that reaches `FogMedium`, in every game.
+* **Observability:** `env.health` prints `fog_distance=view-space`.
 
 ---
 
