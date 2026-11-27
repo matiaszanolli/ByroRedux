@@ -41,9 +41,17 @@ use super::attach::{
 /// it when the root is replaced. FO4's `_oc.nif` precombines carry no root
 /// transform, so they are unaffected.
 ///
+/// Skyrim: on `WhiterunBanneredMare` the kitchen's `WRIntFloorDirt*` pieces
+/// carry rotated roots. Composed, they leave parts of the sunken floor with no
+/// surface (a camera-coverage prediction reproduces 93.8% of the engine's
+/// surface-less pixels); with the root replaced, none are left in that view.
+///
 /// Other games stay composing until each is verified the same way.
 pub(crate) fn placement_replaces_model_root(game: GameKind) -> bool {
-    matches!(game, GameKind::Fallout3NV | GameKind::Fallout4)
+    matches!(
+        game,
+        GameKind::Fallout3NV | GameKind::Fallout4 | GameKind::Skyrim
+    )
 }
 
 /// Apply [`placement_replaces_model_root`] to a freshly parsed REFR model,
