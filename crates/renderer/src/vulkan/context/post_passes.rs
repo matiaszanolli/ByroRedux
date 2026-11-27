@@ -105,7 +105,7 @@ fn volumetric_sun(
 }
 
 fn volumetric_open_sky_flag(sky: &SkyParams) -> f32 {
-    if sky.is_exterior || sky.interior_show_sky {
+    if sky.froxel_open_sky() {
         1.0
     } else {
         0.0

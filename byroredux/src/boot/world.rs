@@ -53,6 +53,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // resource degrades to the old per-frame scan, so this is an optimisation,
     // not a requirement.
     world.insert_resource(crate::render::SceneEffectSoftCache::default());
+    world.insert_resource(crate::fog::ApertureDustFloorApplied::default());
     // #2950 — `pool_regen_tick_system` needs BOTH `PoolRegenConfig`
     // (per-game: FO3/FNV install it with an ActionPoints lane on the first
     // cell load, #6350; Oblivion with its Fatigue/Magicka lanes through

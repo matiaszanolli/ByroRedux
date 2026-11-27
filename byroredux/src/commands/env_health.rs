@@ -558,8 +558,17 @@ impl ConsoleCommand for EnvHealthCommand {
                     .map(|t| t.translation)
             })
             .map(|pos| (crate::render::fog_height_reference(world, pos), pos.y));
-        let lighting = world.try_resource::<CellLightingRes>();
+        // Also before the guards: both read resources of their own. `froxel_open_sky` is the
+        // renderer's own test on the same sky parameters the frame is built from.
+        let froxel_open_sky = crate::render::sky::build_sky_params(world).froxel_open_sky();
+        let haze_floor_now = crate::render::exterior_haze_floor_now(world);
+        let aperture_dust = world
+            .try_resource::<crate::fog::ApertureDustFloorApplied>()
+            .and_then(|applied| applied.0);
+        // Sky before lighting: the weather system holds `SkyParamsRes` while it takes
+        // `CellLightingRes`, so the reverse nesting here closes a lock-order cycle.
         let sky = world.try_resource::<SkyParamsRes>();
+        let lighting = world.try_resource::<CellLightingRes>();
         let weather = world.try_resource::<WeatherDataRes>();
         let water_planes: Vec<WaterMaterial> = world
             .query::<WaterPlane>()
@@ -590,9 +599,11 @@ impl ConsoleCommand for EnvHealthCommand {
         // VLM-HF-008 — the choices the engine makes where the content authored none, so a capture
         // can name them: the fog power curve is fitted against view-space distance (the shipped
         // vertex shader measures the clip-space xyz length), and overlapping non-override region
-        // weather tables merge and the highest chance wins (VLM-REG-002, pending #6772).
+        // weather tables merge and the highest chance wins (VLM-REG-002, pending #6772), and a
+        // cell's own XCCM climate outranks its regions' tables (VLM-REG-013, pending #7426).
         lines.push(
-            "env: engine_choices fog_distance=view-space region_non_override=merged-highest-chance"
+            "env: engine_choices fog_distance=view-space region_non_override=merged-highest-chance \
+             weather_order=cell-climate-over-regions"
                 .to_string(),
         );
 
@@ -634,10 +645,43 @@ impl ConsoleCommand for EnvHealthCommand {
             let exterior = lighting.as_deref().is_some_and(|lit| !lit.is_interior);
             lines.push(format!(
                 "env: haze_floor={:.6}/m (exterior only{}; base {:.6}/m, horizon gain {:.2})",
-                if exterior { crate::render::exterior_haze_floor_now(world) } else { 0.0 },
+                if exterior { haze_floor_now } else { 0.0 },
                 if exterior { "" } else { ", inactive here" },
                 floor.base_per_meter,
                 floor.horizon_gain,
+            ));
+        }
+        // VLM-INT-008 — the interior aperture dust floor as the last built frame decided it. The
+        // value is the floor in the GPU's units (0 when not applied), like `haze_floor`.
+        {
+            let floor = crate::fog::SKY_APERTURE_DUST_FLOOR_PER_METER;
+            let (live, state) = match aperture_dust {
+                Some(true) => (floor * crate::fog::BASE_FOG_STRENGTH, "applied"),
+                Some(false) => (0.0, "not applied"),
+                None => (0.0, "unknown: no frame built"),
+            };
+            lines.push(format!(
+                "env: aperture_dust_floor={live:.6}/m ({state}; medium floor {floor:.6}/m x {:.2} \
+                 frame scale)",
+                crate::fog::BASE_FOG_STRENGTH,
+            ));
+        }
+        // VLM-INT-007 — the interior shaft dust. The shader adds it per froxel, to the sun term
+        // only, where the sun came through an authored aperture, so this reports whether it can
+        // apply in this cell, not whether any froxel took it.
+        {
+            use byroredux_renderer::shader_constants::{
+                INTERIOR_SHAFT_DUST_ALBEDO, INTERIOR_SHAFT_DUST_PER_METER,
+            };
+            let (live, state) = match lighting.as_deref() {
+                None => (0.0, "unknown: no cell lighting"),
+                Some(lit) if !lit.is_interior => (0.0, "inactive here: exterior"),
+                Some(_) if froxel_open_sky => (0.0, "inactive here: open sky"),
+                Some(_) => (INTERIOR_SHAFT_DUST_PER_METER, "armed for authored apertures"),
+            };
+            lines.push(format!(
+                "env: shaft_dust={live:.6}/m ({state}; sun term only, albedo {:.2})",
+                INTERIOR_SHAFT_DUST_ALBEDO,
             ));
         }
         if let Some(sky) = sky.as_deref() {

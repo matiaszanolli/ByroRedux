@@ -1,8 +1,8 @@
 # Volumetric Lighting — Product Requirements
 
 **Status**: ACTIVE (2026-11-26). The owner approved revision 38, which folds in review round 3
-(revision 39); revision 40 records the tracking repairs and corrects one verify method. The revision
-history is §12. This document covers
+(revision 39); revision 40 records the tracking repairs, and revision 41 the `env.health` lines and
+the 90 m shaft gate. The revision history is §12. This document covers
 the remainder of ROADMAP milestone M55 after the froxel fog slice, the transported
 combustion solver and the interior godray vertical slice shipped. Statements about
 how an original engine, a record format, a paper or another engine behaves cite
@@ -117,7 +117,7 @@ interior aperture dust floor (VLM-INT-008).
 | **Override lock** | The optional second argument of ObScript `ForceWeather` that keeps a forced weather until `ReleaseWeatherOverride` (`ForcedWeather::locked`). |
 | **Shaft** | A visible difference in in-scattered radiance between lit and occluded parts of the medium along the view, produced by the froxel sun or local-light term and RT visibility. |
 | **Shaft contrast** | On content: the mean linear radiance in a shaft region minus that in an adjacent occluded region of the same frame, in a `render.debug composite_term` capture. No script computes it yet (VLM-SH-012). |
-| **Lab shaft contrast** | What `exterior-shafts.sh` computes: (lit − shadow) / (lit + shadow) over the wall body (rows 335–519, columns 375–904) of an 8-bit grayscale `render.debug volumetric_term` capture, which shows `max(1 − exp(−radiance), opacity)` and is not linear radiance. Lit columns are the gaps and shadow columns the slats, found from a finished frame of the open lab. |
+| **Lab shaft contrast** | What `exterior-shafts.sh` computes: (lit − shadow) / (lit + shadow) over the wall body (rows 335–519, columns 375–904 at the default 55 m; the same part of the wall, projected into the 90 m camera, is rows 404–516, columns 479–800) of an 8-bit grayscale `render.debug volumetric_term` capture, which shows `max(1 − exp(−radiance), opacity)` and is not linear radiance. Lit columns are the gaps and shadow columns the slats, found from a finished frame of the open lab. |
 | **Sky aperture** | A proved source plane, `FogProfile::SkyAperture` ([handoff](../engine/interior-godrays-status.md#what-is-implemented)). |
 | **Portal sun** | The outdoor sun an interior's medium sees through an opening ([SKYAL interior lane](../engine/skyal.md#the-interior-outdoor-sky-lane-4927-2026-10-01)). |
 | **Combustion field** | The transported fire / smoke state; owned by the fire plan, named here only to scope it out. |
@@ -166,8 +166,8 @@ links the measurement table and the per-area acceptance results, and is then fro
 | 21 | Majorant grid / ratio tracking for path-traced media | Non-goal (VLM-NG-002) | No code (`rg -i "majorant\|ratio.track"` is empty) |
 | 22 | Non-RT cascade visibility for the froxels | Non-goal (VLM-NG-006) | No cascade path; [measurement table](../engine/procedural-volumetric-fog.md#measurement-table) row "cascade, 1 tap" is empty |
 | 23 | Exterior haze floor | Shipped | `ExteriorHazeFloor::DEFAULT` and `with_exterior_haze_floor` (`byroredux/src/fog.rs`), applied in `render/mod.rs`; `env.health` prints `haze_floor` (VLM-SH-010, -011; the contrast clause of -011 is open) |
-| 24 | Interior shaft dust | Shipped | `INTERIOR_SHAFT_DUST_PER_METER`, sun term only, `volumetrics_inject.comp`; no `env.health` line (VLM-INT-007) |
-| 25 | Interior aperture dust floor | Shipped | `FogMedium::with_sky_aperture_dust_floor`, applied in `render/mod.rs`; no `env.health` line (VLM-INT-008) |
+| 24 | Interior shaft dust | Shipped | `INTERIOR_SHAFT_DUST_PER_METER`, sun term only, `volumetrics_inject.comp`, never under open sky; `env.health` prints `shaft_dust` (VLM-INT-007) |
+| 25 | Interior aperture dust floor | Shipped | `FogMedium::with_sky_aperture_dust_floor`, applied in `render/mod.rs`, which records the decision; `env.health` prints `aperture_dust_floor` (VLM-INT-008) |
 
 ---
 
@@ -426,10 +426,10 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
   and printed by `env.health`. `BASE_FOG_STRENGTH` is one such choice and is
   not reopened here; it MUST scale the new fields' extinction identically. At
   HEAD on 2026-11-26 `env.health` prints `fog_distance=view-space`,
-  `region_non_override=merged-highest-chance`, `haze_floor` and the scaled
-  extinction on its fog line. **Open:** it prints neither interior dust value
-  (VLM-INT-007, -008) nor the cell-climate-over-region order
-  (VLM-REG-013). Written records: EXAL §3.1 (base fog), §3.2 (region rules)
+  `region_non_override=merged-highest-chance`,
+  `weather_order=cell-climate-over-regions` (VLM-REG-013), `haze_floor`,
+  `aperture_dust_floor`, `shaft_dust` and the scaled extinction on its fog
+  line. Written records: EXAL §3.1 (base fog), §3.2 (region rules)
   and §3.3 (fog distance).
 - **VLM-HF-009.** A decoded fog or god-ray field that Phase 0 rules out of
   the medium MUST be listed with its reason in the design's
@@ -493,11 +493,11 @@ The RT visibility replaces cascades (VLM-NG-006).
 - **VLM-SH-005.** The lab MUST pass VLM-SH-002's three conditions with the
   occluder 90 m from the camera at the default 128 m grid
   (`--shaft-lab-distance 90`, the range §10 Q10 accepts); the range is
-  observable as the farthest occluder distance that still passes. **Open:**
-  `exterior-shafts.sh` does not pass `--shaft-lab-distance`, so no gate runs
-  this. The [2026-11-07 sweep](../engine/procedural-volumetric-fog.md#shaft-range-sweep-vlm-sh-005) recorded open
-  minus solid only (0.071 at 90 m) and does not show the two absolute
-  conditions.
+  observable as the farthest occluder distance that still passes. *Met
+  2026-11-26:* `exterior-shafts.sh` runs the 90 m case with its own crop (§2)
+  ([record](../engine/procedural-volumetric-fog.md#shaft-range-gate-at-90-m-vlm-sh-005)). The
+  [2026-11-07 sweep](../engine/procedural-volumetric-fog.md#shaft-range-sweep-vlm-sh-005) is the earlier range
+  measurement.
 - **VLM-SH-006.** On each exterior fixture of §7.2, a noon and a low-sun
   capture under the fixture's vanilla weather MUST be recorded with the
   shaft contrast across a named occluder. Phase 0 measured clear-weather extinction (rev 3: 0.000349 /m at FNV Goodsprings, about 4.5 % optical depth over the froxel range) and §10 Q7 decided the haze floor (VLM-SH-010) on that evidence. **Content measurement, 2026-11-08** (`docs/smoke-tests/exterior-shafts-content.sh`, #6773): the in-scatter term at noon, 07:00 and 17:30 on the five fixtures is recorded in the fog design (the sun response is large on every fixture), but a contrast across a named occluder is not measurable at the default poses: the froxel view samples at pixel depth, so an occluder's column reads darker from nearness, not shadow. The restated need is VLM-SH-012.
@@ -594,7 +594,9 @@ The RT visibility replaces cascades (VLM-NG-006).
   VLM-SH-010). It MUST ride the sun term only, so the dark room, the local lights and the night gain nothing from
   it, and it MUST NOT apply to open sky, glass or rim-probe visibility.
   [Record](../engine/procedural-volumetric-fog.md#interior-shaft-dust-measurement-vlm-int-007). `env.health` MUST print its live value, as
-  VLM-HF-008 requires; open: at HEAD on 2026-11-26 it prints no dust line (`commands/env_health.rs`).
+  VLM-HF-008 requires. *Shipped:* the `shaft_dust` line reads 0 in an exterior and under open sky, and the
+  per-metre value where the froxel pass tests authored apertures. A Show Sky interior counts as open sky: the
+  shader tests no aperture there, so its light-shaft cones get no shaft dust.
 - **VLM-INT-008.** In an interior whose cell shows the sky (Show Sky), holds a `LightShaft` fog volume or
   shows architectural window glass, the engine MUST raise the global medium's extinction to at least
   0.005 / m, an engine choice recorded under VLM-HF-008. A stronger authored medium keeps its value, and a
@@ -602,7 +604,10 @@ The RT visibility replaces cascades (VLM-NG-006).
   least 0.004 / m. Unlike VLM-INT-007 it thickens the whole room's medium, at every hour. *Shipped*
   (`FogMedium::with_sky_aperture_dust_floor`, applied in `render/mod.rs`); the test
   `sky_aperture_adds_clear_air_dust_without_overriding_stronger_fog` covers the floor function, not the three
-  conditions. `env.health` MUST print its live value; open: at HEAD on 2026-11-26 it does not.
+  conditions. `env.health` MUST print its live value. *Shipped:* the frame builder records the decision it
+  applies, and the `aperture_dust_floor` line reports it; the test
+  `the_aperture_dust_floor_decision_is_recorded_as_applied` covers a Show Sky interior, a sealed one and an
+  exterior. The light-shaft and glass conditions have no test.
 
 ### 5.5 Aerial perspective for distant geometry (`VLM-AP`)
 
@@ -691,7 +696,7 @@ adds them.
 | A4 | Sky-from-region interior | `--bench-hold` + `byro-dbg`: `env.health` in one `XCCM` interior | Skyrim `WhiterunJorrvaskr` (region `WeatherWhiterun`, run 2026-11-08, #6725) | the `weather.source=` line names the `XCCM` region, not the worldspace climate (VLM-REG-009, -011) |
 | A5 | Fog profile translation | `cargo test` names in VLM-HF-002, -004, -010, -011 plus the Phase 1 translate tests | none | all pass |
 | A6 | Grid seam | `docs/smoke-tests/fog-grid-seam.sh`: pinned `--camera-pos` / `--camera-forward`, `renderer-stepped`, captures at two `--fog-grid-far-m` values (a gate since Phase 4, tolerance 2.5 levels) | FNV and Skyrim exterior fixtures | VLM-HF-007 holds |
-| A7 | Exterior shaft lab | `docs/smoke-tests/exterior-shafts.sh`, `shaft_lab_golden_frame` | none | VLM-SH-002, -003, -005 and -009 pass; open until the script runs VLM-SH-005's 90 m case |
+| A7 | Exterior shaft lab | `docs/smoke-tests/exterior-shafts.sh`, `shaft_lab_golden_frame` | none | VLM-SH-002, -003, -005 and -009 pass |
 | A8 | Exterior shafts on content | `--bench-hold` + `byro-dbg`: `time.set 12`, `render.debug composite_term`, `screenshot`, then a low-sun hour | the `m-exteriors.sh` fixture cells for Oblivion, FO3, FNV, Skyrim, FO4 | per-pass ms recorded (VLM-SH-008); contrast recorded on the VLM-SH-012 poses (VLM-SH-006) |
 | A9 | Interior day / night | `--bench-hold` + `byro-dbg` per VLM-INT-002, `docs/smoke-tests/interior-shafts-content.sh` | the sun-path census list in [interior-shaft-openings](../engine/interior-shaft-openings.md#sun-path-census-vlm-int-001-measured-2026-11-09-6727): the cells with a marked aperture or `LightShaft` volumes in a Show Sky cell (FNV Nellis hangars, six FO4 cells), the controls with no such path, and the gap cells (the handoff's candidates, first list, mostly had none) | each listed `shaft` cell passes VLM-INT-002, each control VLM-INT-003, and VLM-INT-004 on both routes (all nine shaft cells passed both routes in the 2026-11-18 measurements). The whole list is recorded on one commit from a clean tree. `BYRO_BENCH_HOLD_FREEZE_SIM=1` MAY be used only for a direct-route sealed control whose live failure is traced to moving geometry, with a live-sun positive control under the same setting, and the result is recorded as frozen. **Not yet met:** the 2026-11-18 and -19 runs include uncommitted builds, and the 12-control batch passed 11 live; the twelfth, NCR Prison Block B, passed its four poses frozen |
 | A10 | Interior lab regression | `docs/smoke-tests/interior-godrays.sh` (existing) | none | unchanged pass |
@@ -1010,3 +1015,4 @@ as VLM-NG-006 instead of being reopened.
 | 38 | 2026-11-26 | Review round 3 (20 findings) folded in. Corrected claims: cross-fade path, fog fit and `VOLI` state, EXAL §3.2, parity reference, §3 inventory (re-checked 2026-11-26, rows 23–25 added). New: VLM-INT-008 (the shipped aperture dust floor), §8.1 parity checklist, CK load-order verify item, §6 rows 10–13, A11, A12. Reworded: VLM-SH-002 and -005 (the script's lab metric and bars), VLM-SH-004 (matches Q3), VLM-INT-002 and -003 (the harness's pass rule), VLM-HF-005, A7, A9 (one-commit run, frozen-capture rule), Q8; Q6 wording corrected. Open items marked on VLM-HF-005, -008, -009, VLM-SH-005, -011 and the INT dust lines. Measurement logs moved to the fog design. The owner accepted the review's five recommendations on 2026-11-26; **approval of the revised text is pending** for VLM-INT-007 (added at rev 6), VLM-SH-012 (rev 34), VLM-INT-008, the rewording listed here and Q8. Tracking repairs (#6728, #6776, unfiled verify items) are not done in this revision | claude: revise |
 | 39 | 2026-11-26 | Owner approved revision 38, covering VLM-INT-007 (added at rev 6), VLM-SH-012 (rev 34), VLM-INT-008, the rewording listed in rev 38 (with A9's one-commit and frozen-capture rules and §7.1's FO76 statement) and the Q8 amendment | owner: approved |
 | 40 | 2026-11-26 | Tracking repairs after approval: #6728 reopened (its exit is unmet); VLM-SH-011's contrast clause added to #6773; verify items filed as #7425 (CK load-order rule), #7426 (`XCCM` against regions), #7427 (mods made redundant) and #7428 (fog shader roles). #6776 stays open: rev 36's "answered" covered the haze floor default only, and its power-term verdict and `BYRO_SUN_DUST` re-measure are not recorded. Corrected VLM-HF-001's verify method, which said Pow captures alone would settle all three roles. No requirement or promise changed | — |
+| 41 | 2026-11-26 | `env.health` now prints the cell-climate-over-region order and both interior dust values (closes the open notes on VLM-HF-008, VLM-INT-007 and -008), with the frame builder recording the aperture-floor decision. A lock-order inversion in the same command is fixed. `exterior-shafts.sh` runs VLM-SH-005's 90 m case, which passes; §2 gains the 90 m crop, the same wall area projected into that camera, because the 55 m crop reads sky and open haze there. VLM-INT-007 now records that Show Sky interiors get no shaft dust. No requirement or promise changed | — |

@@ -1454,6 +1454,17 @@ pub(crate) fn build_render_data(
     // authoritative every frame. Cached so the hot path doesn't `getenv`
     // per frame. No-op when unset. Mirrors the `BYRO_HOUR` convention.
     let (fog_near, fog_far, fog_overridden) = apply_fog_overrides(fog_near, fog_far);
+    // VLM-INT-008 — decided once, so what is applied below is what `env.health` reports.
+    let aperture_dust_floor = !fog_overridden
+        && cell_lit.as_ref().is_some_and(|lighting| lighting.is_interior)
+        && (interior_show_sky
+            || gpu_fog_volumes.iter().any(|volume| {
+                volume.profile_params[0]
+                    == byroredux_renderer::vulkan::volumetrics::FOG_VOLUME_PROFILE_LIGHT_SHAFT
+            })
+            // #4799 — answered by the static walk that already read both
+            // fields, not by rescanning the sorted list every frame.
+            || static_summary.saw_architecture_glass);
     // Diagnostic overrides deliberately bypass the load-time table. Keep the
     // normal hot path conversion-free; only an explicitly enabled override
     // pays the fit here.
@@ -1472,18 +1483,7 @@ pub(crate) fn build_render_data(
     } else {
         0.0
     })
-    .with_sky_aperture_dust_floor(
-        !fog_overridden
-            && cell_lit.as_ref().is_some_and(|lighting| lighting.is_interior)
-            && (interior_show_sky
-                || gpu_fog_volumes.iter().any(|volume| {
-                    volume.profile_params[0]
-                        == byroredux_renderer::vulkan::volumetrics::FOG_VOLUME_PROFILE_LIGHT_SHAFT
-                })
-                // #4799 — answered by the static walk that already read both
-                // fields, not by rescanning the sorted list every frame.
-                || static_summary.saw_architecture_glass),
-    );
+    .with_sky_aperture_dust_floor(aperture_dust_floor);
     // Retain the authored XCLL cubic-fog curve for diagnostics and a future
     // explicit compatibility toggle. The physical path does not evaluate it.
     let fog_clip = cell_lit
@@ -1497,6 +1497,10 @@ pub(crate) fn build_render_data(
         .unwrap_or(0.0)
         .max(0.0);
     drop(cell_lit);
+    // Recorded after the lighting guard is gone, so no two resource locks are held together.
+    if let Some(mut applied) = world.try_resource_mut::<crate::fog::ApertureDustFloorApplied>() {
+        applied.0 = Some(aperture_dust_floor);
+    }
 
     // Sky params (TOD palette + cloud scroll + sun + DALC cube) — see
     // `render::sky::build_sky_params`.

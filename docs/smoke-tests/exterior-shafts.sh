@@ -13,6 +13,12 @@
 # control's by more than twice the run-to-run noise of a repeated open capture (VLM-SH-002), and clears
 # two absolute bars so a degenerate pair cannot pass on a noise of zero.
 #
+# The gate runs twice: at the lab's default 55 m, and at 90 m (`--shaft-lab-distance 90`, VLM-SH-005,
+# the accepted shaft range on the default 128 m grid). The wall is smaller and lower in the frame at
+# 90 m, so each distance has its own crop. Both crops cover the same part of the wall: the 55 m one,
+# mapped onto the wall plane and projected into the 90 m camera (45 degree vertical FOV, pitched up
+# the sun's 10 degrees). Reusing the 55 m crop at 90 m reads the sky and open haze around the wall.
+#
 # Alpha-tested cutouts (VLM-SH-009) are measured after the shaft gate by three matched captures:
 # `--shaft-lab-card` (one panel, the odd stripes cut out by alpha), `--shaft-lab-card-geo` (the same
 # stripes as real holes) and `--shaft-lab-card-solid` (one unbroken panel). Their finished frames are
@@ -57,12 +63,13 @@ else
     DISPLAY_RUNNER=()
 fi
 
-capture() { # <name> <lab flag> <render debug view>
+capture() { # <name> <lab flag> <render debug view> [extra engine arguments]
     local name="$1" lab="$2" view="$3"
+    shift 3
     (cd "$OUT" && env -u WAYLAND_DISPLAY -u BYRO_HAZE_FLOOR XDG_SESSION_TYPE=x11 \
         BYROREDUX_SETTINGS_PATH="$OUT/settings_$name.toml" BYRO_CLOUD_SEED="${BYRO_CLOUD_SEED:-0}" RUST_LOG=warn \
         "${DISPLAY_RUNNER[@]}" timeout 180s "$BIN" \
-        "$lab" --fly --window-size 1280x720 --upscaler taa \
+        "$lab" "$@" --fly --window-size 1280x720 --upscaler taa \
         --bench-mode renderer-stepped --bench-camera static --bench-frames 90 \
         --render-debug-mode "$view" --screenshot "$name.png" >"$OUT/$name.log" 2>&1) || {
         echo "FAIL: capture $name failed; see $OUT/$name.log" >&2
@@ -76,6 +83,10 @@ capture open_final --shaft-lab final
 capture open_vol --shaft-lab volumetric_term
 capture open_vol_repeat --shaft-lab volumetric_term
 capture solid_vol --shaft-lab-solid volumetric_term
+capture far_open_final --shaft-lab final --shaft-lab-distance 90
+capture far_open_vol --shaft-lab volumetric_term --shaft-lab-distance 90
+capture far_open_vol_repeat --shaft-lab volumetric_term --shaft-lab-distance 90
+capture far_solid_vol --shaft-lab-solid volumetric_term --shaft-lab-distance 90
 capture card_vol --shaft-lab-card volumetric_term
 capture cardgeo_final --shaft-lab-card-geo final
 capture cardgeo_vol --shaft-lab-card-geo volumetric_term
@@ -98,42 +109,51 @@ def load(name):
     return img
 
 
-# The wall's body in the 1280x720 frame: below the lintel, above the ground line.
-ROWS, COLS = slice(335, 520), slice(375, 905)
-
-final = load("open_final")[ROWS, COLS]
-column_mean = final.mean(axis=0)
-slat = column_mean < (column_mean.min() + column_mean.max()) / 2
-if slat.sum() < 20 or (~slat).sum() < 20:
-    print(f"FAIL: could not tell slats from gaps ({int(slat.sum())} / {int((~slat).sum())} columns)")
-    sys.exit(1)
+# The wall's body in the 1280x720 frame, below the lintel and above the ground line, per camera
+# distance: (capture-name prefix, rows, columns, the requirement a failure is reported against).
+VIEWS = {
+    "55 m": ("", slice(335, 520), slice(375, 905), "VLM-SH-002"),
+    "90 m": ("far_", slice(404, 517), slice(479, 801), "VLM-SH-005"),
+}
 
 
-def contrast(name):
-    band = load(name)[ROWS, COLS]
-    lit, shadow = band[:, ~slat].mean(), band[:, slat].mean()
-    return (lit - shadow) / (lit + shadow + 1e-6), lit, shadow
+def shaft_gate(distance):
+    prefix, rows, cols, requirement = VIEWS[distance]
+    final = load(f"{prefix}open_final")[rows, cols]
+    column_mean = final.mean(axis=0)
+    slat = column_mean < (column_mean.min() + column_mean.max()) / 2
+    if slat.sum() < 20 or (~slat).sum() < 20:
+        return [f"{requirement} at {distance}: could not tell slats from gaps "
+                f"({int(slat.sum())} / {int((~slat).sum())} columns)"]
+
+    def contrast(name):
+        band = load(f"{prefix}{name}")[rows, cols]
+        lit, shadow = band[:, ~slat].mean(), band[:, slat].mean()
+        return (lit - shadow) / (lit + shadow + 1e-6), lit, shadow
+
+    open_c, open_lit, open_shadow = contrast("open_vol")
+    repeat_c, _, _ = contrast("open_vol_repeat")
+    solid_c, solid_lit, solid_shadow = contrast("solid_vol")
+    noise = abs(open_c - repeat_c)
+
+    print(f"{distance} open  : lit {open_lit:.1f} shadow {open_shadow:.1f} contrast {open_c:.4f}")
+    print(f"{distance} solid : lit {solid_lit:.1f} shadow {solid_shadow:.1f} contrast {solid_c:.4f}")
+    print(f"{distance} repeat noise (|open - open repeat|): {noise:.6f}")
+
+    found = []
+    if not open_c - solid_c > 2.0 * noise:
+        found.append("open contrast does not exceed the solid control by more than twice the noise")
+    if open_c < 0.05:
+        found.append(f"open contrast {open_c:.4f} is below the 0.05 bar: the sun does not light the gaps")
+    if solid_c > 0.02:
+        found.append(f"solid contrast {solid_c:.4f} is above the 0.02 bar: the control shows a shaft")
+    return [f"{requirement} at {distance}: {message}" for message in found]
 
 
-open_c, open_lit, open_shadow = contrast("open_vol")
-repeat_c, _, _ = contrast("open_vol_repeat")
-solid_c, solid_lit, solid_shadow = contrast("solid_vol")
-noise = abs(open_c - repeat_c)
-
-print(f"open  : lit {open_lit:.1f} shadow {open_shadow:.1f} contrast {open_c:.4f}")
-print(f"solid : lit {solid_lit:.1f} shadow {solid_shadow:.1f} contrast {solid_c:.4f}")
-print(f"repeat noise (|open - open repeat|): {noise:.6f}")
-
-failures = []
-if not open_c - solid_c > 2.0 * noise:
-    failures.append("VLM-SH-002: open contrast does not exceed the solid control by more than twice the noise")
-if open_c < 0.05:
-    failures.append(f"open contrast {open_c:.4f} is below the 0.05 bar: the sun does not light the gaps")
-if solid_c > 0.02:
-    failures.append(f"solid contrast {solid_c:.4f} is above the 0.02 bar: the control shows a shaft")
+failures = shaft_gate("55 m") + shaft_gate("90 m")
 if failures:
-    for line in failures:
-        print("FAIL:", line)
+    for failure in failures:
+        print(f"FAIL: {failure}")
     sys.exit(1)
 print("PASS: exterior shafts")
 PY

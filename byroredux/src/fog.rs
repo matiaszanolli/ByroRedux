@@ -59,6 +59,19 @@ pub(crate) struct ExteriorHazeFloor {
 
 impl byroredux_core::ecs::resource::Resource for ExteriorHazeFloor {}
 
+/// The interior aperture dust floor (VLM-INT-008), extinction per metre of the stored medium, so the
+/// GPU integrates [`BASE_FOG_STRENGTH`] times it.
+pub(crate) const SKY_APERTURE_DUST_FLOOR_PER_METER: f32 = 0.005;
+
+/// Whether the last built frame applied the interior aperture dust floor; `None` before the first
+/// frame. The frame builder writes it, because only it sees the uploaded fog volumes and the static
+/// walk's architectural-glass answer, and `env.health` reads it, so the report is the decision that
+/// was applied (VLM-INT-008, VLM-HF-008). `NOT_SAVED_BY_DESIGN`: rewritten every frame.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ApertureDustFloorApplied(pub(crate) Option<bool>);
+
+impl byroredux_core::ecs::resource::Resource for ApertureDustFloorApplied {}
+
 impl ExteriorHazeFloor {
     pub(crate) const DEFAULT: Self = Self { base_per_meter: 0.0006, horizon_gain: 6.0 };
     pub(crate) const OFF: Self = Self { base_per_meter: 0.0, horizon_gain: 0.0 };
@@ -241,7 +254,8 @@ impl FogMedium {
     /// nearly clear while a sunlit path has something physical to scatter.
     pub(crate) fn with_sky_aperture_dust_floor(mut self, enabled: bool) -> Self {
         if enabled {
-            self.extinction_per_meter = self.extinction_per_meter.max(0.005);
+            self.extinction_per_meter =
+                self.extinction_per_meter.max(SKY_APERTURE_DUST_FLOOR_PER_METER);
         }
         self
     }

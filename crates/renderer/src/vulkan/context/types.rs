@@ -929,6 +929,15 @@ impl Default for DofView {
     }
 }
 
+impl SkyParams {
+    /// Whether the froxel pass treats this frame as open sky: an exterior, or a Show Sky interior.
+    /// Under open sky it never tests authored sun apertures, so the interior shaft dust
+    /// (VLM-INT-007) cannot apply.
+    pub fn froxel_open_sky(&self) -> bool {
+        self.is_exterior || self.interior_show_sky
+    }
+}
+
 impl Default for SkyParams {
     fn default() -> Self {
         Self {

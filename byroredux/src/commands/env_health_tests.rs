@@ -629,3 +629,56 @@ fn weather_source_line_names_the_deciding_record() {
         "env: weather.source=none weather=none"
     );
 }
+
+fn health_lines(world: &World) -> String {
+    EnvHealthCommand.execute(world, "").lines.join("\n")
+}
+
+/// VLM-HF-008 / VLM-REG-013 — the weather order is an engine choice, so the report names it.
+#[test]
+fn engine_choices_name_the_cell_climate_over_region_order() {
+    let out = health_lines(&World::new());
+    assert!(out.contains("weather_order=cell-climate-over-regions"), "{out}");
+}
+
+/// VLM-INT-008 — the aperture floor line carries the frame builder's own decision, in GPU units.
+#[test]
+fn aperture_dust_floor_line_reports_the_recorded_decision() {
+    let mut world = World::new();
+    let line = "env: aperture_dust_floor=";
+    assert!(health_lines(&world).contains(&format!("{line}0.000000/m (unknown: no frame built")));
+    world.insert_resource(crate::fog::ApertureDustFloorApplied(Some(false)));
+    assert!(health_lines(&world).contains(&format!("{line}0.000000/m (not applied;")));
+    world.insert_resource(crate::fog::ApertureDustFloorApplied(Some(true)));
+    let out = health_lines(&world);
+    assert!(
+        out.contains(&format!("{line}0.004000/m (applied; medium floor 0.005000/m x 0.80")),
+        "{out}"
+    );
+}
+
+/// VLM-INT-007 — the shaft dust can apply only where the froxel pass tests authored apertures: an
+/// interior that is not open to the sky.
+#[test]
+fn shaft_dust_line_is_live_only_in_an_interior_closed_to_the_sky() {
+    let mut world = World::new();
+    assert!(health_lines(&world)
+        .contains("env: shaft_dust=0.000000/m (unknown: no cell lighting;"));
+
+    let (lighting, sky) = healthy_exterior();
+    world.insert_resource(sky);
+    world.insert_resource(lighting);
+    let out = health_lines(&world);
+    assert!(out.contains("env: shaft_dust=0.000000/m (inactive here: exterior;"), "{out}");
+
+    world.resource_mut::<CellLightingRes>().is_interior = true;
+    let out = health_lines(&world);
+    assert!(
+        out.contains("env: shaft_dust=0.040000/m (armed for authored apertures; sun term only"),
+        "{out}"
+    );
+
+    world.insert_resource(crate::components::InteriorSkyExposureRes(true));
+    let out = health_lines(&world);
+    assert!(out.contains("env: shaft_dust=0.000000/m (inactive here: open sky;"), "{out}");
+}

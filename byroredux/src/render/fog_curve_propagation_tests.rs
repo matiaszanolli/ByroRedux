@@ -136,3 +136,40 @@ fn no_cell_lighting_resource_defaults_to_zero() {
     assert_eq!(view.fog_power, 0.0);
     assert_eq!(view.fog_medium, crate::fog::FogMedium::DISABLED);
 }
+
+/// VLM-INT-008 — the frame builder records the aperture-floor decision it applies: an interior
+/// takes the floor when it shows the sky, and not when it is sealed or the cell is an exterior.
+/// (The light-shaft and architectural-glass conditions need uploaded volumes and drawn glass, which
+/// this fixture does not build.)
+#[test]
+fn the_aperture_dust_floor_decision_is_recorded_as_applied() {
+    use crate::fog::{ApertureDustFloorApplied, SKY_APERTURE_DUST_FLOOR_PER_METER};
+    let build = |is_interior: bool, show_sky: bool| {
+        let mut world = world_with_camera();
+        let mut lighting = CellLightingRes::bare(
+            [0.1; 3],
+            [0.0; 3],
+            [0.0, 1.0, 0.0],
+            is_interior,
+            [0.0; 3],
+            0.0,
+            0.0,
+        );
+        lighting.fog_medium = crate::fog::FogMedium::DISABLED;
+        world.insert_resource(lighting);
+        world.insert_resource(crate::components::InteriorSkyExposureRes(show_sky));
+        world.insert_resource(ApertureDustFloorApplied::default());
+        let view = run_view(&world);
+        let recorded = world.resource::<ApertureDustFloorApplied>().0;
+        (recorded, view.fog_medium.extinction_per_meter)
+    };
+
+    let (recorded, extinction) = build(true, true);
+    assert_eq!(recorded, Some(true));
+    assert_eq!(extinction, SKY_APERTURE_DUST_FLOOR_PER_METER);
+
+    assert_eq!(build(true, false), (Some(false), 0.0), "a sealed interior stays clear");
+
+    // An exterior takes the haze floor instead, so only the recorded decision is pinned here.
+    assert_eq!(build(false, true).0, Some(false));
+}

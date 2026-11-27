@@ -365,8 +365,9 @@ the lower region FormID, then authored row order. A row that names a readable gl
 and a chance that is not above zero is never chosen (VLM-REG-005). A forced weather is applied on top: an
 unlocked one yields at the next cell crossing (VLM-REG-014). A Show Sky interior whose `XCCM` names a region
 takes that region's table (VLM-REG-009). The result is a `WeatherRecord` choice at the EXAL boundary
-(VLM-REG-010) and carries no region identity downstream. `env.health` prints `weather.source=` and the
-`region_non_override=merged-highest-chance` engine choice. It does not print the order of steps 1 and 2.
+(VLM-REG-010) and carries no region identity downstream. `env.health` prints `weather.source=` and two
+engine choices: `region_non_override=merged-highest-chance` (step 3) and
+`weather_order=cell-climate-over-regions` (steps 1 and 2).
 
 The CK *Region* page also states that "a region added by a mod will always override regions from earlier
 plugins in the load order". The resolver applies no load-order rule. **Phase 0: verify** how that sentence

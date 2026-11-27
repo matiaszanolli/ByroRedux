@@ -815,3 +815,21 @@ Found on 2026-11-07: the `fxlight` early return in `synth_child.rs` kept every F
 ### Interior shaft dust measurement (VLM-INT-007)
 
 Measured on FNV `NellisHangar1` (#6727): the converted planes are thin ribbons (about 8 m x 1.4 m), and without the dust the noon-minus-midnight radiance difference is about 0 over six cameras; with 0.04 / m it is 3.6 to 7.3 % of pixels above 3 levels (max 19), and in the shaft region noon reads 28.3 against 21.6 at midnight (repeat noise 0.16).
+
+### Shaft range gate at 90 m (VLM-SH-005)
+
+Added 2026-11-26, after the records above were moved here. `exterior-shafts.sh` now runs the lab gate at 90 m
+as well as 55 m (release build, RTX 4070 Ti, 1280x720, TAA, `renderer-stepped`, static camera, cloud seed 0).
+
+| Distance | Open contrast | Solid contrast | Repeat noise |
+|---|---|---|---|
+| 55 m, rows 335-519, columns 375-904 | 0.1542 | 0.0018 | 0.000000 |
+| 90 m, rows 404-516, columns 479-800 | 0.0731 | 0.0009 | 0.000000 |
+
+The 90 m crop is the 55 m one mapped onto the wall's front face and projected into the 90 m camera (45 degree
+vertical FOV, pitched up the sun's 10 degrees); the same projection puts the outer slat edges at columns 375 and
+905 at 55 m, which are the 55 m crop's own bounds. The 55 m crop cannot be reused: at 90 m it takes in the sky
+above the wall and open haze beside it, and the solid wall then reads 0.0290, over its 0.02 bar. Growing the
+90 m crop by 3 px or insetting it by up to 16 px a side leaves all three conditions passing (open 0.0724 to
+0.0780).
+
