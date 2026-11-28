@@ -107,6 +107,7 @@ a working checkout and want to understand or change engine internals.
 | [ESM Records](esm-records.md) | plugin | Cell loading, items, NPCs, factions, leveled lists |
 | [Asset Pipeline](asset-pipeline.md) | byroredux, nif, bsa | TextureProvider, mesh cache, NIF→ECS import, BGSM/BGEM material merge |
 | [Animation](animation.md) | core, nif | Keyframe pipeline, controllers, blending stack, GPU skinning |
+| [Natural character movement — PRD](../prd/character-movement.md) | byroredux, core, physics, nif, hkx | APPROVED (2026-11-27). Walking, transitions, feet on stairs and slopes, short climbs and physical reactions, built from each game's own clips on top of the Rapier kinematic controller |
 | [Physics](physics.md) | physics | Rapier3D integration, NIF collision → ECS → stepper, player body |
 | [Cell Lighting](lighting-from-cells.md) | byroredux | XCLL extraction, RT integration |
 | [Physical Lighting Backbone](physical-lighting-backbone.md) | core, byroredux, renderer | Canonical units/emitters, explicit visibility layers, shared transport, adaptive ray allocation, temporal reconstruction, reference tests |
