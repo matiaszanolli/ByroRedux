@@ -1,10 +1,10 @@
 # Natural character movement — Product Requirements
 
-**Status**: ACTIVE (2026-11-28). Revision 4 folds in review round 1 and the
-owner's acceptance of the decisions it raised (§10 Q11 to Q16, with Q4 and Q10
-revisited) (§12). The draft was written from the owner's research note of
-2026-11-27 and from measurements of the installed game archives and of HEAD
-`8a6fe63ff` taken the same day (§3).
+**Status**: ACTIVE (2026-11-28). Revision 5 adds a turn rate limit and a horse
+body check at the owner's request (§10 Q17) and replaces the hand-counted clip
+tables with the generated census (§12). The draft was written from the owner's
+research note of 2026-11-27 and from measurements of the installed game archives
+and of HEAD `8a6fe63ff` taken the same day (§3).
 Statements about how an original engine, format or tool behaves cite external
 sources or name the shipped file they were read from; a claim that could not
 be verified is marked **Phase 0: verify** instead of being stated as fact.
@@ -168,46 +168,48 @@ transform propagation follow the last layer.
 
 ### 3.4 What each game ships
 
-Counted by file name in the installed base-game and story-DLC archives on
-2026-11-27, mod archives excluded. The *base set* is the adult, third-person,
-unarmed directory named in the row; weapon stances, personality folders and
-the female, child and first-person variants are not counted. A role is
-assigned from the file name, so these counts say what is named, not what a
-behaviour graph plays. Phase 0 replaces this table and the next two with a
-checked-in, generated census (MOT-DX-005).
+The counts are generated:
+[census § Base set by role](../engine/locomotion-census.md#base-set-by-role)
+(MOT-DX-005), with the archives it reads. It counts by file name in the vanilla
+archives, mod archives excluded. The *base set* is the adult, third-person, unarmed or relaxed
+locomotion set that the census names per game; weapon stances, personality
+folders and the female, child and first-person variants are not counted. A role
+comes from the file name, so the counts say what is named, not what a behaviour
+graph plays. What the requirements lean on:
 
-| Game | Base set | Gait cycles | Turns | Starts | Stops | Reversals | Airborne |
-|---|---|---|---|---|---|---|---|
-| Oblivion | `characters\_male\` `walk*`, `jump*` | 8 | 2 | 0 | 0 | 0 | 3 |
-| Fallout 3 | `_male\locomotion\male\mt*`, `_male\locomotion\mtturn*`, `_male\mtjump*` | 8 | 2 | 0 | 0 | 0 | 10 |
-| Fallout: NV | as Fallout 3 | 8 | 2 | 0 | 0 | 0 | 10 |
-| Skyrim SE | `character\animations\` `male\mt_*`, `npc_turn*`, `mt_turn*`, `mt_jump*` | 17 | 10 | 4 | 0 | 0 | 12 |
-| Fallout 4 | `character\animations\mt\neutral\` | 4 (forward only) | 12 | 14 | 9 | 4 | 11 |
-| Fallout 76 | as Fallout 4 | 30 | 12 | 14 | 9 | 4 | 16 |
-| Starfield | `human\animations\melee\unarmed\relaxed_*` | 12 (walk only) | 6 | 16 | 32 | 6 | 1 |
-
-The airborne clips of Fallout 3 and New Vegas are loops and lands; no clip
-named as a jump start was found. Skyrim's airborne count leaves out
-`mt_jumpforwardtest`, and Starfield's start count leaves out the
-`relaxed_lib_departure_*` gestures.
-Skyrim LE's archives were not counted. **Phase 0: verify** it against SE.
-Where Fallout 4's unarmed backward and strafing motion comes from is not
-visible in its base directory (V9).
+- The base sets of Oblivion, Fallout 3 and New Vegas hold gaits, turns and
+  airborne clips, and no start, stop or reversal.
+- Skyrim's holds starts, and no stop or reversal. Skyrim LE's counts match SE's.
+- Fallout 4's holds forward gaits only, with starts, stops and reversals. Where
+  its unarmed backward and strafing motion comes from is not visible there (V9).
+- Fallout 76 and Starfield ship large sets that the engine cannot read.
+- No jump start is named among the airborne clips of Fallout 3 and New Vegas.
 
 ### 3.5 Clip data and readers
 
-Foot events and displacement were read from one forward-walk clip per game,
-with the extra Skyrim clips named in its row. "Reader" is the engine's state.
+What the engine reads and what each base-set clip carries are generated too:
+[gait cycles](../engine/locomotion-census.md#gait-cycles-what-each-carries),
+[each base-set clip](../engine/locomotion-census.md#base-set-clips-one-by-one) with its gait speed, and
+[reader coverage](../engine/locomotion-census.md#every-actor-clip-what-the-engine-reads).
 
-| Game | Format | Reader | Foot events seen | Displacement seen |
-|---|---|---|---|---|
-| Oblivion | KF | yes | text keys `Enum: Left`, `Enum: Right` | accumulation-root (`Bip01`) translation |
-| Fallout 3 | KF | yes | as Oblivion | as Oblivion |
-| Fallout: NV | KF | yes | as Oblivion | as Oblivion |
-| Skyrim SE | HKX packfile | yes | `male\mt_walkforward`: `FootLeft`, `FootRight`; `1hm_walkforward`: none; horse walk: `FootFront`, `FootBack`, `SyncLeft`, `SyncRight` | none in the root or `NPC COM` tracks of `mt_walkforward`, `mt_runforward` or `1hm_walkforward`; text files of timed translation and rotation keys ship under `meshes\animationdata\boundanims\`, which the engine does not read |
-| Fallout 4 | HKX packfile | yes: all 8,330 character clips decode (`clip_census_ba2`), which flags 1,117 of them for a rotation jump between neighbouring samples (V17) | `FootLeft`, `FootRight`, `SyncLeft`, `SyncRight` | Havok extracted motion |
-| Fallout 76 | Havok tagfile (`TAG0`) | **no**: all 9,396 character clips are refused | the same four strings are present | not readable |
-| Starfield | `.af` | **no** | not determined | not determined |
+- **Readers.** The engine reads KF and HKX packfile clips. Fallout 76's Havok
+  tagfile (`TAG0`) clips and Starfield's `.af` clips have no reader.
+- **Footfall labels.** Every base-set gait the engine reads carries one: the text
+  keys `Enum: Left` and `Enum: Right` in KF; `FootLeft` and `FootRight` in
+  Skyrim and Fallout 4, with `FootSprintLeft` and `FootSprintRight` on sprints.
+  Fallout 4 gaits also carry `SyncLeft` and `SyncRight`.
+- **Displacement.** KF gaits carry accumulation-root (`Bip01`) translation, and
+  Fallout 4 gaits Havok extracted motion. No Skyrim base-set gait has a source
+  the engine reads. Some Skyrim and Fallout 4 clips that are not gaits travel on
+  a root or centre-of-mass track.
+
+Outside what the census covers, read by hand on 2026-11-27: Skyrim's
+`1hm_walkforward` has no foot event; the horse walk carries `FootFront`,
+`FootBack`, `SyncLeft` and `SyncRight`; Fallout 76 clips hold the four Fallout 4
+strings; Skyrim ships text files of timed translation and rotation keys under
+`meshes\animationdata\boundanims\`, which the engine does not read; and
+`clip_census_ba2` flags 1,117 of the 8,330 character clips in Fallout 4's base
+animation archive for a rotation jump between neighbouring samples (V17).
 
 For Fallout 3 and New Vegas, the GECK wiki's *Sounds Tab* ties footdown sounds to "any
 given footdown enum note in the animation for each corresponding limb". For
@@ -215,26 +217,26 @@ Skyrim, the CK wiki's *Animation Events* sends `FootLeft` "when the left foot
 is in motion", which does not say at which instant (V1, V2). No lift-off event
 was seen in any sampled clip. The Oblivion meaning of its keys is part of V1.
 
-On 2026-11-28 every male base walk and run clip of Fallout 3 and of New Vegas
-carried a `Blend` text key with a number, and none of Oblivion's `walk*` gaits
-did. Oblivion's gaits, Fallout 3's and some of New Vegas's also carry `m:L` and
-`m:R` keys. No engine code was found that reads either. The CS wiki's
-*Animation Tab* names `Blend: 9` and calls its meaning unknown (V10).
+Every base-set gait of Fallout 3 and New Vegas carries a `Blend` text key with a
+number, and none of Oblivion's or Skyrim's does. Clips of the three KF games also
+carry `m:L` and `m:R` keys
+([other labels](../engine/locomotion-census.md#other-labels-on-base-set-locomotion-clips)). No engine code
+was found that reads either. The CS wiki's *Animation Tab* names `Blend: 9` and
+calls its meaning unknown (V10).
 
 ### 3.6 Stair, slope and climbing clips
 
-No actor or creature clip in any of the seven games has a slope, uphill,
-downhill, incline or stair name. Climbing clips do exist:
+No actor clip in any of the seven games, or in Skyrim LE, has a slope, uphill,
+downhill, incline or stair name
+([census](../engine/locomotion-census.md#slope-and-stair-names)). Clips with climbing names do exist
+([census](../engine/locomotion-census.md#climbing-names)); a name is a candidate, not proof.
 
-| Game | Climb, vault, mantle or ladder clips found by name |
-|---|---|
-| Oblivion | none |
-| Fallout 3 | one-off scripted idles under `_male\idleanims\` (cliff canyon, trench wall, ladder, half door, out of a window, down a building); Liberty Prime's climb-down |
-| Fallout: NV | the same humanoid idles, an Honest Hearts climb-down, the Lonesome Road spore carrier's climbs |
-| Skyrim SE | none for humanoids (the dragon's are flight) |
-| Fallout 4 | rifle and pistol kneeling-cover `…vault48`, `64`, `80` clips; the deathclaw's climb-over-wall ambush; the feral ghoul's `ambush\overwallambush` and `ambush\crawlupwall` |
-| Fallout 76 | the same families |
-| Starfield | `mantle`, `mantlelow`, `mantletogether` in first and third person; ladder mount, climb and dismount; `jumptraversal`; `traversal_80cm_runforward` in weapon-grip directories |
+- Oblivion has none, and Skyrim only the dragon's flight.
+- Fallout 3 and New Vegas ship one-off scripted climbing idles, and creature
+  climbs.
+- Fallout 4 and Fallout 76 ship kneeling-cover vaults at three heights, and
+  creature ambushes over walls.
+- Starfield ships mantle, ladder and traversal clips.
 
 Two Fallout 4 vault clips were probed: each carries the root forward through
 extracted motion while the centre of mass rises from a kneeling height. What
@@ -243,7 +245,8 @@ graph state plays them is open (V7).
 ### 3.7 Engine behaviour
 
 State at HEAD on 2026-11-27 (`8a6fe63ff`); rows 4, 6, 8, 10, 14 and 17 were
-re-read on 2026-11-28 at HEAD `4f3c8088d`. Files under `byroredux/src/`
+re-read on 2026-11-28 at HEAD `4f3c8088d`, and row 18 was read that day at HEAD
+`a174e4ebe`. Files under `byroredux/src/`
 unless a crate is named. MOT-DX-001 replaces the hand-written rows about
 selection and sources; the rest are replaced by the tests their requirements
 add.
@@ -267,6 +270,7 @@ add.
 | 15 | Determinism setting | `rapier3d` is declared without features (`Cargo.toml`), so `enhanced-determinism` is off |
 | 16 | NPC facing | At `8a6fe63ff`, `step_toward_detailed` (`systems/locomotion.rs`) turned the actor's local +Z to its target, so walkers moved backwards. Commit `fc766e09f`, of the same date, turns local −Z and drops the player body's compensating half turn (test `a_walker_faces_where_it_is_going`). No baseline is taken at an earlier commit |
 | 17 | Actor bone colliders | the player's capsule sweep is blocked by other actors' bone colliders (`systems/character.rs`, `filter_groups: None`, chosen deliberately); NPC sweeps mask them (`actor_move_interaction_groups`) |
+| 18 | Turning | an NPC mover closes a fraction of the remaining angle each frame (`LOCOMOTION_TURN_RATE`, `systems/locomotion.rs`), so a larger turn is faster and no rate is capped; the third-person player body takes the camera's yaw at once (`player_body.rs`); a held conversation partner is set facing the speaker at once (`systems/random_conversation.rs`) |
 
 ---
 
@@ -468,6 +472,14 @@ add.
 - **MOT-GAIT-016.** The body's horizontal offset from its capsule MUST be
   damped, speed-capped and never larger than the body offset limit (§10 Q3,
   §8.1).
+- **MOT-GAIT-017.** The facing of the third-person player body and of an NPC
+  MUST change on the locomotion tick, no faster than the turn rate limit
+  (§8.1, §10 Q17). Exempt are a facing that a script, a teleport, a load, a
+  seat or furniture entry, or another owner of playback sets (MOT-GAIT-012),
+  and the turn an authored span drives (MOT-GAIT-007). A conversation partner
+  turning to the speaker is not exempt (§3.7 row 18).
+- **MOT-GAIT-018.** The turn rate limit MUST NOT delay the camera's look or the
+  capsule's movement direction.
 
 ### 5.5 Transitions (`MOT-TRN`)
 
@@ -552,6 +564,9 @@ add.
   resolved to per-leg plant windows from bone motion. The horse's `FootFront`
   and `FootBack` are taken for such events from their names alone;
   **Phase 0: verify** what they mark (V2).
+- **MOT-LEG-007.** On the stair and slope fixtures, every vertex of the Skyrim
+  horse's skinned body mesh MUST stay no deeper below the collision surface
+  than the body penetration limit (§8.1, §10 Q17).
 
 ### 5.9 Traversal (`MOT-TRV`)
 
@@ -647,6 +662,7 @@ the shape the claims in §10 Q8 describe, for any later one.
 | 5 | **Phase 0: verify** each original's player acceleration (V14) | Springs fitted from clips (MOT-GAIT-009) | none established | Heavy-feeling control → MOT-G-005, MOT-GAIT-008 |
 | 6 | **Phase 0: verify** each original's non-lethal hit reaction (V15) | Physical partial reactions (MOT-PHY-001) | none established | Combat feel and timing change → MOT-PHY-002 |
 | 7 | **Phase 0: verify** what each original shows in first person during such a move (V13, V18) | Camera or hand motion from the serving clip (MOT-TRV-011) | none established | A disorienting view, or hands out of frame → MOT-TRV-010, MOT-TRV-011 |
+| 8 | **Phase 0: verify** how fast each original turns the player's body and NPCs (V22) | Bodies turn no faster than a limit (MOT-GAIT-017) | none established | A body that trails its movement direction and plays a side or backward gait while it turns → MOT-GAIT-001, MOT-GAIT-018, MOT-G-005 |
 
 Engineering risks, which depart from today's engine rather than from an
 original:
@@ -675,7 +691,7 @@ whose clips decode.
 | Oblivion | yes | Wave 1. Readable, and a small base set with no starts or stops: the test that adaptation works |
 | Fallout 3 | yes | Wave 1. Same clip layout as New Vegas |
 | Fallout: New Vegas | yes | Wave 1, the reference title |
-| Skyrim (LE / SE / AE) | yes | Wave 2. Clips decode; displacement waits on V4. LE counts wait on its census |
+| Skyrim (LE / SE / AE) | yes | Wave 2. Clips decode; displacement waits on V4. LE's base set matches SE's |
 | Fallout 4 | yes | Wave 2. The behaviour graph already chooses clips; the layers compose with it (MOT-GAIT-013) |
 | Fallout 76 | no (§10 Q7) | The clips have no reader. Every need reports Unserved, `no reader` |
 | Starfield | no (§10 Q7) | `.af` has no reader, and its walk source is AI Packages Completion's. Every need reports Unserved, `no reader` |
@@ -689,10 +705,10 @@ script and later phases add the tests.
 | # | Scenario | Driver and data |
 |---|---|---|
 | S1 | **Determinism.** One input log with fixed seeds is run with ticks grouped at 30, 60 and 144 frames per second and unevenly; capsule positions and MOT-SIM-002 state match at every tick | `cargo test`, synthetic physics world; no game data |
-| S2 | **Reference walk.** The player and an NPC follow a scripted route with a speed sweep, diagonals, turns and stops. The gait observable is that `anim.locomotion` names the clip for each heading and band; the §8 metrics print | `mot-locomotion.sh`; `FalloutNV.esm` and its meshes and textures archives |
+| S2 | **Reference walk.** The player and an NPC follow a scripted route with a speed sweep, diagonals, turns and stops. The gait observable is that `anim.locomotion` names the clip for each heading and band; the facing observable is that no body turns faster than the turn rate limit, outside the changes MOT-GAIT-017 exempts; the §8 metrics print | `mot-locomotion.sh`; `FalloutNV.esm` and its meshes and textures archives |
 | S3 | **Degradation.** The same route on Oblivion: diagonals report Adapted (from Phase 3), starts and stops report Adapted through MOT-WRP-005, and no source lies outside the Oblivion archives | `mot-locomotion.sh`; `Oblivion.esm` and its archives |
 | S4 | **Stairs and slopes.** A biped walks a generated staircase and ramp, up and down; foot height error, penetration and stair smoothness stay inside their bounds | ignored real-data test: generated collision, the New Vegas skeleton and walk clips |
-| S5 | **Quadruped.** S4 with the Skyrim horse, whose body pitch also stays within the body tilt limit on the ramp | ignored real-data test: the Skyrim horse skeleton and clips |
+| S5 | **Quadruped.** S4 with the Skyrim horse, whose body pitch also stays within the body tilt limit on the ramp, and whose drawn body stays within the body penetration limit on both fixtures | ignored real-data test: the Skyrim horse skeleton, body mesh and clips |
 | S6 | **Ledges.** Obstacles inside the envelope are traversed; those too tall or with no room are refused with a reason. On each traversal the clip `anim.locomotion` names is the one playing, anchor error at each contact span (and hand error where arm IK runs) is inside its bound, and in first person the motion of MOT-TRV-011 is present | `cargo test`, synthetic collision; a smoke leg on New Vegas and one on Skyrim |
 | S7 | **Nothing regresses.** A headless traversal route, driven by simulated time and checked against positions within stated tolerances, which stands in for the frame-counted `p1-character-traversal.sh`; and `p3-player-body.sh`, `m42-package-procedures.sh`, `m42-eat-sleep.sh`, `m42-oblivion-packages.sh` and `m42-skyrim-ambient.sh`. Each matches its recorded baseline | `docs/smoke-tests/`; the data each script names |
 | S8 | **Behaviour graph.** An NPC walks, turns and stops: `anim.locomotion` names the clips the graph chose, graph switches are inside the discontinuity bound, and its walking speed is the clip's extracted speed | `mot-locomotion.sh`; `Fallout4.esm` and its archives |
@@ -735,7 +751,9 @@ reference windows of MOT-DATA-007.
 | Warping error | Torso yaw error and leg twist on a diagonal route; stop-point error where distance matching runs | per game |
 | Pose distortion | Largest joint-angle change that pose corrections add to the sampled pose | per layer and game |
 | Body offset | Horizontal distance between the body and its capsule; maximum | per game |
+| Facing turn rate | Largest change in a body's yaw over one tick, as degrees a second, leaving out the changes MOT-GAIT-017 exempts; maximum | per game, player body and NPCs apart |
 | Body tilt error | Difference between body pitch and roll and the slope under the contacts | per fixture, for front-and-hind-legged families |
+| Body penetration | Greatest depth of any vertex of the drawn body below the fixture's collision surface | per fixture, for the Skyrim horse |
 | Anchor error | Distance between an anchored point (hand, foot or first-person camera track) and its obstacle anchor during a contact span | per game and traversal move |
 | Input response | Ticks from an input change until capsule speed reaches 90 % of its new target, and until the presented pose, after interpolation, differs from the pose without the input by more than the response threshold; 95th percentile and maximum | per game, against the baseline |
 | Disposition coverage | Need variants in each disposition ÷ all need variants, with Unserved split by reason | per game and skeleton family |
@@ -756,12 +774,14 @@ instrument has recorded a baseline, and before that phase tunes against it
 | Window tolerance (MOT-DATA-002) | Phase 1 | Phase 1 |
 | Switch discontinuity bound and divisor floor | Phase 2 | Phase 2 |
 | Gait band rule and hysteresis (MOT-GAIT-002) | Phase 2 | Phase 2 |
+| Turn rate limit, which may differ by speed band and for turning in place | Phase 2 | Phase 2 |
 | Planted-foot slip bound | Phase 1 | Phase 3 |
 | Sliding allowance on the limited-tick share | Phase 3 | Phase 3 |
 | Warping error and pose distortion bounds; body offset limit | Phase 3 | Phase 3 |
 | Pose correction limits (MOT-WRP-004) | the layer's phase | Phases 3, 4 and 6 |
 | Foot height error, swing penetration and stair smoothness bounds | Phase 4 | Phase 4 |
 | Body tilt limit | Phase 5 | Phase 5 |
+| Body penetration limit | Phase 5 | Phase 5 |
 | Traversal input, reachable envelope, traversal tick bound, anchor error bound | Phase 6 | Phase 6 |
 | Quest-route check: quest set, method, and what a found sequence break does to the default | Phase 6 | before the check runs |
 | Reaction return time | Phase 7 | Phase 7 |
@@ -799,9 +819,9 @@ must record its baseline first.
 |---|---|---|---|
 | V1 | When `Enum: Left` / `Enum: Right` fire against foot contact, per KF game, and what share of locomotion clips carry them | MOT-DATA-002 | The census, comparing event times with foot-bone height; CS and GECK wiki |
 | V2 | The same for `FootLeft` / `FootRight` on Skyrim and Fallout 4, and what the Skyrim horse's `FootFront` / `FootBack` mark | MOT-DATA-002, MOT-LEG-006 | As V1; CK and Fallout 4 CK wiki |
-| V3 | The displacement source of every base-set clip | MOT-DATA-004 | The census |
+| V3 | The displacement source of every base-set clip | MOT-DATA-004 | The census; closed 2026-11-28 for every clip the engine can read |
 | V4 | Skyrim's bound-animation text format, and how a block names its clip | MOT-DATA-004 | An external format description checked against the shipped files; else a declared gap |
-| V5 | Skyrim LE's base set, events and displacement | §7.1 | The census on the LE archives |
+| V5 | Skyrim LE's base set, events and displacement | §7.1 | The census on the LE archives; closed 2026-11-28: matches SE |
 | V6 | Whether any slope or stair motion ships under another name (graph blend children, a pitch variable) | MOT-FT-002 | Behaviour-graph dumps per Havok game; the census per KF game |
 | V7 | What the Fallout 4 vault clips are for, and which state plays them | MOT-TRV-003 | Graph dumps; Fallout 4 CK wiki |
 | V8 | Whether the Fallout 3 and New Vegas climbing idles survive being re-anchored to other geometry | MOT-TRV-003 | Root and hand paths from the clips |
@@ -818,6 +838,7 @@ must record its baseline first.
 | V19 | What marks the capsule-driving spans of a KF clip | MOT-DATA-001, MOT-GAIT-007 | The census; CS and GECK wiki; else a labelled engine choice |
 | V20 | Whether Oblivion ragdolls, whose constraints carry no motors, can be driven | MOT-PHY-003 | PHYSAL's decoder and nif.xml; else `no joint data` |
 | V21 | Whether both clips play during a transition on Oblivion, Skyrim and Fallout 4 | §6 row 1 | External sources (UESP, CK wikis) |
+| V22 | How fast each original turns the player's body and NPCs, in place and while moving | §6 row 8 | External sources and the games' settings |
 
 **Phase 1 — Tick and motion data.** MOT-SIM-001 to -006 and -008,
 MOT-SUP-001 to -004 and -007, MOT-DATA-001 to -005 and -007, MOT-LEG-001, -003
@@ -828,11 +849,12 @@ instruments need that Phase 0 could not, and records their baselines on
 per-frame movement; the tick follows. Exit: S1 and S9 pass; S7 matches; and
 derived-record coverage and disposition coverage are published for both waves.
 
-**Phase 2 — Gaits and transitions.** MOT-GAIT-001 to -008 and -010 to -015,
-MOT-TRN-*, MOT-SUP-005, -006, MOT-SIM-007, MOT-DATA-006, MOT-DX-003, -006,
--007. Waves 1 and 2. Depends on Q3, Q4, Q13, Q15, V9, V10, V17, V21; Skyrim
-gaits depend on V4. Exit: the gait-selection and switch-discontinuity
-observables of S2 and S3 pass, and S8 passes; S7 matches; and discontinuity,
+**Phase 2 — Gaits and transitions.** MOT-GAIT-001 to -008, -010 to -015, -017
+and -018, MOT-TRN-*, MOT-SUP-005, -006, MOT-SIM-007, MOT-DATA-006,
+MOT-DX-003, -006, -007. Waves 1 and 2. Depends on Q3, Q4, Q13, Q15, Q17, V9,
+V10, V17, V21, V22; Skyrim gaits depend on V4. Exit: the gait-selection, facing
+and switch-discontinuity observables of S2 and S3 pass, and S8 passes; S7
+matches; and discontinuity,
 slip (not yet held to a bound), input response and pose cost are published
 against the baseline.
 
@@ -849,9 +871,9 @@ layer-5 part of MOT-WRP-004. Waves 1 and 2. Depends on Q16, V6, V12. Exit: S4
 passes; foot height error, penetration and stair smoothness are inside their
 bounds and published with pose cost; and S7 matches.
 
-**Phase 5 — Creatures.** MOT-LEG-002, -004, -005, and MOT-LEG-001, -003 and
--006 for the other creature families. Waves 1 and 2. Depends on V16; Skyrim
-creatures depend on V4. Exit: S5 passes; every creature family the census lists
+**Phase 5 — Creatures.** MOT-LEG-002, -004, -005, -007, and MOT-LEG-001, -003
+and -006 for the other creature families. Waves 1 and 2. Depends on Q17, V16;
+Skyrim creatures depend on V4. Exit: S5 passes; every creature family the census lists
 passes its leg-chain check (each chain resolves on the shipped skeleton, and
 each contact point lies within the foot height error bound of the ground plane
 in the idle pose) or is Unserved for a reason other than `not built`; and S7
@@ -1010,6 +1032,16 @@ Exit: S1 passes with reactions firing; S10 passes; and S7 matches.
     snap and a small gain pass.
     **Decided** (2026-11-28): the recommendation (MOT-FT-010, MOT-LEG-004, MOT-PHY-001, MOT-G-001).
 
+17. **Q17 — Are turning speed and horse clipping part of the promise?**
+    Recommended: yes. Limit how fast a body turns, never the camera or the
+    movement direction, and check that the horse's drawn body stays out of the
+    stairs and ramp. The research note names over-fast turning as a main cause
+    of unrealism, and not clipping through stairs as part of the horse's
+    minimum. Alternative: leave both out, with separate rotation settings
+    (MOT-GAIT-008) and a feet-only horse check, which lets a body spin and lets
+    a horse pass with its belly in a step.
+    **Decided** (2026-11-28): the recommendation (MOT-GAIT-017, -018, MOT-LEG-007).
+
 ---
 
 ## 11. Document map
@@ -1025,6 +1057,7 @@ Exit: S1 passes with reactions firing; S10 passes; and S7 matches.
 | The sneak stance | [Sneak and Detection](sneak-and-detection.md) |
 | Other sources of divergence between two runs | [P2P Co-op](p2p-coop.md#32-determinism-inventory) |
 | Modded animation | [Legacy Mod Compatibility](legacy-mod-compatibility.md) |
+| What each game ships and what the engine reads of it (generated) | [Locomotion clip census](../engine/locomotion-census.md) |
 | Live milestone state and published metrics | [ROADMAP.md](../../ROADMAP.md) |
 
 ### Technique references
@@ -1055,3 +1088,4 @@ in Q8, this draft did not re-fetch them.
 | 2 | 2026-11-27 | Q1 to Q10 decided as recommended and folded in (MOT-SIM-001 to -003, MOT-TRV-006, MOT-NG-008 to -011, §5.11, Phase 0 and Phase 6); facing row updated to `fc766e09f`. No separate rubric review round was run | owner: approved |
 | 3 | 2026-11-27 | APPROVED → ACTIVE: tracking issues #7435 to #7443 filed, with Phase 0's verify items in #7436; §9 assigns the layer-5 and layer-6 parts of MOT-WRP-004 to Phases 4 and 6; no requirement changed | — |
 | 4 | 2026-11-28 | Review round 1 folded in: KF `Blend` keys, Fallout 4 mover speed, census and engine-state corrections, the US11995754B2 summary; `not built` can no longer close a phase; metric definitions and the §8.1 limits table; traversal, stair, reaction, behaviour-graph and replay checks; collider, pose-layer, disposition and goal conflicts; phase order; adds MOT-SIM-007, -008, MOT-DATA-007, MOT-GAIT-014 to -016, MOT-FT-010, MOT-TRV-011, V18 to V21, S8 to S10. Promise changes follow the owner's 2026-11-28 acceptance of the review's recommendations (Q11 to Q16; Q4 and Q10), given before this wording was written. Left out as not covered by it: a turn-rate bound, toe and ankle foot pivots, a horse body-penetration check, and NPC footsteps | claude: revise |
+| 5 | 2026-11-28 | At the owner's request, a turn rate limit (MOT-GAIT-017, -018) and a horse body-penetration check (MOT-LEG-007), recorded as Q17, with V22. The §3.4 to §3.6 tables give way to the generated census (MOT-DX-005), which adds the sprint footfall labels; V3 and V5 are marked closed. This wording, like revision 4's, has not been approved by the owner | claude: revise |
