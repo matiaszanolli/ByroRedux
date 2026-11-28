@@ -713,6 +713,10 @@ pub struct SkyParams {
     /// one sun, and a dense cloud can be calibrated against the engine's own
     /// white diffuse surface. Zero when there is no exterior sun.
     pub sun_illuminance: [f32; 3],
+    /// Albedo of the ground under the diffuse sky term: below the horizon, `sky_irradiance.comp` replaces
+    /// the painted sky with a ground of this albedo lit by the sky and [`Self::sun_illuminance`]. 0 keeps
+    /// the painted sky (no ground). The visible sky and its reflections are unaffected.
+    pub ground_albedo: f32,
     /// Angular half-radius of the sun as a tangent-plane disk, in
     /// radians. Drives PCSS-lite directional-shadow disk jitter in
     /// `triangle.frag`. Default 0.020 (~1.15°) gives ~10 cm penumbra
@@ -789,6 +793,7 @@ pub struct OutdoorSkyParams {
     pub sun_size: f32,
     pub sun_intensity: f32,
     pub sun_illuminance: [f32; 3],
+    pub ground_albedo: f32,
     pub sun_angular_radius: f32,
     pub is_exterior: bool,
     pub cloud_scroll: [f32; 2],
@@ -824,6 +829,7 @@ impl From<SkyParams> for OutdoorSkyParams {
             sun_size: sky.sun_size,
             sun_intensity: sky.sun_intensity,
             sun_illuminance: sky.sun_illuminance,
+            ground_albedo: sky.ground_albedo,
             sun_angular_radius: sky.sun_angular_radius,
             is_exterior: sky.is_exterior,
             cloud_scroll: sky.cloud_scroll,
@@ -862,6 +868,7 @@ impl OutdoorSkyParams {
             sun_size: self.sun_size,
             sun_intensity: self.sun_intensity,
             sun_illuminance: self.sun_illuminance,
+            ground_albedo: self.ground_albedo,
             sun_angular_radius: self.sun_angular_radius,
             is_exterior: self.is_exterior,
             cloud_scroll: self.cloud_scroll,
@@ -960,6 +967,8 @@ impl Default for SkyParams {
             sun_intensity: 5.0,
             // No exterior sun: the cloud march receives ambient only.
             sun_illuminance: [0.0; 3],
+            // A sky with no ground until the exterior translation says there is one.
+            ground_albedo: 0.0,
             // Tangent-plane half-radius (rad) for PCSS-lite shadow
             // disk jitter. This default is what an interior's own
             // directional light (the cell's XCLL key, which has no physical

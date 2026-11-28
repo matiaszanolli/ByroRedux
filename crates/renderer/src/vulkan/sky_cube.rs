@@ -36,6 +36,7 @@ mod filter;
 mod irradiance;
 pub use cloud_shadow::cloud_shadow_bytes_per_frame;
 pub use irradiance::SH_BYTES as SKY_IRRADIANCE_BYTES;
+pub use irradiance::SKY_GROUND_ALBEDO;
 
 const SKY_CUBE_COMP_SPV: &[u8] = include_bytes!("../../shaders/sky_cube.comp.spv");
 
@@ -185,6 +186,8 @@ pub struct SkyCubePipeline {
     descriptor_sets: Vec<vk::DescriptorSet>,
     /// Per-frame parameter UBOs.
     param_buffers: Vec<GpuBuffer>,
+    /// `sky_irradiance.comp`'s ground input per frame slot, set with that slot's parameters.
+    irradiance_ground: [[f32; 4]; super::sync::MAX_FRAMES_IN_FLIGHT],
     /// Per-frame cube images, each with its `TYPE_2D_ARRAY` storage view.
     ///
     /// Per-frame for the #267 reason SSAO's AO target is: frame N's bake
@@ -244,6 +247,7 @@ impl SkyCubePipeline {
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_sets: Vec::new(),
             param_buffers: Vec::new(),
+            irradiance_ground: [[0.0; 4]; super::sync::MAX_FRAMES_IN_FLIGHT],
             cubes: Vec::new(),
             cube_views: Vec::new(),
             sampler: vk::Sampler::null(),
@@ -495,13 +499,17 @@ impl SkyCubePipeline {
         self.cloud_shadow.as_mut()?.camera_transmittance(device, frame)
     }
 
-    /// Upload this frame's sky parameters.
+    /// Upload this frame's sky parameters. `ground_albedo` is the exterior ground under the diffuse sky
+    /// term ([`SKY_GROUND_ALBEDO`]), or 0 for a sky with no ground.
     pub fn upload_params(
         &mut self,
         device: &ash::Device,
         frame: usize,
         params: &SkyCubeParams,
+        ground_albedo: f32,
     ) -> Result<()> {
+        self.irradiance_ground[frame] =
+            irradiance::ground_params(params.sun_illuminance, params.sun_dir[1], ground_albedo);
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(params))
     }
 
@@ -568,7 +576,7 @@ impl SkyCubePipeline {
                 filter.record(device, cmd, self.cubes[frame].image, frame);
             }
             if let Some(irradiance) = &self.irradiance {
-                irradiance.record(device, cmd, frame);
+                irradiance.record(device, cmd, frame, self.irradiance_ground[frame]);
             }
         }
     }

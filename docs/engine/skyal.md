@@ -623,6 +623,22 @@ edge, while still catching coefficient order, cube orientation, normalization,
 and buffer visibility bugs. The test passed on the RTX 4070 Ti with Khronos
 synchronization validation enabled.
 
+
+**The ground under the diffuse sky (2026-11-27).** Below the horizon the cube
+paints the weather's `SKY_LOWER` and horizon colours, which are a backdrop, not
+light. Projected as sky, they lit downward faces about as hard as upward ones (at
+FO3's The Pitt noon, 0.68 against 0.69 on the white-surface scale, an offline
+estimate without clouds, while the sun on flat ground was 0.27). So for the nine
+coefficients only, `sky_irradiance.comp` replaces the lower hemisphere with a
+Lambertian ground: `albedo × (sky irradiance on flat ground / π + sun_illuminance
+× max(sun_dir.y, 0))`. The albedo is `SKY_GROUND_ALBEDO` (0.2, chosen, not
+measured from the terrain). The visible sky, the prefiltered reflection mips and
+escaped-ray samples keep the painted sky. `SkyParams::ground_albedo` is 0 on the
+reference scenes (`ReferenceEnvironment`), whose probes have no ground and are
+rendered against the sky as it is, so those rungs see the same projection as
+before. The sun term ignores cloud shadow on the ground. This does not add sky
+**visibility**: an untraced surface facing up still receives the whole sky.
+
 ### Joining weather clouds and explosion smoke
 
 `include/medium_transport.glsl` now owns Henyey–Greenstein scattering and

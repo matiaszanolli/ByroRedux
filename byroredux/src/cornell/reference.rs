@@ -321,6 +321,13 @@ const PENUMBRA_SUN_DIR: [f32; 3] = [0.3, 0.95, 0.0];
 /// tested, not only the intensity.
 const CALIBRATION_SUN_DIR: [f32; 3] = [0.35, 0.85, 0.25];
 
+/// Present on every reference scene that installs the procedural sky: the reference render lights its probes
+/// with that sky as it is, with no ground under it, so the raster's diffuse sky term must not add one
+/// ([`byroredux_renderer::SkyParams::ground_albedo`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ReferenceEnvironment;
+impl byroredux_core::ecs::Resource for ReferenceEnvironment {}
+
 /// The install-less exterior sun and sky at `dir` (the procedural fallback
 /// a plugin-less world gets), with the reference rungs' no-medium,
 /// fog-beyond-the-scene lighting (RLT-REF-009).
@@ -341,6 +348,7 @@ fn insert_reference_sun(world: &mut World, dir: Vec3) {
         )
     });
     world.insert_resource(crate::env_translate::procedural_fallback_sky(dir));
+    world.insert_resource(ReferenceEnvironment);
 }
 
 /// The exterior sky of the sky rungs (RLT-REF-012, RLT-REF-019, RLT-REF-021):

@@ -2809,6 +2809,10 @@ fn every_shader_struct_is_classified() {
             MirroredPendingGuard("pushed as one hand-built f32 (sky_cube/filter.rs); no Rust struct"),
         ),
         (
+            "GroundParams",
+            MirroredPendingGuard("pushed as one hand-built vec4 (sky_cube/irradiance.rs); no Rust struct"),
+        ),
+        (
             "LocalSimPush",
             MirroredPendingGuard(
                 "pushed as hand-built bytes (volumetrics/local_grid.rs local_sim_push_bytes); \

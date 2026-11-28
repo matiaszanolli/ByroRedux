@@ -51,6 +51,7 @@ pub use vulkan::material::{GpuMaterial, MaterialTable};
 pub use vulkan::morph_compute::MorphSlot;
 pub use vulkan::presentation::ImageSpaceModifier;
 pub use vulkan::render_debug::{RenderDebugMode, SelectedRayProbeResult};
+pub use vulkan::sky_cube::SKY_GROUND_ALBEDO;
 pub use vulkan::scene_buffer::{
     GpuLight, MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_EYE_ENVMAP,
     MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS, MATERIAL_KIND_NO_LIGHTING,

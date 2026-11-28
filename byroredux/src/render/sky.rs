@@ -195,8 +195,15 @@ fn outdoor_sky_params(
             .try_resource::<WeatherSurfaceState>()
             .map_or(0.0, |surface| surface.snow),
     };
+    // A game exterior has ground under its sky; a reference scene's sky stands alone.
+    let ground_albedo = if world.try_resource::<crate::cornell::ReferenceEnvironment>().is_some() {
+        0.0
+    } else {
+        byroredux_renderer::SKY_GROUND_ALBEDO
+    };
     let zenith_color = dome_colour_radiance(sky_res.zenith_color);
     let mut params = SkyParams {
+        ground_albedo,
         zenith_color,
         // On an exterior the two are the same sky by definition; the lane
         // only diverges on interiors (#3323).
@@ -537,6 +544,17 @@ mod tests {
             .cloud_coverage = 1.0;
         let overcast = build_sky_params(&world).portal_outdoor_sky.unwrap();
         assert_eq!(overcast.sun_illuminance, outside.sun_illuminance);
+    }
+
+    /// A game exterior lights its downward faces from a ground; a reference scene's sky stands alone, or
+    /// the raster would diverge from the reference render lit by that sky as it is.
+    #[test]
+    fn only_a_game_exterior_puts_ground_under_the_diffuse_sky() {
+        let mut world = World::new();
+        world.insert_resource(stale_exterior_daytime_sky());
+        assert_eq!(build_sky_params(&world).ground_albedo, byroredux_renderer::SKY_GROUND_ALBEDO);
+        world.insert_resource(crate::cornell::ReferenceEnvironment);
+        assert_eq!(build_sky_params(&world).ground_albedo, 0.0);
     }
 
     /// Direct `--cell` boot still has a procedural outdoor sky for the

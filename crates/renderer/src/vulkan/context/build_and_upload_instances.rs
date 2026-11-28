@@ -1621,7 +1621,10 @@ impl VulkanContext {
             let bindless_set = self.texture_registry.descriptor_set(frame);
             if let Some(ref mut sky_cube) = self.post.sky_cube {
                 let sky_cube_params = build_sky_cube_params(composite_inputs, &composite_params);
-                if let Err(e) = sky_cube.upload_params(&self.device, frame, &sky_cube_params) {
+                let ground_albedo = composite_inputs.sky_params.ground_albedo;
+                if let Err(e) =
+                    sky_cube.upload_params(&self.device, frame, &sky_cube_params, ground_albedo)
+                {
                     log::warn!("sky cubemap upload_params failed: {e}");
                 }
                 if let Some(ref mut timers) = self.gpu_timers {

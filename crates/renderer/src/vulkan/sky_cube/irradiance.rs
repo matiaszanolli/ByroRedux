@@ -6,6 +6,25 @@ use crate::vulkan::descriptors::write_storage_buffer;
 use crate::vulkan::descriptors::{sampled_image_info};
 
 const SPV: &[u8] = include_bytes!("../../../shaders/sky_irradiance.comp.spv");
+/// The share of light an exterior's ground reflects back up into the diffuse sky term. 0.2 is a middling
+/// albedo for soil, rock and pavement, chosen rather than measured from the scene's terrain.
+pub const SKY_GROUND_ALBEDO: f32 = 0.2;
+
+/// `sky_irradiance.comp`'s push constant: the sun's light on flat ground (`sun_illuminance`, the same value
+/// the terrain receives, times the cosine to the vertical) and the ground albedo. Albedo 0 projects the sky
+/// cube unchanged.
+pub(super) fn ground_params(sun_illuminance: [f32; 4], sun_dir_y: f32, albedo: f32) -> [f32; 4] {
+    let cosine = sun_dir_y.max(0.0);
+    [
+        sun_illuminance[0] * cosine,
+        sun_illuminance[1] * cosine,
+        sun_illuminance[2] * cosine,
+        albedo,
+    ]
+}
+
+const GROUND_PARAMS_BYTES: u32 = std::mem::size_of::<[f32; 4]>() as u32;
+
 /// `SKY_SH_COEFFICIENTS` RGB `vec4` coefficients.
 pub const SH_BYTES: u64 = SKY_SH_COEFFICIENTS as u64 * 16;
 
@@ -66,7 +85,11 @@ impl SkyIrradiance {
                 None,
             )?;
             self.layout = device.create_pipeline_layout(
-                &vk::PipelineLayoutCreateInfo::default().set_layouts(&[self.set_layout]),
+                &vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(&[self.set_layout])
+                    .push_constant_ranges(&[vk::PushConstantRange::default()
+                        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                        .size(GROUND_PARAMS_BYTES)]),
                 None,
             )?;
         }
@@ -133,7 +156,13 @@ impl SkyIrradiance {
 
     /// Safety: frame slot fenced; base cube bake visible to compute, command
     /// buffer recording, all owned resources live. All coefficients overwritten.
-    pub unsafe fn record(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+    pub unsafe fn record(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        ground: [f32; 4],
+    ) {
         // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
         // covered by the caller contract documented on the function.
         unsafe {
@@ -146,6 +175,11 @@ impl SkyIrradiance {
                 &[self.sets[frame]],
                 &[],
             );
+            let mut bytes = [0u8; GROUND_PARAMS_BYTES as usize];
+            for (chunk, value) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(ground) {
+                *chunk = value.to_ne_bytes();
+            }
+            device.cmd_push_constants(cmd, self.layout, vk::ShaderStageFlags::COMPUTE, 0, &bytes);
             device.cmd_dispatch(cmd, SKY_SH_COEFFICIENTS, 1, 1);
             let ready = vk::BufferMemoryBarrier::default()
                 .buffer(self.buffers[frame].buffer)
@@ -190,5 +224,19 @@ impl SkyIrradiance {
             }
             *self = Self::default();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ground_takes_the_sun_by_its_height_and_none_from_below_the_horizon() {
+        let sun = [0.4, 0.2, 0.1, 0.0];
+        assert_eq!(ground_params(sun, 0.5, 0.2), [0.2, 0.1, 0.05, 0.2]);
+        assert_eq!(ground_params(sun, -0.3, 0.2), [0.0, 0.0, 0.0, 0.2]);
+        // No ground: the shader reads only the zero albedo.
+        assert_eq!(ground_params(sun, 1.0, 0.0)[3], 0.0);
     }
 }

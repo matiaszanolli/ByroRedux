@@ -115,7 +115,7 @@ pub(crate) use shaft_lab::{
 pub(crate) use oracle::{cornell_oracle_rung, cornell_oracle_world_offset, setup_cornell_oracle_scene};
 pub(crate) use reference::{
     cornell_reference_rung, cornell_reference_view, setup_reference_scene, HarnessCameraFov,
-    ReferenceSkyOnly,
+    ReferenceEnvironment, ReferenceSkyOnly,
 };
 
 /// Whether `args` launch a renderer test harness: a lab (combustion, godray, recede, shaft, shaft

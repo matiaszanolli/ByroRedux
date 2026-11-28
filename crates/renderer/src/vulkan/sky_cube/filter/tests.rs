@@ -3,6 +3,9 @@
 //! errors cannot hide errors in this pass.
 use super::*;
 
+/// The third case's ground: the sun on flat ground (rgb) and the albedo.
+const GROUND: [f32; 4] = [1.0, 0.5, 0.25, 0.25];
+
 #[test]
 #[ignore = "requires a Vulkan device; run with --ignored --exact"]
 fn gpu_filter_preserves_constant_radiance_and_broadens_a_lobe() -> Result<()> {
@@ -129,7 +132,8 @@ unsafe fn run_filter_cases(
             .layer_count(CUBE_FACES);
         let mut case_outputs = Vec::new();
         let mut sh_outputs = Vec::new();
-        for directional in [false, true] {
+        // The constant sky, the one-face lobe, then the constant sky over a ground.
+        for (directional, ground) in [(false, [0.0; 4]), (true, [0.0; 4]), (false, GROUND)] {
             device.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())?;
             let begin = vk::ImageMemoryBarrier::default()
                 .image(cube.image)
@@ -187,7 +191,7 @@ unsafe fn run_filter_cases(
                 &[ready],
             );
             filter.record(device, cmd, cube.image, 0);
-            irradiance.record(device, cmd, 0);
+            irradiance.record(device, cmd, 0, ground);
             let sh_to_copy = vk::BufferMemoryBarrier::default()
                 .buffer(irradiance.buffers[0].buffer)
                 .size(super::super::SKY_IRRADIANCE_BYTES)
@@ -347,7 +351,7 @@ unsafe fn run_filter_cases(
 }
 
 fn check_diffuse_projection(outputs: &[Vec<u8>]) {
-    assert_eq!(outputs.len(), 2);
+    assert_eq!(outputs.len(), 3);
     let coefficients = |bytes: &[u8]| -> [[f64; 3]; 9] {
         std::array::from_fn(|i| {
             std::array::from_fn(|channel| {
@@ -363,6 +367,23 @@ fn check_diffuse_projection(outputs: &[Vec<u8>]) {
             assert!(
                 (value - expected).abs() < 0.004,
                 "constant sky irradiance {value} != {expected}"
+            );
+        }
+    }
+
+    // A constant sky above a Lambertian ground: the ground takes the sky and the sun and returns its
+    // albedo of both, and a normal sees the two hemispheres in the ratio (1 + n.y) : (1 - n.y), which
+    // nine coefficients hold exactly.
+    let grounded = coefficients(&outputs[2]);
+    for normal in [[0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.6, 0.8]] {
+        let actual = evaluate_irradiance(&grounded, normal);
+        for (channel, sky) in [2.0, 0.5, 4.0].into_iter().enumerate() {
+            let below = f64::from(GROUND[3]) * (sky + f64::from(GROUND[channel]));
+            let expected = sky * (1.0 + normal[1]) / 2.0 + below * (1.0 - normal[1]) / 2.0;
+            assert!(
+                (actual[channel] - expected).abs() < 0.01,
+                "grounded sky normal {normal:?} channel {channel}: {} != {expected}",
+                actual[channel]
             );
         }
     }

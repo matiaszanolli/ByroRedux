@@ -8,7 +8,18 @@ layout(set = 0, binding = 0) uniform samplerCube sourceSky;
 layout(std430, set = 0, binding = 1) writeonly buffer SkyIrradiance {
     vec4 coefficients[SKY_SH_COEFFICIENTS];
 };
+// Below the horizon the cube paints the weather's SKY_LOWER and horizon colours: a backdrop, not a
+// measurement of light. Lit as sky it shines on every downward and sideways face as hard as the sky does.
+layout(push_constant) uniform GroundParams {
+    // rgb = direct sunlight on flat ground, in surface-lighting units (a white surface's outgoing radiance);
+    // a = ground albedo. 0 = there is no ground (the sky reference rungs): project the cube as it is.
+    vec4 sunAndAlbedo;
+} ground;
 shared vec3 partialSum[SKY_IRRADIANCE_WORKGROUP];
+// The two extra sums the ground needs: the sky's light on flat ground (times PI) and this coefficient's
+// basis integral over the lower hemisphere.
+shared vec3 partialSkyOnGround[SKY_IRRADIANCE_WORKGROUP];
+shared float partialBelow[SKY_IRRADIANCE_WORKGROUP];
 
 float areaIntegral(vec2 p) {
     return atan(p.x * p.y, sqrt(1.0 + dot(p, p)));
@@ -21,6 +32,9 @@ void main() {
     // weights this does not over-represent cube corners (Jacobian r^-3).
     const uint edge = 32u;
     vec3 sum = vec3(0.0);
+    vec3 skyOnGround = vec3(0.0);
+    float below = 0.0;
+    bool hasGround = ground.sunAndAlbedo.a > 0.0;
     for (uint sampleIndex = lane; sampleIndex < 6u * edge * edge; sampleIndex += uint(SKY_IRRADIANCE_WORKGROUP)) {
         uint face = sampleIndex / (edge * edge);
         uvec2 pixel = uvec2(sampleIndex % edge, (sampleIndex / edge) % edge);
@@ -29,16 +43,33 @@ void main() {
         float omega = areaIntegral(hi) - areaIntegral(vec2(lo.x, hi.y))
                     - areaIntegral(vec2(hi.x, lo.y)) + areaIntegral(lo);
         vec3 direction = normalize(sky_cube_face_direction(face, (lo + hi) * 0.5));
-        sum += textureLod(sourceSky, direction, 0.0).rgb
-             * sky_sh_basis(coefficient, direction) * omega;
+        // No cell centre lies on the horizon, so every sample is above or below it.
+        if (hasGround && direction.y < 0.0) {
+            below += sky_sh_basis(coefficient, direction) * omega;
+        } else {
+            vec3 radiance = textureLod(sourceSky, direction, 0.0).rgb;
+            sum += radiance * sky_sh_basis(coefficient, direction) * omega;
+            skyOnGround += radiance * max(direction.y, 0.0) * omega;
+        }
     }
     partialSum[lane] = sum;
+    partialSkyOnGround[lane] = skyOnGround;
+    partialBelow[lane] = below;
     barrier();
     for (uint stride = uint(SKY_IRRADIANCE_WORKGROUP) / 2u; stride > 0u; stride >>= 1u) {
-        if (lane < stride) partialSum[lane] += partialSum[lane + stride];
+        if (lane < stride) {
+            partialSum[lane] += partialSum[lane + stride];
+            partialSkyOnGround[lane] += partialSkyOnGround[lane + stride];
+            partialBelow[lane] += partialBelow[lane + stride];
+        }
         barrier();
     }
     if (lane == 0u) {
-        coefficients[coefficient] = vec4(partialSum[0] * sky_sh_lambert_band(coefficient), 0.0);
+        // A Lambertian ground lit by the sky above it and by the sun, seen as one radiance from below.
+        const float pi = 3.14159265358979;
+        vec3 groundRadiance = ground.sunAndAlbedo.a
+            * (partialSkyOnGround[0] / pi + ground.sunAndAlbedo.rgb);
+        vec3 projected = partialSum[0] + groundRadiance * partialBelow[0];
+        coefficients[coefficient] = vec4(projected * sky_sh_lambert_band(coefficient), 0.0);
     }
 }
