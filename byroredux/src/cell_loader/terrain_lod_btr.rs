@@ -188,6 +188,9 @@ pub(crate) fn btr_quad_texture(
         quad_cells: level,
         u_runs_west: false,
         v_runs_south: true,
+        // These maps are model-space in another channel order; the material's
+        // model-space flag reads them, not the tangent path this field drives.
+        normal_holds_surface: false,
     }
 }
 

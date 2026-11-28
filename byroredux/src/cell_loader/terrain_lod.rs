@@ -40,7 +40,7 @@ use crate::asset_provider::{
     MaterialProvider, TextureProvider,
 };
 use crate::components::{IsLodTerrain, MaterialTextureHandles};
-use crate::env_translate::translate_terrain_lod_textures;
+use crate::env_translate::{translate_terrain_lod_textures, TranslatedTerrainLodTexture};
 use crate::streaming::LodBlock;
 
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
@@ -86,6 +86,22 @@ const VERT_SPACING: f32 = EXTERIOR_CELL_UNITS / 32.0 * STRIDE as f32; // 1024.0
 /// engine frame) with a +1 bitangent sign, so `B = cross(N, T)` is world
 /// north. The quads' normal maps are world-oriented, not image-oriented.
 const LOD_QUAD_WORLD_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+
+/// Point every vertex of a synth block at its quad's baked textures. Where the bound normal map
+/// holds the whole surface normal ([`TranslatedTerrainLodTexture::normal_holds_surface`]) the
+/// vertex normal becomes world up: with [`LOD_QUAD_WORLD_TANGENT`] the shading frame is then the
+/// world's east / north / up, and the map reads back as it is. Over the terrain normal it would
+/// tilt every slope a second time.
+fn map_onto_baked_quad(vertices: &mut [Vertex], lod: &TranslatedTerrainLodTexture, normal_bound: bool) {
+    let map_is_surface = normal_bound && lod.normal_holds_surface;
+    for v in vertices {
+        v.uv = lod.uv_at(v.position[0], -v.position[2]);
+        v.tangent = LOD_QUAD_WORLD_TANGENT;
+        if map_is_surface {
+            v.normal = [0.0, 1.0, 0.0];
+        }
+    }
+}
 
 /// Map a block-vertex index `v ∈ [0, k·SAMPLES_PER_CELL]` to the
 /// `(cell_offset ∈ [0, k), local ∈ [0, 32])` it samples. The block's far
@@ -1214,10 +1230,7 @@ fn spawn_lod_block(
     // flip to (west, south) and invert the relief. (LAND's `new_terrain` uses
     // w = -1 because its own V is row-flipped; that sign does not apply here.)
     if let Some(lod) = translated_lod.as_ref() {
-        for v in vertices.iter_mut() {
-            v.uv = lod.uv_at(v.position[0], -v.position[2]);
-            v.tangent = LOD_QUAD_WORLD_TANGENT;
-        }
+        map_onto_baked_quad(&mut vertices, lod, normal_texture_handle != 0);
     }
 
     // Upload into the global geometry pool only (#1370). LOD blocks
@@ -1367,6 +1380,62 @@ mod tests {
         assert!((t - east).length() < 1e-6, "T {t:?} is not world east {east:?}");
         let b = sign * up.cross(t);
         assert!((b - north).length() < 1e-6, "B {b:?} is not world north {north:?}");
+    }
+
+    /// A vertex on a slope facing east and a little north, as LAND's VNML would give it.
+    fn sloped_vertex() -> Vertex {
+        let n = Vec3::new(0.6, 0.7, -0.2).normalize();
+        Vertex::new([2048.0, 100.0, -2048.0], [1.0; 3], n.to_array(), [0.0; 2])
+    }
+
+    fn mapped_normal(game: GameKind, normal_bound: bool) -> [f32; 3] {
+        let lod = translate_terrain_lod_textures(game, "wastelandnv", 0x3C, 4, 0, 0).expect("legacy quad");
+        let mut vertices = [sloped_vertex()];
+        map_onto_baked_quad(&mut vertices, &lod, normal_bound);
+        vertices[0].normal
+    }
+
+    /// The FO3/FNV quad normal maps hold the whole surface normal: against Bethesda's own LOD
+    /// meshes their red / green channels follow the true east / north slope (correlation
+    /// 0.86-0.97, slope 0.73-0.95, seven quads, 2026-11-27). Kept on a sloped vertex normal,
+    /// the shader tilted every slope twice, and distant hills shaded unlike the ground beside
+    /// them. So the vertex normal is world up wherever such a map is bound.
+    #[test]
+    fn a_fallout_quad_with_its_normal_map_shades_from_world_up() {
+        assert_eq!(mapped_normal(GameKind::Fallout3NV, true), [0.0, 1.0, 0.0]);
+    }
+
+    /// Without the map the mesh normal is the only relief there is.
+    #[test]
+    fn a_quad_without_its_normal_map_keeps_the_terrain_normal() {
+        assert_eq!(mapped_normal(GameKind::Fallout3NV, false), sloped_vertex().normal);
+    }
+
+    /// Oblivion's `_fn` maps follow the slope too, but at about half its strength, which does
+    /// not show they can stand alone; its blocks keep the terrain normal.
+    #[test]
+    fn an_oblivion_quad_keeps_the_terrain_normal() {
+        assert_eq!(mapped_normal(GameKind::Oblivion, true), sloped_vertex().normal);
+    }
+
+    /// `perturbNormalGrad` Path 1 over the frame this installs returns the map's own world
+    /// normal: `T·r + B·g + N·b` with T = east, B = north, N = up. Over a sloped N it does not,
+    /// which was the double tilt.
+    #[test]
+    fn the_world_frame_reproduces_the_maps_normal_exactly() {
+        let (r, g) = (0.45_f32, -0.30_f32);
+        let b = (1.0 - r * r - g * g).sqrt();
+        let want = Vec3::from(zup_to_yup_pos([r, g, b]));
+        let shade = |n: Vec3| {
+            let t = Vec3::new(LOD_QUAD_WORLD_TANGENT[0], LOD_QUAD_WORLD_TANGENT[1], LOD_QUAD_WORLD_TANGENT[2]);
+            let t = (t - n * t.dot(n)).normalize();
+            let bitangent = LOD_QUAD_WORLD_TANGENT[3].signum() * n.cross(t);
+            (t * r + bitangent * g + n * b).normalize()
+        };
+        let up = Vec3::from(mapped_normal(GameKind::Fallout3NV, true));
+        assert!((shade(up) - want).length() < 1e-5, "{:?} != {want:?}", shade(up));
+        let sloped = Vec3::from(sloped_vertex().normal);
+        assert!((shade(sloped) - want).length() > 0.3, "a sloped base must not read as the map alone");
     }
 
     /// #6246 — an FO4 MNAM-only base LTEX (no TX00, so absent from

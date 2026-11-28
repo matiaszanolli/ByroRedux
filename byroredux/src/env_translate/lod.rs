@@ -129,6 +129,10 @@ pub(crate) struct TranslatedTerrainLodTexture {
     /// its north edge (probed on vanilla Tamriel quads, which map their SW
     /// corner to (0, 1) and their NE corner to (1, 0)).
     pub(crate) v_runs_south: bool,
+    /// The normal map holds the surface's whole world normal (red = east,
+    /// green = north, blue = up), relief included, so it replaces the mesh
+    /// normal instead of adding detail to it (#4898's frame, completed).
+    pub(crate) normal_holds_surface: bool,
 }
 
 impl TranslatedTerrainLodTexture {
@@ -196,6 +200,7 @@ pub(crate) fn translate_terrain_lod_textures(
                 quad_cells: QUAD_CELLS,
                 u_runs_west: false,
                 v_runs_south: false,
+                normal_holds_surface: false,
             })
         }
         TerrainLodLayout::FalloutLegacy if level > 0 => {
@@ -211,6 +216,13 @@ pub(crate) fn translate_terrain_lod_textures(
                 quad_cells: level,
                 u_runs_west: true,
                 v_runs_south: false,
+                // Against Bethesda's own LOD meshes these maps' red / green
+                // follow the true east / north slope: correlation 0.86-0.97,
+                // slope 0.73-0.95 over four FNV and three FO3 level-4 quads
+                // (2026-11-27). Oblivion's `_fn` follow it at about half
+                // strength (0.46-0.55 over three quads), so its arm keeps the
+                // terrain normal until that is understood.
+                normal_holds_surface: true,
             })
         }
         TerrainLodLayout::FalloutLegacy | TerrainLodLayout::Combined | TerrainLodLayout::None => {

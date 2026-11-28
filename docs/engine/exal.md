@@ -834,6 +834,18 @@ never in a shader or per game at render time.
   measured later for a legacy game reaches its blocks without consumer edits
   (#6453). The tiled-LTEX fallback is the splat terrain's own albedo and takes
   none. The derivation lives in the function's rustdoc.
+- **FO3/FNV quad normal maps are whole surface normals (2026-11-27,
+  `normal_holds_surface`).** Red / green / blue are east / north / up with the
+  relief included: against Bethesda's own LOD meshes red and green follow the
+  true slope (correlation 0.86-0.97 and slope 0.73-0.95 over seven level-4
+  quads; 0.81-0.97 over 18 level-8, -16 and -32 quads, level 32 the weakest).
+  The synth block therefore takes a world-up vertex normal wherever the map is
+  bound, so the east tangent completes a world frame and the map reads as it
+  is. Over the LAND normal it had tilted every slope twice: near-black patches
+  and a shade step at the full-detail join. Distant hills carry less contrast
+  than they did, and a ray hit on a LOD block reads its flat vertex normal.
+  Oblivion's `_fn` maps follow the slope at about half strength (0.46-0.55,
+  three quads) and keep the LAND normal.
 - **Baked colours on the boundary block (`74e1b0788`, `btr_quad_texture`).** The
   finest-band block beside resident ground needs per-cell holes and skirts a
   baked mesh cannot carry, so it takes the synth path. On Skyrim/FO4 that block
