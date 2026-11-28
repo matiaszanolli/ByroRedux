@@ -121,8 +121,10 @@ lod_absent_families() {
 #
 # Skyrim and FO4 bake their level-4 object LOD one segment per cell (V6) and Skyrim its trees one file per
 # 4x4 quad with per-tree positions, so a quad that straddles the resident boundary draws its non-resident
-# cells and the moat reads 0. FO3 and FNV `blocks\` quads are one NiTriShape each (V7, DLOD-OBJ-005) and keep
-# the whole-quad treatment, and Oblivion's rings are per cell: their counts are reported, not failed.
+# cells and the moat reads 0. FO3 and FNV `blocks\` quads are holed per cell by triangle position
+# (DLOD-OBJ-005), but their count is reported, not failed: it includes cells with no authored `blocks\` file
+# (the counter does not learn those for this family), and FO3's level-8 quads are still dropped whole.
+# Oblivion's rings are per cell, and its count is reported too.
 #
 # Args:  <profile label> <object_moat_cells> <tree_moat_cells>
 # Prints the families whose moat is nonzero on a profile that must have none (empty when none).

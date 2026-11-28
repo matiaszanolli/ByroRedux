@@ -623,7 +623,14 @@ Per-game impls (the runtime source per the Q3 finding):
     residency, work budget and eviction, and riding the same legacy band
     ladder its terrain siblings use (`LodBandLadder::for_object_game`). It is
     **not** a `PlacementLodProvider` fix and **not** a `terrain_lod.rs`
-    extension — both of those were the pre-#3321 guesses.
+    extension — both of those were the pre-#3321 guesses. Two things differ
+    from the `.bto` bake (2026-11-27). The atlas's alpha is a cutout mask
+    (trees, pylons, signs, ruin outlines) and no `blocks\` quad has a
+    `NiAlphaProperty`, so the loader alpha-tests these quads. And the files
+    carry no per-cell partition, yet a level-4 quad straddling the resident
+    boundary is holed like a `.bto`, each triangle placed by its centroid
+    (PRD [`distant-lod-completion`](../prd/distant-lod-completion.md),
+    DLOD-OBJ-005 and -008).
 
 - **The legacy family enumerates from an authored index, not a lattice
   (#5222).** `LegacyLodQuadIndex` (`cell_loader/legacy_lod_index.rs`) scans

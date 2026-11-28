@@ -1,6 +1,6 @@
 # Distant LOD Completion — Product Requirements
 
-**Status**: SHIPPED (2026-11-27). Revision 12 corrects revision 11's account of the default-radius Fallout 3 run and files #7433 and #7434. Revision 11 records the #7431 fix: FO3's `.dtl` trees are retired per cell and the gate counts Oblivion's and FO3's tree moat (§3.2). Revision 10 records the owner's decision Q8: a family whose files carry no per-cell partition is Gapped by data. Revision 9 folds in review round 3. Revision 8 moved the PRD to SHIPPED on 2026-11-19; it is retained as history. Revision 7 records the Phase 4 terrain-LOD calibration (DLOD-TERR-001, -002). Revision 6 records the Phase 0 census results (§9.1). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2:
+**Status**: SHIPPED (2026-11-27). Revision 13 records the owner's approval to hole FO3/FNV level-4 `blocks\` quads per cell (DLOD-OBJ-005, superseding Q8 for F5) and to alpha-test them (new DLOD-OBJ-008), and the fixes for #7433 and #7434 (§3.2). Revision 12 corrects revision 11's account of the default-radius Fallout 3 run and files #7433 and #7434. Revision 11 records the #7431 fix: FO3's `.dtl` trees are retired per cell and the gate counts Oblivion's and FO3's tree moat (§3.2). Revision 10 records the owner's decision Q8: a family whose files carry no per-cell partition is Gapped by data. Revision 9 folds in review round 3. Revision 8 moved the PRD to SHIPPED on 2026-11-19; it is retained as history. Revision 7 records the Phase 4 terrain-LOD calibration (DLOD-TERR-001, -002). Revision 6 records the Phase 0 census results (§9.1). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2:
 every HEAD claim re-checked on 2026-11-03, Skyrim's tree-LOD shape and the
 Distant LOD Multiplier sub-record sourced, the far-field-shadow non-goal
 aligned with the Reference Lighting PRD's decided Q4, descriptors given
@@ -183,7 +183,7 @@ absence of a moat is a reading of the code, not a measurement.
 | F2 | Drawn | `terrain_lod.rs`; same holed blocks | no |
 | F3 | Drawn | `terrain_lod.rs`; same holed blocks | no |
 | F4 | Drawn | per-cell suppression at level 4 (#6639); zero object moat on the Skyrim and FO4 boundary runs | yes |
-| F5 | Gapped by data | one `NiTriShape` per quad, no segment table (V7); resident objects with a nonzero object moat on the FNV boundary run and on FO3 Wasteland. The FO3 boundary profile (MegatonWorld) draws no object quad | yes |
+| F5 | Drawn (revision 13) | level-4 quads holed per cell by triangle position (DLOD-OBJ-005); object moat 0 on the FNV boundary run and on FO3 Wasteland at radius 3 and the default radius. At poses on the FNV map's west edge the count includes cells with no authored `blocks\` file: at `(-18,0)` the count (164 at the default radius, 43 at radius 3) equals the number of candidate cells there with no file; the totals were compared, not the cells. The FO3 boundary profile (MegatonWorld) draws no object quad | yes |
 | F6 | Drawn | one unit per `.lod` cell, wanted only outside the resident set | no |
 | F7 | Drawn | crossed cards (#6638); one unit per `.lod` cell, wanted only outside the resident set (`tree_lod_legacy.rs`); zero tree moat on the Oblivion boundary run | yes |
 | F8 | Drawn | per-cell hole mask on straddling quads (#6639); zero tree moat on the Skyrim boundary run | yes |
@@ -217,6 +217,28 @@ wrong.
 The resident counts above need one caveat: `object_resident` also counts
 empty placeholder quads (#7434, found by reading the code and not observed in
 a run).
+
+**Since revision 12 (2026-11-27).** Both follow-ups are fixed. #7433
+(`a5587db1f`): each geometry-pool reserve now holds lower tiers off only for
+its unused part, and the default-radius FO3 run reads `held_back=0
+verdict=PASS`. #7434 (`440ff4ae4`): `object_resident` counts drawn quads only;
+on the boundary runs Skyrim went from 186 to 106 and FO4 from 712 to 108.
+
+**F5 and the block atlases (revision 13).** The gate read PASS on FNV while two
+defects were plain on screen. Every quad touching a resident cell was dropped
+whole, leaving a band with no objects around the loaded area; and the quads
+drew opaque, so each cutout card in the atlas stood as a black slab. This
+revision changes both (DLOD-OBJ-005, -008). Measured
+over the level-4 files of both games (349 FNV, 301 FO3, plain names only):
+about 11% of triangles cross a cell edge, 1.3% reach more than 256 units past
+it and at most 0.06% more than 1 024, so a holed edge can overlap full detail
+or fall short of it by that much. 6.9% (FNV) and 5.2% (FO3) of triangles have
+their centroid outside their own quad, 84% and 88% of those within 1 024 units
+of it; the hole mask does not reach them. No overlap or new gap was seen in
+stills of the FNV north, east and south edges at radius 3; flicker was not
+checked. Default-radius runs refused no upload (FNV `(-18,0)` 5 143 426 live
+vertices, FO3 `(0,0)` 5 432 968). `m-exteriors.sh all boundary` passes on all
+five profiles; FNV's object moat there went from 52 to 0.
 
 ---
 
@@ -462,9 +484,13 @@ a run).
 - **DLOD-OBJ-004.** FO4 level-4 `.bto` quads SHOULD get the treatment of
   DLOD-OBJ-002. Verified (V6, §9.1): FO4's level-4 sub-meshes partition their
   triangles one segment per cell, 713 of 713, as Skyrim's do.
-- **DLOD-OBJ-005.** FO3/FNV `blocks\` quads MUST keep the whole-quad
-  treatment of DLOD-OBJ-003. Their files carry no per-cell partition (V7,
-  §9.1), so Phase 3 does not close their moat and F5 is Gapped by data (Q8).
+- **DLOD-OBJ-005.** FO3/FNV level-4 `blocks\` quads that straddle resident
+  cells SHOULD draw the triangles of their non-resident cells and none of
+  their resident cells, as DLOD-OBJ-002 does, each triangle placed by its
+  centroid: their files carry no per-cell partition (V7, §9.1), and the
+  centroid rule needs none. Quads of level 8 and up keep DLOD-OBJ-003.
+  Revision 13 replaced the earlier whole-quad MUST (Q8), after the straddling
+  triangles were measured (§3.2).
 - **DLOD-OBJ-006.** A per-cell draw MUST NOT rely on per-REFR identity or on
   the VWD flag. The bake carries neither
   ([EXAL §5.2](../engine/exal.md#52-the-lodprovider-trait-gamevariant-for-lod),
@@ -472,6 +498,12 @@ a run).
 - **DLOD-OBJ-007.** On Oblivion, a VWD base with no `_far.nif` MUST keep
   drawing its full model as the distant mesh (Q6). Today this is the
   fallback in `placement_lod.rs` (`full_model_path`).
+- **DLOD-OBJ-008.** FO3/FNV `blocks\` quads MUST be alpha tested against
+  their `<ws>.buildings.dds` atlas, whose alpha is a cutout mask. No level-4
+  file of either game has a `NiAlphaProperty` (§3.2), so the loader supplies
+  the test. The cutoff (0.5) is unsourced; 1.2–4.4% of atlas texels fall between
+  16 and 239 over the 8 FNV and 15 FO3 atlases. Verify:
+  `fallout_block_quads_are_alpha_tested_against_their_atlas`.
 
 ### 5.4 Distances and descriptors (`DLOD-BAND`)
 
@@ -660,7 +692,7 @@ in. Engine runs use `--bench-hold` with `BYRO_DEBUG_SERVER=1` and
 |---|---|---|---|
 | A1 | `docs/smoke-tests/m-exteriors.sh skyrim boundary` | Skyrim SE | `lod-coverage:` shows nonzero `terrain_resident`, `object_resident` and `tree_resident`; `overlaps`, `full_detail_overlaps`, `vwd_full_model_overlaps`, `tree_churn`, `held_back`, `object_moat_cells` and `tree_moat_cells` all 0 |
 | A2 | `docs/smoke-tests/m-exteriors.sh fo4 boundary` | FO4 | as A1 without `tree_resident`; `object_moat_cells=0` if V6 holds |
-| A3 | `docs/smoke-tests/m-exteriors.sh fnv boundary` | FNV | `lod-coverage:` shows nonzero `terrain_resident` and `object_resident`; `overlaps`, `full_detail_overlaps`, `vwd_full_model_overlaps`, `terrain_churn`, `object_churn` and `held_back` all 0; `tree_resident=0` with the verdict unaffected (DLOD-TREE-009). `object_moat_cells` may be nonzero (F5, Gapped by data) |
+| A3 | `docs/smoke-tests/m-exteriors.sh fnv boundary` | FNV | `lod-coverage:` shows nonzero `terrain_resident` and `object_resident`; `overlaps`, `full_detail_overlaps`, `vwd_full_model_overlaps`, `terrain_churn`, `object_churn` and `held_back` all 0; `tree_resident=0` with the verdict unaffected (DLOD-TREE-009). `object_moat_cells` is 0 (DLOD-OBJ-005, read on 2026-11-27) |
 | A4 | `docs/smoke-tests/m-exteriors.sh oblivion boundary` | Oblivion | nonzero `placement_resident` and `tree_resident`; overlaps 0; `held_back=0` |
 | A5 | `cargo run --release -- --game fo3 --wrld Wasteland --grid 0,0 --radius 3 --bench-frames 300 --bench-hold`, then `lod.coverage` over `byro-dbg` | FO3 | nonzero `tree_resident`; overlaps 0. The `fo3` boundary profile sits in MegatonWorld, which the census found without a `.dtl` (a Phase 0 figure); `--radius 3` keeps the 10-cell tree reach outside the full-detail radius (DLOD-BAND-007) |
 | A6 | `cargo test -p byroredux --bin byroredux -- --ignored dtl_corpus_parses_and_resolves_every_species` | FO3 base and DLC | every `.dtl` and `.lst` file DLOD-GATE-007 counts parses; every species resolves |
@@ -763,7 +795,7 @@ rewords V1, V5 and V12.
 | V4 | A `.btt` record's `ref_form_id` is the FormID of the placed TREE reference it bakes: 43 333 distinct ids; 41 538 resolve in `Skyrim.esm`, all to a TREE base, at the baked position (within 1 unit) and in its cell; 1 709 are DLC references, 3 sit in a persistent cell, 83 are absent from the parsed references (cause not examined). Whether the original hides LOD trees one at a time is not documented; the key is available either way. | `tree_lod_ref_form_id_census` |
 | V5 | **Fallout 3: settled by data (#6638).** The `.dtl` references stand on STAT records with NIF tree models (`landscape\trees\treedead03.nif` and seven more species, 27 627 of 32 275 trees) and the archives ship an authored `<model>_lod_flat.nif` for every one of them, so the distant tree is that mesh, instanced, not a crossed card (`dtl_corpus_parses_and_resolves_every_species`). Q3's fallback clause ("V5 may still show those titles drew them another way") applies; DLOD-TREE-006 and -011 state the split (revision 9). **Oblivion: not settled by a source, the crossed cards stay an interpretation.** UESP's TREE record page calls `BNAM` "Billboard dimensions" (the near tree), and its TES4LODGen page is a stub with no description of the LOD tree shape. DLOD-TREE-010's rustdoc note applies. | UESP *Mod File Format/TREE*, *TES4LODGen* |
 | V6 | FO4 level-4 `.bto` quads partition their triangles one segment per cell: 713 of 713 sub-meshes (Skyrim 1 856 of 1 856), at most 16 segments; levels 8, 16 and 32 have exactly 1. | `bto_segment_census` |
-| V7 | **No.** FO3/FNV `blocks\` quads (FO3 422, FNV 355 read) are one `NiTriShape` under a `BSMultiBoundNode` each; none holds a segmented or sub-index block, so there is no per-cell lever (DLOD-OBJ-005's premise fails) and the whole quad stays the unit. | `bto_segment_census --blocks` |
+| V7 | **No.** FO3/FNV `blocks\` quads (FO3 422, FNV 355 read) are one `NiTriShape` under a `BSMultiBoundNode` each; none holds a segmented or sub-index block, so there is no authored per-cell lever. Until revision 13 the whole quad stayed the unit; DLOD-OBJ-005 now holes level 4 by triangle position. | `bto_segment_census --blocks` |
 | V8 | The 24-byte layout is `u32 4`, `u32` top level, `u32` 4 x top level, `i16` SW cell x, y, `i16` NE cell x, y, `u32` 4 or 8. Over all 53 descriptors the first is 4 (53), the third is 4 x the second (51), the second is the highest authored level (46), the last the lowest (50), and the SW cell is an authored quad's corner (48). **The SW cell is not a universal lattice origin**: every authored quad is on its lattice for 46 of 53; 7 FO3 worldspaces (`dcworld01`, `dcworld06`, `dcworld12`, `dcworld17`, `dlc02baileyscrossroads`, `paradisefalls`, `washmontop`) are not. FNV: all 25 are. The NE cell is the world's cell extent, not the quads'. | `dlodsettings_descriptors_against_the_authored_quads` |
 | V9 | Every vanilla WRLD of `Skyrim.esm`, its DLC and `Fallout4.esm` + DLC authors `NAMA`, all 1.0 except WhiterunWorld, WindhelmWorld, MarkarthWorld and AlftandWorld at 0.25. What it scales is not published (the CK and FO4 CK wiki pages list it with no description; UESP calls it "unknown float"). | `worldspace_distant_lod_multiplier_census` |
 | V10 | On FO4 `fTreeLoadDistance` is "believed to be unused by the game"; it "used to set the maximum distance that tree LOD was loaded in Skyrim". What it bounds on FO3 / FNV is not documented, so DLOD-TREE-005's reading (the `.dtl` ring's reach) stays an interpretation. | StepMods, *Fallout4Prefs INI / TerrainManager* |
@@ -915,6 +947,9 @@ A11 pass, and the three-scene before/after table is published.
    owner named only the `blocks\` gap; F9 (§3.2) is outside this decision.
 
 ---
+   **Superseded for F5** (2026-11-27, revision 13): the straddling triangles
+   were measured (§3.2) and the owner approved holing the `blocks\` quads. No
+   family is Gapped by data now; the state stays defined.
 
 ## 11. Document map
 
@@ -969,3 +1004,4 @@ marked otherwise:
 | 10 | 2026-11-27 | Q8: new state Gapped by data, applied to F5; G-001, the thesis corollary, DLOD-OBJ-005, family coverage and the Phase 2 exit changed to match. The question approved named only the `blocks\` gap; F9 is not covered | owner: approved |
 | 11 | 2026-11-27 | #7431: FO3's `.dtl` trees are retired per cell (DLOD-TREE-008), with DLOD-BAND-007 now enforced explicitly; tree moat counted for Oblivion and FO3 (DLOD-GATE-005). §3.2 and the Phase 2 note updated: F9 and F7 measured, F5's evidence corrected (the FO3 boundary profile draws no object quad), and the default-radius FO3 verdict failure recorded | — |
 | 12 | 2026-11-27 | Corrects revision 11: #6638 holds no recorded PASS for the default-radius FO3 run, only the acceptance criterion. Follow-ups filed: #7433 (that failure) and #7434 (`object_resident` counts placeholders) | — |
+| 13 | 2026-11-27 | Owner approved changing DLOD-OBJ-005 after being shown the FNV defects: FO3/FNV level-4 `blocks\` quads are holed per cell by triangle centroid (Q8 superseded for F5; F5 Drawn; A3 changed) and alpha tested (new DLOD-OBJ-008). §3.2 records the measurements and the #7433 and #7434 fixes | owner: approved |

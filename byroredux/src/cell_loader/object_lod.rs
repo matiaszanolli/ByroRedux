@@ -95,7 +95,7 @@ pub(crate) struct ObjectLodBlock {
     /// authored paths that happen to resolve to the same underlying handle
     /// each still took their own increment and need their own release.
     pub(crate) extra_texture_handles: Vec<u32>,
-    /// The cells of this (level-4, baked `.bto`) quad that were left out because full detail covers them
+    /// The cells of this level-4 quad that were left out because full detail covers them
     /// (DLOD-OBJ-002): bit `(cy - qy) * 4 + (cx - qx)`, as [`super::lod_coverage::quad_resident_mask`]. `0` for
     /// a whole quad. A resident quad, drawn or empty, whose mask no longer matches the full-detail residency is
     /// respawned ([`keys_with_stale_holes`]).
@@ -147,6 +147,36 @@ fn quad_intersects_full_detail(
     resident_full_cells
         .iter()
         .any(|&(gx, gy)| gx >= qx && gx < qx + level && gy >= qy && gy < qy + level)
+}
+
+/// DLOD-OBJ-002 / -004 / -005 — a level-4 quad that straddles the resident boundary draws the cells that are
+/// not resident and none of the ones that are. [`drop_holed_triangles`] places each triangle by position, so
+/// it needs no authored partition: Skyrim and FO4 `.bto` quads happen to ship one segment per cell (V6),
+/// FO3/FNV `blocks\` quads ship none (V7) and are holed the same way. Dropping those whole left an empty
+/// band around the loaded area. Levels 8 and up have no 16-bit mask, so one touching a resident cell is
+/// dropped whole (DLOD-OBJ-003).
+///
+/// Removes the quads that may not draw from `desired` and returns the hole mask of each straddling quad
+/// that stays.
+fn exclude_full_detail_ground(
+    desired: &mut Vec<(i32, i32, i32)>,
+    resident_full_cells: &HashSet<(i32, i32)>,
+) -> HashMap<(i32, i32, i32), u16> {
+    let mut hole_masks = HashMap::new();
+    desired.retain(|&(level, qx, qy)| {
+        if !quad_intersects_full_detail(level, qx, qy, resident_full_cells) {
+            return true;
+        }
+        if level == 4 {
+            let mask = super::lod_coverage::quad_resident_mask(qx, qy, resident_full_cells);
+            if mask != 0xFFFF {
+                hole_masks.insert((level, qx, qy), mask);
+                return true;
+            }
+        }
+        false
+    });
+    hole_masks
 }
 
 /// Stream the distant **object** LOD bands around the player
@@ -261,25 +291,7 @@ pub(crate) fn stream_object_lod_blocks(
             },
         )
     };
-    // DLOD-OBJ-002 / -004 — a baked level-4 quad that straddles the resident boundary draws the cells that are
-    // not resident and none of the ones that are (V6: the bake partitions triangles one segment per cell on
-    // Skyrim and FO4). Every other quad keeps the whole-quad exclusion: levels 8 and up ship one segment per
-    // sub-mesh (DLOD-OBJ-003), and FO3/FNV `blocks\` quads have no per-cell lever (V7, DLOD-OBJ-005).
-    let per_cell = matches!(scheme, ObjectLodScheme::BakedBto);
-    let mut hole_masks: HashMap<(i32, i32, i32), u16> = HashMap::new();
-    desired.retain(|&(level, qx, qy)| {
-        if !quad_intersects_full_detail(level, qx, qy, input.resident_full_cells) {
-            return true;
-        }
-        if per_cell && level == 4 {
-            let mask = super::lod_coverage::quad_resident_mask(qx, qy, input.resident_full_cells);
-            if mask != 0xFFFF {
-                hole_masks.insert((level, qx, qy), mask);
-                return true;
-            }
-        }
-        false
-    });
+    let hole_masks = exclude_full_detail_ground(&mut desired, input.resident_full_cells);
     // Closest-first, so a budgeted reconcile fills the near bands before the
     // far ones. Ties break on level so a quad's own band stays grouped.
     desired.sort_unstable_by_key(|&(level, qx, qy)| {
@@ -392,13 +404,15 @@ struct ObjectLodQuadKey {
     level: i32,
     qx: i32,
     qy: i32,
-    /// Cells of a level-4 baked quad to leave out (see [`ObjectLodBlock::hole_mask`]); `0` draws it whole.
+    /// Cells of a level-4 quad to leave out (see [`ObjectLodBlock::hole_mask`]); `0` draws it whole.
     hole_mask: u16,
 }
 
-/// DLOD-OBJ-002 -- the triangles of a baked level-4 quad that stand in a cell `hole_mask` marks, removed from
-/// `indices`. A triangle belongs to the cell its centroid falls in: the bake partitions triangles one segment
-/// per cell (V6), so every triangle lies in a single cell and a boundary-straddling one is assigned by centroid.
+/// DLOD-OBJ-002 -- the triangles of a level-4 quad that stand in a cell `hole_mask` marks, removed from
+/// `indices`. A triangle belongs to the cell its centroid falls in. A `.bto` bake partitions its triangles one
+/// segment per cell (V6). FO3/FNV `blocks\` quads do not: measured 2026-11-27 over their level-4 files, about
+/// 11% of triangles cross a cell edge and 1.3% reach more than 256 units past it, so a holed edge can overlap
+/// full detail, or fall short of it, by that much.
 /// `to_world` carries a vertex position to world Z-up (x, y, z); a triangle whose centroid is outside the quad
 /// is kept.
 pub(crate) fn drop_holed_triangles(
@@ -428,7 +442,14 @@ pub(crate) fn drop_holed_triangles(
     kept
 }
 
-/// Insert one `.bto` sub-mesh's canonical `Material` and its blend / decal /
+/// Alpha-test cutoff for the FO3/FNV `blocks\` quads, in `[0, 1]`. Their `<ws>.buildings.dds` atlases carry a
+/// cutout mask in alpha: trees, lattice towers, windmills and sign lettering on black. No `blocks\` quad has a
+/// `NiAlphaProperty` (0 of FNV's 349 level-4 files and 0 of FO3's 366, 2026-11-27), so the cutout is the
+/// loader's to apply. The value is unsourced; the masks are near-binary (1.2-4.4% of texels fall between 16
+/// and 239 across both games' atlases), so any middle cutoff separates them alike.
+const BLOCKS_ATLAS_ALPHA_CUTOFF: f32 = 0.5;
+
+/// Insert one object-LOD sub-mesh's canonical `Material` and its blend / decal /
 /// facing markers (#4245).
 ///
 /// A quad runs a full `import_nif_scene_with_resolver`, so every sub-mesh
@@ -438,12 +459,14 @@ pub(crate) fn drop_holed_triangles(
 /// flags. `translate_texture_only_material` is for draws with no source
 /// record, which these are not.
 ///
-/// The only override is the base-color path: it is the texture this draw
-/// actually samples (#3412 — the sub-mesh's own, or the worldspace atlas
+/// Under [`ObjectLodScheme::FalloutLegacyBlocks`] the draw is also alpha
+/// tested ([`BLOCKS_ATLAS_ALPHA_CUTOFF`]). Otherwise the only override is the
+/// base-color path: it is the texture this draw actually samples (#3412 — the sub-mesh's own, or the worldspace atlas
 /// when that missed). The mesh's own path goes in as `source_base_color`,
 /// so `translate_material` re-classifies the keyword PBR scalars whenever
 /// the sampled texture differs from it.
 fn insert_object_lod_submesh_material(
+    scheme: ObjectLodScheme,
     world: &mut World,
     entity: EntityId,
     source: &byroredux_nif::import::ImportedMaterial,
@@ -455,7 +478,7 @@ fn insert_object_lod_submesh_material(
         .textures
         .map_ref(|sym| sym.and_then(|s| pool.resolve(s)).map(str::to_owned));
     let source_base_color = std::mem::replace(&mut textures.base_color, sampled_base_color);
-    let material = crate::material_translate::translate_material(
+    let mut material = crate::material_translate::translate_material(
         source,
         mesh_name,
         crate::material_translate::ResolvedPaths {
@@ -468,6 +491,10 @@ fn insert_object_lod_submesh_material(
         },
         0,
     );
+    if scheme == ObjectLodScheme::FalloutLegacyBlocks {
+        material.alpha_test = true;
+        material.alpha_threshold = BLOCKS_ATLAS_ALPHA_CUTOFF;
+    }
     crate::material_translate::attach_blend_and_facing_markers(
         world,
         entity,
@@ -736,6 +763,7 @@ fn spawn_object_lod_quad(
         // a canonical `Material` like everything else, from the sub-mesh's
         // own imported material.
         insert_object_lod_submesh_material(
+            scheme,
             world,
             entity,
             &mesh.material,
@@ -1090,12 +1118,46 @@ mod submesh_texture_tests {
 /// fix, solved the same way: test the GPU-free collection logic directly).
 #[cfg(test)]
 mod submesh_material_tests {
-    use super::insert_object_lod_submesh_material;
+    use super::{insert_object_lod_submesh_material, ObjectLodScheme};
     use crate::components::TwoSided;
     use byroredux_core::ecs::components::Material;
     use byroredux_core::ecs::World;
     use byroredux_core::string::StringPool;
     use byroredux_nif::import::ImportedMaterial;
+
+    /// The material one atlas-sampling sub-mesh with no authored alpha state gets under `scheme`.
+    fn bare_submesh_material(scheme: ObjectLodScheme) -> Material {
+        let mut world = World::new();
+        let entity = world.spawn();
+        insert_object_lod_submesh_material(
+            scheme,
+            &mut world,
+            entity,
+            &ImportedMaterial::default(),
+            None,
+            &StringPool::new(),
+            Some("textures\\landscape\\lod\\wastelandnv\\blocks\\wastelandnv.buildings.dds".to_string()),
+        );
+        let materials = world.query::<Material>().unwrap();
+        materials.get(entity).expect("a canonical Material").clone()
+    }
+
+    /// The FO3/FNV `buildings.dds` atlases carry a cutout mask in alpha (trees, lattice towers,
+    /// signs) and no `blocks\` quad has a `NiAlphaProperty`, so the loader supplies the alpha
+    /// test. Without it every card drew as a solid black slab.
+    #[test]
+    fn fallout_block_quads_are_alpha_tested_against_their_atlas() {
+        let material = bare_submesh_material(ObjectLodScheme::FalloutLegacyBlocks);
+        assert!(material.alpha_test);
+        assert_eq!(material.alpha_threshold, 0.5);
+        assert_eq!(material.alpha_test_func, 6, "pass at or above the cutoff");
+    }
+
+    /// The control: a `.bto` sub-mesh keeps what it authored.
+    #[test]
+    fn a_bto_submesh_without_authored_alpha_stays_opaque() {
+        assert!(!bare_submesh_material(ObjectLodScheme::BakedBto).alpha_test);
+    }
 
     /// #4245 — an alpha-tested, two-sided `.bto` sub-mesh (fences,
     /// railings, billboard foliage) must keep its cutout and its facing.
@@ -1115,6 +1177,7 @@ mod submesh_material_tests {
         let mut world = World::new();
         let entity = world.spawn();
         insert_object_lod_submesh_material(
+            ObjectLodScheme::BakedBto,
             &mut world,
             entity,
             &source,
@@ -1148,6 +1211,7 @@ mod submesh_material_tests {
         let mut world = World::new();
         let entity = world.spawn();
         insert_object_lod_submesh_material(
+            ObjectLodScheme::BakedBto,
             &mut world,
             entity,
             &source,
@@ -1663,5 +1727,40 @@ mod lod_mesh_provenance_tests {
         on_disk.sort();
         let listed: Vec<&str> = LOD_SOURCES.iter().map(|(n, _)| *n).collect();
         assert_eq!(on_disk, listed, "add new cell_loader/*lod*.rs files to LOD_SOURCES");
+    }
+}
+
+#[cfg(test)]
+mod full_detail_exclusion_tests {
+    use super::exclude_full_detail_ground;
+    use std::collections::HashSet;
+
+    /// Cells (0, 0) and (1, 0), plus all sixteen cells of the level-4 quad at (-4, 0).
+    fn resident() -> HashSet<(i32, i32)> {
+        let mut cells: HashSet<(i32, i32)> = [(0, 0), (1, 0)].into_iter().collect();
+        cells.extend((-4..0).flat_map(|x| (0..4).map(move |y| (x, y))));
+        cells
+    }
+
+    /// DLOD-OBJ-002 / -005 — a level-4 quad straddling the resident boundary stays, holed over the
+    /// resident cells, so it leaves no empty band around the loaded area. A wholly resident quad
+    /// goes, and a clear one is untouched.
+    #[test]
+    fn a_straddling_level_4_quad_is_holed_not_dropped() {
+        let mut desired = vec![(4, 0, 0), (4, -4, 0), (4, 8, 8)];
+        let masks = exclude_full_detail_ground(&mut desired, &resident());
+        assert_eq!(desired, [(4, 0, 0), (4, 8, 8)]);
+        assert_eq!(masks.len(), 1);
+        assert_eq!(masks[&(4, 0, 0)], 0b11);
+    }
+
+    /// DLOD-OBJ-003 — a coarser quad has no 16-bit mask, so one touching a resident cell is
+    /// dropped whole.
+    #[test]
+    fn a_straddling_coarser_quad_is_still_dropped_whole() {
+        let mut desired = vec![(8, 0, 0), (8, 8, 8)];
+        let masks = exclude_full_detail_ground(&mut desired, &resident());
+        assert_eq!(desired, [(8, 8, 8)]);
+        assert!(masks.is_empty());
     }
 }
