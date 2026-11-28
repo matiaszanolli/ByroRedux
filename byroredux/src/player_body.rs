@@ -91,14 +91,6 @@ impl Resource for PlayerBodyRootEntity {}
 // #6714 — the marker lives in `components::visibility` beside the other render-skip markers.
 pub(crate) use crate::components::HiddenFirstPerson;
 
-/// Imported humanoid skeletons walk with local +Z as forward (the NPC
-/// locomotion turn is `atan2(Δx, Δz)` → `from_rotation_y`, which points
-/// local +Z at the movement target), while the character camera looks along
-/// its own -Z. Adding a half turn lines the body's +Z up with the camera
-/// forward so third person shows the body's back. If a future game's rig
-/// faces the other way, this is the one constant to flip.
-const BODY_MODEL_FORWARD_HALF_TURN: f32 = std::f32::consts::PI;
-
 /// Assemble the player's visual body off the resolved `NPC_ 0x7` record and
 /// attach it under the player capsule entity. Synchronous: the attach runs
 /// once at Character-mode spawn with an unlimited frame budget — the same
@@ -671,7 +663,8 @@ pub(crate) fn player_body_facing_system(world: &World, _dt: f32) {
     drop(input);
     if let Some(mut tq) = world.query_mut::<Transform>()
         && let Some(transform) = tq.get_mut(root) {
-            transform.rotation = Quat::from_rotation_y(yaw + BODY_MODEL_FORWARD_HALF_TURN);
+            // The body's front and the camera's are both local -Z, so the yaw carries over as is.
+            transform.rotation = Quat::from_rotation_y(yaw);
         }
 }
 
@@ -1091,11 +1084,11 @@ mod tests {
 
         player_body_facing_system(&world, 0.016);
         let rotation = world.get::<Transform>(root).unwrap().rotation;
-        let expected = Quat::from_rotation_y(yaw + BODY_MODEL_FORWARD_HALF_TURN);
+        let front = rotation * Vec3::NEG_Z;
+        let looking = crate::systems::camera_look_rotation(yaw, 0.0) * Vec3::NEG_Z;
         assert!(
-            rotation.angle_between(expected) < 1e-4,
-            "the body's +Z (the locomotion forward convention) must point where \
-             the camera looks: got {rotation:?}, want {expected:?}"
+            front.dot(looking) > 0.999,
+            "the body's front (-Z) must point where the camera looks: front {front:?}, camera {looking:?}"
         );
 
         // No attach → no write, no panic (the bare-capsule session).

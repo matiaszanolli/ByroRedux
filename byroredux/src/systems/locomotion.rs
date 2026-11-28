@@ -331,8 +331,7 @@ pub(crate) fn step_toward_detailed(
 
     let delta = Vec3::new(target_xz.x - current.x, 0.0, target_xz.z - current.z);
     let rotation = if delta.length_squared() > 1e-6 {
-        let desired_yaw = delta.x.atan2(delta.z);
-        let desired_rot = Quat::from_rotation_y(desired_yaw);
+        let desired_rot = super::script_requests::facing(delta.x, delta.z);
         let t = (LOCOMOTION_TURN_RATE * dt).clamp(0.0, 1.0);
         Some(current_rotation.slerp(desired_rot, t))
     } else {
@@ -465,6 +464,22 @@ mod stuck_tests {
         // The shared homes themselves exist and keep their values.
         assert_eq!(super::AI_PACKAGE_DEFAULT_RADIUS, 512.0);
         assert_eq!(super::LOCOMOTION_WALK_SPEED, 100.0);
+    }
+
+    /// A walker turns its front to where it is going. An actor's front is its local -Z: the shipped
+    /// skeletons' toes point +Y in Gamebryo's Z-up space (Oblivion, FO3, FNV, Skyrim SE), and their
+    /// forward-walk clips travel the same way. Turning +Z to the target walks everyone backwards.
+    #[test]
+    fn a_walker_faces_where_it_is_going() {
+        use byroredux_core::math::{Quat, Vec3};
+        for toward in [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z, Vec3::new(0.6, 0.0, -0.8)] {
+            // A long tick saturates the turn slerp, so the rotation is the settled one.
+            let (position, rotation) =
+                super::step_toward(Vec3::ZERO, Quat::IDENTITY, toward * 1000.0, 1.0, 100.0, None);
+            let front = rotation.expect("a moving walker turns") * Vec3::NEG_Z;
+            assert!(position.normalize().dot(toward) > 0.999, "moved {position:?}, toward {toward:?}");
+            assert!(front.dot(toward) > 0.999, "faces {front:?} while walking toward {toward:?}");
+        }
     }
 
     #[test]
