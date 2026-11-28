@@ -43,6 +43,13 @@ harness = false
 name = "nif_stats"
 path = "examples/nif_stats.rs"
 
+# MOT-DX-005 — its file-name rules are the part that has been wrong before, so
+# `cargo test` runs the example's unit tests (none needs game data).
+[[example]]
+name = "locomotion_census"
+path = "examples/locomotion_census/main.rs"
+test = true
+
 # Contains `unsafe`, so it does not inherit the workspace `unsafe_code = "forbid"`.
 [lints.rust]
 unsafe_code = "allow"
