@@ -358,7 +358,7 @@ impl LegacyTreeBlock {
     /// Whether the unit drew anything (an empty block is a "nothing here" sentinel).
     fn drew(&self) -> bool {
         match self {
-            Self::Cards(block) => !block.entities.is_empty(),
+            Self::Cards(block) => block.drew(),
             Self::Flat(block) => !block.entities.is_empty(),
         }
     }

@@ -116,6 +116,11 @@ impl ObjectLodBlock {
             hole_mask,
         }
     }
+
+    /// Whether the quad spawned anything; `false` is the [`Self::empty`] sentinel.
+    pub(crate) fn drew(&self) -> bool {
+        !self.entities.is_empty()
+    }
 }
 
 /// The complete set of texture handles one quad's release must cover:

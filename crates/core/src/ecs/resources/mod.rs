@@ -1390,7 +1390,8 @@ pub struct LodCoverageStats {
     pub object_churn: u32,
     /// Resident terrain LOD quad count at the last sample.
     pub terrain_resident: u32,
-    /// Resident object LOD quad count at the last sample.
+    /// Resident object LOD quads that spawned at least one entity, at the last sample. Empty sentinels are
+    /// not counted, here or in the object overlap counts (#7434).
     pub object_resident: u32,
     /// DLOD-GATE-001 — resident tree-LOD units across every tree family: one per `.btt` or `.dtl` file, and
     /// one per Oblivion `.lod` cell with at least one TREE group drawn. Empty sentinels (a quad whose file
@@ -1402,8 +1403,8 @@ pub struct LodCoverageStats {
     /// settled-snapshot semantics.
     pub tree_churn: u32,
     /// DLOD-GATE-005 — object-LOD moat cells: non-resident cells within one finest-quad edge of the
-    /// resident full-detail set, inside the object ring, covered by no resident object quad and not known to
-    /// be unauthored. Reported, not yet part of [`Self::verdict`]: it reads nonzero until the per-cell
+    /// resident full-detail set, inside the object ring, covered by no resolved object quad (drawn, or an
+    /// empty sentinel) and not known to be unauthored. Reported, not yet part of [`Self::verdict`]: it reads nonzero until the per-cell
     /// segment suppression of Phase 3 lands.
     pub object_moat_cells: u32,
     /// DLOD-GATE-005 — the same measure for the tree ring.

@@ -376,7 +376,17 @@ fn update_lod_coverage(
     player_grid: (i32, i32),
 ) {
     let terrain_keys: Vec<(i32, i32, i32)> = state.lod_blocks.keys().copied().collect();
-    let object_keys: Vec<(i32, i32, i32)> = state.object_lod_blocks.keys().copied().collect();
+    // #7434 — the object ring also holds an empty "nothing here" sentinel for a quad that drew nothing. As in
+    // the tree rings, residency and the overlap counts take the drawn quads only; the moat takes every
+    // resolved one.
+    let object_resolved_keys: Vec<(i32, i32, i32)> = state.object_lod_blocks.keys().copied().collect();
+    let object_keys_with_holes: Vec<((i32, i32, i32), u16)> = state
+        .object_lod_blocks
+        .iter()
+        .filter(|(_, block)| block.drew())
+        .map(|(key, block)| (*key, block.hole_mask))
+        .collect();
+    let object_keys: Vec<(i32, i32, i32)> = object_keys_with_holes.iter().map(|&(key, _)| key).collect();
     let full_cells: Vec<(i32, i32)> = state.loaded.keys().copied().collect();
 
     // DLOD-GATE-001/-003/-004 — the tree ring is keyed by south-west cell (every file is a level-4 quad),
@@ -396,8 +406,6 @@ fn update_lod_coverage(
     // DLOD-OBJ-002 / DLOD-TREE-008 — a baked level-4 object quad and a tree quad that straddle the resident
     // boundary are drawn minus the resident cells (their hole masks), so they are counted like the terrain
     // ring's holed finest blocks: only a cell that is both resident and still drawn is an overlap.
-    let object_keys_with_holes: Vec<((i32, i32, i32), u16)> =
-        state.object_lod_blocks.iter().map(|(key, block)| (*key, block.hole_mask)).collect();
     let tree_keys_with_holes: Vec<((i32, i32, i32), u16)> = state.tree_lod.resident_keys_with_holes();
     // #7431 — the legacy `.dtl` quads are mostly level 8, past what a `u16` mask holds, so that ring counts
     // its own overlaps against the cells each unit was built without.
@@ -448,7 +456,7 @@ fn update_lod_coverage(
                 .collect();
             cell_loader::count_moat_cells(
                 &resident_full,
-                &object_keys,
+                &object_resolved_keys,
                 player_grid,
                 ring,
                 FINEST_QUAD_EDGE,
@@ -1993,5 +2001,85 @@ mod tests {
             "a ten-minute radius-12 load must not stay masked"
         );
     }
-}
 
+    /// An FNV exterior session with no game data and one resident cell, (0, 0), holding `quads`
+    /// in the object ring: `(key, drew)`, an undrawn quad being the ring's "nothing here"
+    /// sentinel. Returns what `update_lod_coverage` samples from it.
+    fn object_ring_coverage(quads: &[((i32, i32, i32), bool)]) -> (u32, u32, u32, u32) {
+        let record_index = byroredux_plugin::esm::records::EsmIndex {
+            game: byroredux_plugin::esm::reader::GameKind::Fallout3NV,
+            ..Default::default()
+        };
+        let wctx = cell_loader::ExteriorWorldContext {
+            record_index: std::sync::Arc::new(record_index),
+            load_order: Default::default(),
+            plugin_path: String::new(),
+            plugin_paths: Vec::new(),
+            worldspace_key: "wastelandnv".to_string(),
+            climate: None,
+            default_weather: None,
+            default_weather_source: Default::default(),
+            default_water_height: None,
+            default_water_type_form: None,
+        };
+        let mut state = streaming::WorldStreamingState::new(
+            wctx,
+            crate::asset_provider::TextureProvider::new(),
+            crate::asset_provider::MaterialProvider::new(),
+            1,
+        );
+        state.loaded.insert((0, 0), streaming::LoadedCell { cell_root: 1 });
+        for &(key, drew) in quads {
+            let block = cell_loader::ObjectLodBlock {
+                entities: if drew { vec![2] } else { Vec::new() },
+                mesh_handles: Vec::new(),
+                texture_handle: 0,
+                extra_texture_handles: Vec::new(),
+                hole_mask: 0,
+            };
+            state.object_lod_blocks.insert(key, block);
+        }
+        let mut world = byroredux_core::ecs::World::new();
+        world.insert_resource(byroredux_core::ecs::LodCoverageStats::default());
+        update_lod_coverage(&mut world, &mut state, true, (0, 0));
+        let coverage = world.resource::<byroredux_core::ecs::LodCoverageStats>();
+        (
+            coverage.object_resident,
+            coverage.overlaps,
+            coverage.full_detail_overlaps,
+            coverage.object_moat_cells,
+        )
+    }
+
+    /// Two quads that overlap each other and the resident cell.
+    const STACKED_QUADS: [(i32, i32, i32); 2] = [(4, 0, 0), (8, 0, 0)];
+
+    /// #7434 / DLOD-GATE-006 — the object ring keeps an empty quad so it is not re-read, but it
+    /// draws nothing: it is neither resident nor half of an overlap.
+    #[test]
+    fn an_object_ring_of_placeholders_has_nothing_resident() {
+        let (resident, overlaps, full_detail, _) =
+            object_ring_coverage(&STACKED_QUADS.map(|key| (key, false)));
+        assert_eq!((resident, overlaps, full_detail), (0, 0, 0));
+    }
+
+    /// The control: the same two quads, drawn, are resident and counted by both overlap checks,
+    /// and a placeholder beside them adds nothing.
+    #[test]
+    fn drawn_object_quads_are_resident_and_counted_for_overlaps() {
+        let mut quads = STACKED_QUADS.map(|key| (key, true)).to_vec();
+        quads.push(((4, 8, 8), false));
+        let (resident, overlaps, full_detail, _) = object_ring_coverage(&quads);
+        assert_eq!((resident, overlaps, full_detail), (2, 1, 2));
+    }
+
+    /// A resolved quad with nothing to draw is not a gap, as in the tree rings: the moat counts
+    /// placeholders as covered.
+    #[test]
+    fn an_object_placeholder_still_covers_its_ground_for_the_moat() {
+        let moat = |drew: bool| object_ring_coverage(&STACKED_QUADS.map(|key| (key, drew))).3;
+        let empty_ring = object_ring_coverage(&[]).3;
+        assert_eq!(moat(false), moat(true));
+        assert!(moat(false) < empty_ring, "{} vs {empty_ring}", moat(false));
+    }
+}
