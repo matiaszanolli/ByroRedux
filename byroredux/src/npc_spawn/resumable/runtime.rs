@@ -46,11 +46,9 @@ pub(super) struct RuntimeNpcState {
     /// Per-NPC HCLR colour in the renderer's normalized RGB convention.
     /// Classic hair textures are palettes rather than a final actor colour.
     pub(super) hair_tint: Option<[f32; 3]>,
-    /// Fallout 3 / New Vegas loose hair meshes are authored at the actor
-    /// origin and need the shared head-bone translation. Oblivion uses the
-    /// same FaceGen record fields but its hair NIFs already carry their own
-    /// actor-space placement; mounting those below `Bip01 Head` applies the
-    /// head's rotated basis a second time.
+    /// Oblivion, Fallout 3 and New Vegas loose head parts (hair, brows,
+    /// eyes, mouth) are authored around the head pivot at the origin and
+    /// mount below the shared head bone.
     pub(super) head_parts_use_head_bone_mount: bool,
     /// Fallout 3 / New Vegas hair is lit by the `HairTint` lighting-shader
     /// variants, whose vertex colour is a tint mask rather than a colour
@@ -1354,15 +1352,17 @@ pub(super) fn spawn_shared_skeleton_part(
         return;
     };
     if let Some(root) = root {
-        // Fallout 3 / New Vegas head parts — hair, brows, eyes, mouth,
-        // teeth, tongue — are unskinned meshes whose vertices sit around the
-        // head pivot in the *actor's* axes (measured: `hairmessy02.nif`
-        // X/Z ±8, Y 0..16; `eyelefthuman.nif` 6-8 above the pivot, in front).
+        // Oblivion / Fallout 3 / New Vegas head parts — hair, brows, eyes,
+        // mouth, teeth, tongue — are unskinned meshes whose vertices sit around
+        // the head pivot in the *actor's* axes (measured, FNV:
+        // `hairmessy02.nif` X/Z ±8, Y 0..16; `eyelefthuman.nif` 6-8 above the
+        // pivot, in front. Oblivion with Shivering Isles and Knights: 94 of 95
+        // head-part NIFs are unskinned within Y -30..40 of the origin, the
+        // other `imperial\female\hair01.nif`, while the head bone is at 112).
         // They mount beneath the shared head bone, which supplies the head
-        // position and follows head animation. Oblivion head parts carry
-        // their own actor-space placement and stay on the placement root, as
-        // do skinned parts (body, head), whose palettes already resolve
-        // against the shared skeleton.
+        // position and follows head animation. Skinned parts (body, head) stay
+        // on the placement root: their palettes already resolve against the
+        // shared skeleton.
         let head = (state.head_parts_use_head_bone_mount
             && HEAD_MOUNTED_PART_LABELS.contains(&label)
             && !subtree_has_skinned_mesh(world, root))
@@ -1447,7 +1447,7 @@ pub(super) fn build_seam_context(
     context
 }
 
-/// `spawn_shared_skeleton_part` labels for the unskinned FO3 / FNV head parts
+/// `spawn_shared_skeleton_part` labels for the unskinned runtime-FaceGen head parts
 /// that mount beneath the shared head bone.
 const HEAD_MOUNTED_PART_LABELS: [&str; 4] = ["hair", "eyebrow HDPT", "eye mesh", "head sub-part"];
 
@@ -1645,5 +1645,5 @@ pub(super) fn yup_egm_morphs(morphs: &mut [byroredux_facegen::EgmMorph]) {
 }
 
 pub(super) fn head_parts_use_head_bone_mount(game: GameKind) -> bool {
-    matches!(game, GameKind::Fallout3NV)
+    matches!(game, GameKind::Oblivion | GameKind::Fallout3NV)
 }

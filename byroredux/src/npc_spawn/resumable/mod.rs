@@ -1054,9 +1054,11 @@ mod tests {
     }
 
     #[test]
-    fn only_fallout_runtime_hair_uses_the_shared_head_bone_basis() {
+    fn runtime_facegen_head_parts_mount_on_the_head_bone() {
+        // Oblivion's loose head parts sit around a zero pivot like FO3 / FNV's: on the placement
+        // root they render between the actor's feet.
         assert!(head_parts_use_head_bone_mount(GameKind::Fallout3NV));
-        assert!(!head_parts_use_head_bone_mount(GameKind::Oblivion));
+        assert!(head_parts_use_head_bone_mount(GameKind::Oblivion));
         assert!(!head_parts_use_head_bone_mount(GameKind::Skyrim));
     }
 
