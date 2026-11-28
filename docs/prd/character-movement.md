@@ -1,13 +1,15 @@
 # Natural character movement — Product Requirements
 
-**Status**: APPROVED (2026-11-27). Revision 2 records the owner's decisions on
-§10 Q1 to Q10, folds them into the requirements, and records the approval
-(§12). The draft was written from the owner's research note of 2026-11-27 and
+**Status**: ACTIVE (2026-11-27). Revision 3 files the tracking issues; the
+owner approved revision 2, which records the decisions on §10 Q1 to Q10 and
+folds them into the requirements (§12). The draft was written from the owner's research note of 2026-11-27 and
 from measurements of the installed game archives and of HEAD `8a6fe63ff`
 taken the same day (§3).
 Statements about how an original engine, format or tool behaves cite external
 sources or name the shipped file they were read from; a claim that could not
 be verified is marked **Phase 0: verify** instead of being stated as fact.
+
+**Tracking**: #7435 (parent). Phases: #7436 (0), #7437 (1), #7438 (2), #7439 (3), #7440 (4), #7441 (5), #7442 (6), #7443 (7). Phase 0's verify items are listed in #7436.
 
 **Scope**: this PRD promises how characters and creatures *move* in all the
 supported games: gait selection, transitions between clips, adapting shipped
@@ -667,14 +669,16 @@ part of MOT-WRP-004, and MOT-GAIT-009. Depends on V14. Exit: slip across the S2 
 inside its bound and published, with the count of corrections that hit a limit.
 
 **Phase 4 — Feet on stairs and slopes, bipeds.** MOT-FT-*, MOT-DX-002,
-MOT-DX-006, MOT-DX-007. Depends on V6, V12. Exit: S4 passes, and foot height error, penetration
+MOT-DX-006, MOT-DX-007, and the layer-5 part of MOT-WRP-004. Depends on V6,
+V12. Exit: S4 passes, and foot height error, penetration
 and pose cost are published.
 
 **Phase 5 — Creatures.** MOT-LEG-*. Depends on V16. Exit: S5 passes, and every
 creature family the census lists either passes its leg-chain check or is
 published as Unserved with a reason.
 
-**Phase 6 — Short traversal.** MOT-TRV-*. Depends on Q5, Q6, V7, V8, V11,
+**Phase 6 — Short traversal.** MOT-TRV-*, and the layer-6 part of
+MOT-WRP-004. Depends on Q5, Q6, V7, V8, V11,
 V13. Exit: S6 passes, each game's traversal source is published, and so is a
 check of quest routes against reachable ledges (MOT-TRV-006).
 
@@ -827,3 +831,4 @@ in Q8, this draft did not re-fetch them.
 |---|---|---|---|
 | 1 | 2026-11-27 | First draft: research note folded in; clip, event, displacement and climbing census; HEAD inventory; EA patent claim reading | — |
 | 2 | 2026-11-27 | Q1 to Q10 decided as recommended and folded in (MOT-SIM-001 to -003, MOT-TRV-006, MOT-NG-008 to -011, §5.11, Phase 0 and Phase 6); facing row updated to `fc766e09f`. No separate rubric review round was run | owner: approved |
+| 3 | 2026-11-27 | APPROVED → ACTIVE: tracking issues #7435 to #7443 filed, with Phase 0's verify items in #7436; §9 assigns the layer-5 and layer-6 parts of MOT-WRP-004 to Phases 4 and 6; no requirement changed | — |
