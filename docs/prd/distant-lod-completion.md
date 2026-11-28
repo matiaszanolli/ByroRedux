@@ -1,6 +1,6 @@
 # Distant LOD Completion — Product Requirements
 
-**Status**: SHIPPED (2026-11-27). Revision 11 records the #7431 fix: FO3's `.dtl` trees are retired per cell and the gate counts Oblivion's and FO3's tree moat (§3.2). Revision 10 records the owner's decision Q8: a family whose files carry no per-cell partition is Gapped by data. Revision 9 folds in review round 3. Revision 8 moved the PRD to SHIPPED on 2026-11-19; it is retained as history. Revision 7 records the Phase 4 terrain-LOD calibration (DLOD-TERR-001, -002). Revision 6 records the Phase 0 census results (§9.1). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2:
+**Status**: SHIPPED (2026-11-27). Revision 12 corrects revision 11's account of the default-radius Fallout 3 run and files #7433 and #7434. Revision 11 records the #7431 fix: FO3's `.dtl` trees are retired per cell and the gate counts Oblivion's and FO3's tree moat (§3.2). Revision 10 records the owner's decision Q8: a family whose files carry no per-cell partition is Gapped by data. Revision 9 folds in review round 3. Revision 8 moved the PRD to SHIPPED on 2026-11-19; it is retained as history. Revision 7 records the Phase 4 terrain-LOD calibration (DLOD-TERR-001, -002). Revision 6 records the Phase 0 census results (§9.1). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2:
 every HEAD claim re-checked on 2026-11-03, Skyrim's tree-LOD shape and the
 Distant LOD Multiplier sub-record sourced, the far-field-shadow non-goal
 aligned with the Reference Lighting PRD's decided Q4, descriptors given
@@ -209,8 +209,14 @@ The same day, DLOD-BAND-007's default-radius run on Fallout 3's Wasteland
 read `tree_resident=0` as required, but `verdict=FAIL`: the geometry pool was
 full and held back distant-LOD quads of other rings. A build without the
 #7431 change reads the same coverage line, so the failure is not that
-change's. #6638 recorded PASS for this run on 2026-11-08; what changed since
-was not investigated.
+change's. #6638 lists the run as an acceptance criterion, but its exit comment
+does not report it and no result for it was found, so it is not known whether
+it ever passed (#7433). Revision 11 said #6638 had recorded a PASS; that was
+wrong.
+
+The resident counts above need one caveat: `object_resident` also counts
+empty placeholder quads (#7434, found by reading the code and not observed in
+a run).
 
 ---
 
@@ -962,3 +968,4 @@ marked otherwise:
 | 9 | 2026-11-27 | Review round 3 folded in: "today" read as the approval baseline, state since ship added (§3.2); DLOD-TREE-006 narrowed and -011 added for FO3's shipped flat meshes; DLOD-DEPTH-002 split into -002 and -007 to -009; A3, A7 and A10's record; V1, V12, Q6 and §6 sourcing; DLOD-PERF-003 miss recorded; unpublished metrics listed (§8); Q7 records the 2026-11-08 V1 ruling; unlogged 2026-11-07 / -08 edits noted. Found while folding in: the gate counts no moat for Oblivion or FO3 trees, and F9 is still Drawn, gapped. Follow-ups filed: #7431 (that gap and count) and #7432 (DLOD-PERF-003). Not folded: earlier log rows and the other long §9.1 cells are left as written | claude: revise |
 | 10 | 2026-11-27 | Q8: new state Gapped by data, applied to F5; G-001, the thesis corollary, DLOD-OBJ-005, family coverage and the Phase 2 exit changed to match. The question approved named only the `blocks\` gap; F9 is not covered | owner: approved |
 | 11 | 2026-11-27 | #7431: FO3's `.dtl` trees are retired per cell (DLOD-TREE-008), with DLOD-BAND-007 now enforced explicitly; tree moat counted for Oblivion and FO3 (DLOD-GATE-005). §3.2 and the Phase 2 note updated: F9 and F7 measured, F5's evidence corrected (the FO3 boundary profile draws no object quad), and the default-radius FO3 verdict failure recorded | — |
+| 12 | 2026-11-27 | Corrects revision 11: #6638 holds no recorded PASS for the default-radius FO3 run, only the acceptance criterion. Follow-ups filed: #7433 (that failure) and #7434 (`object_resident` counts placeholders) | — |
